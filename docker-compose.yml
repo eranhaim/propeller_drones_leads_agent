@@ -20,7 +20,7 @@ services:
       retries: 10
 
   chroma:
-    image: chromadb/chroma:0.5.23
+    image: chromadb/chroma:1.0.20
     container_name: propeller_chroma
     restart: unless-stopped
     environment:
