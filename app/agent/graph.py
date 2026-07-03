@@ -5,9 +5,9 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Callable, List, Optional
 
-from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
+from langgraph.prebuilt import create_react_agent
 from loguru import logger
 
 from app.agent.classifier import describe_state
@@ -36,8 +36,8 @@ def _model() -> ChatOpenAI:
 
 @lru_cache(maxsize=1)
 def _agent():
-    """Cached LangChain agent (tools + model)."""
-    return create_agent(model=_model(), tools=ALL_TOOLS)
+    """Cached LangGraph ReAct-style tool-calling agent."""
+    return create_react_agent(model=_model(), tools=ALL_TOOLS)
 
 
 def _history_as_messages(lead: Lead, session) -> List[BaseMessage]:
