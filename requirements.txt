@@ -1,6 +1,6 @@
 # Core WhatsApp integration
-whatsapp-chatbot-python==0.10.0
-whatsapp-api-client-python==0.0.49
+whatsapp-chatbot-python>=0.9.9,<1.0.0
+whatsapp-api-client-python>=0.0.54,<0.1.0
 
 # LangChain core stack
 langchain==0.3.27
