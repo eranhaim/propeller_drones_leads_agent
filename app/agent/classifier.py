@@ -82,13 +82,30 @@ def apply_classification(
 
 
 def describe_state(lead: Lead) -> str:
-    """One-line description of the lead's current state for prompt injection."""
+    """Multi-line description of the lead's current state for prompt injection."""
     fam = FAMILIARITY_DESCRIPTIONS.get(lead.familiarity_level, "")
     stg = FUNNEL_DESCRIPTIONS.get(lead.funnel_stage, "")
     videos = ", ".join(lead.videos_sent) if lead.videos_sent else "אף אחד"
+
+    md = lead.lead_metadata or {}
+    intent = md.get("intent", "לא ידוע עדיין")
+    industry = md.get("industry", "לא ידוע עדיין")
+    slot = md.get("preferred_call_slot", "לא נלכד עדיין")
+    experience = md.get("has_experience")
+    experience_str = (
+        "כן" if experience is True
+        else "לא" if experience is False
+        else "לא ידוע עדיין"
+    )
+
     return (
         f"מצב נוכחי של הליד:\n"
+        f"- שם: {lead.name or 'לא ידוע'}\n"
         f"- רמת היכרות: {lead.familiarity_level.value} ({fam})\n"
         f"- שלב במשפך: {lead.funnel_stage.value} ({stg})\n"
+        f"- כוונה (intent): {intent}\n"
+        f"- תעשייה/תחום עניין: {industry}\n"
+        f"- ניסיון קודם עם רחפנים: {experience_str}\n"
+        f"- שעת התקשרות מועדפת: {slot}\n"
         f"- סרטונים שכבר נשלחו: {videos}"
     )

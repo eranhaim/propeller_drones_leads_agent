@@ -42,24 +42,58 @@ def search_knowledge(query: str, topic: Optional[str] = None) -> str:
 def classify_lead(
     familiarity: Optional[str] = None,
     stage: Optional[str] = None,
+    intent: Optional[str] = None,
+    industry: Optional[str] = None,
+    preferred_call_slot: Optional[str] = None,
+    has_experience: Optional[bool] = None,
 ) -> str:
-    """Update the lead's classification in the database.
+    """Update the lead's classification and captured facts.
 
-    ``familiarity`` (optional): one of ``beginner``, ``aware``, ``experienced``.
-    ``stage`` (optional): one of ``new``, ``engaged``, ``warm``,
-    ``ready_for_call``, ``handed_off``.
-    Call this whenever new information changes your assessment of the lead.
-    Returns the updated state description.
+    All fields are optional -- pass only what you have new info on.
+
+    - ``familiarity``: ``beginner`` / ``aware`` / ``experienced``.
+    - ``stage``: ``new`` / ``engaged`` / ``warm`` / ``ready_for_call`` /
+      ``handed_off``.
+    - ``intent``: what the lead actually wants:
+        * ``course`` -- interested in the drone-flying course
+        * ``shop`` -- wants to buy a drone / accessories
+        * ``service`` -- wants Propeller to perform a commercial drone job
+          (mapping, security, agriculture, washing...)
+        * ``hobby`` -- personal / recreational use only, not commercial
+        * ``unknown``
+    - ``industry``: one of ``security``, ``solar``, ``agriculture``,
+      ``mapping``, ``infrastructure``, ``cinema``, ``delivery``, ``washing``,
+      ``other`` -- or a free-form Hebrew phrase.
+    - ``preferred_call_slot``: ``9-12`` / ``12-15`` / ``15-18`` / ``any``
+      / ``none``.
+    - ``has_experience``: True/False -- do they have prior drone flying
+      experience?
+
+    Call this whenever new information changes your picture of the lead.
     """
     ctx = current_context()
     logger.info(
-        "Tool classify_lead lead={} familiarity={} stage={}",
-        ctx.lead.id, familiarity, stage,
+        "Tool classify_lead lead={} familiarity={} stage={} intent={} "
+        "industry={} slot={} experience={}",
+        ctx.lead.id, familiarity, stage, intent, industry,
+        preferred_call_slot, has_experience,
     )
     apply_classification(ctx.session, ctx.lead, familiarity=familiarity, stage=stage)
+    repository.update_lead_metadata(
+        ctx.session,
+        ctx.lead,
+        intent=intent,
+        industry=industry,
+        preferred_call_slot=preferred_call_slot,
+        has_experience=has_experience,
+    )
+    md = ctx.lead.lead_metadata or {}
     return (
         f"עודכן. רמת היכרות={ctx.lead.familiarity_level.value}, "
-        f"שלב={ctx.lead.funnel_stage.value}."
+        f"שלב={ctx.lead.funnel_stage.value}, "
+        f"כוונה={md.get('intent', '-')}, "
+        f"תעשייה={md.get('industry', '-')}, "
+        f"שעת התקשרות={md.get('preferred_call_slot', '-')}."
     )
 
 
@@ -122,19 +156,41 @@ def schedule_call(summary: Optional[str] = None) -> str:
 
     Updates the funnel stage to ``handed_off`` and pushes the status to
     the CRM (currently a stub -- see ``app/crm/client.py``). Only call
-    this when the lead has explicitly said they want to talk to a sales
-    rep. ``summary`` is an optional short internal note about the lead
-    (in Hebrew).
+    this AFTER you have (a) an explicit yes from the lead, and (b) captured
+    their ``preferred_call_slot`` via ``classify_lead``. ``summary`` is an
+    optional short internal note about the lead (in Hebrew).
 
-    After calling this, tell the lead in your next message (in Hebrew,
-    friendly tone) that a sales rep will contact them shortly.
+    After calling this, thank the lead in Hebrew and tell them the rep will
+    reach out in their preferred time window.
     """
     ctx = current_context()
+    md = ctx.lead.lead_metadata or {}
+    slot = md.get("preferred_call_slot")
+
+    if not slot:
+        return (
+            "לא הועבר עדיין -- חסר preferred_call_slot. "
+            "שאל את הלקוח באיזה חלון שעות עדיף לו (9-12 / 12-15 / 15-18), "
+            "עדכן דרך classify_lead, ואז קרא ל-schedule_call שוב."
+        )
+
     repository.update_funnel_stage(ctx.session, ctx.lead, FunnelStage.handed_off)
-    mark_ready_for_call(ctx.lead, note=summary)
+
+    md = ctx.lead.lead_metadata or {}
+    note_parts = [
+        f"intent={md.get('intent', '?')}",
+        f"familiarity={ctx.lead.familiarity_level.value}",
+        f"industry={md.get('industry', '?')}",
+        f"slot={slot}",
+        f"experience={md.get('has_experience', '?')}",
+    ]
+    if summary:
+        note_parts.append(f"summary={summary}")
+    mark_ready_for_call(ctx.lead, note=" | ".join(note_parts))
+
     return (
-        "סומן להעברה למכירות והועבר ל-CRM. "
-        "כעת ענה ללקוח שנציג ייצור איתו קשר בקרוב."
+        f"סומן להעברה למכירות והועבר ל-CRM (חלון: {slot}). "
+        "כעת אמור ללקוח שנציג יצור איתו קשר בחלון הזה, ותודה לו."
     )
 
 

@@ -88,3 +88,14 @@ def mark_video_sent(session: Session, lead: Lead, video_id: str) -> None:
         sent.append(video_id)
         lead.videos_sent = sent
         session.flush()
+
+
+def update_lead_metadata(session: Session, lead: Lead, **fields) -> None:
+    """Merge non-None values into the lead_metadata JSON blob."""
+    filtered = {k: v for k, v in fields.items() if v is not None and v != ""}
+    if not filtered:
+        return
+    merged = dict(lead.lead_metadata or {})
+    merged.update(filtered)
+    lead.lead_metadata = merged
+    session.flush()
