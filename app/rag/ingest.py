@@ -27,6 +27,9 @@ from app.rag.store import get_vectorstore
 # these instead of crawling because the site is small and we want deterministic,
 # high-quality knowledge chunks.
 WEBSITE_PATHS: List[str] = [
+    # Highest-priority page for lead-conversion: full course details,
+    # salaries, instructors, industries, FAQ.
+    "/training-center/%D7%9B%D7%9C-%D7%94%D7%A4%D7%A8%D7%98%D7%99%D7%9D-%D7%A7%D7%95%D7%A8%D7%A1%D7%99-%D7%94%D7%98%D7%A1%D7%AA-%D7%A8%D7%97%D7%A4%D7%A0%D7%99%D7%9D/",
     "/",
     "/training-center/",
     "/training-center/%D7%A8%D7%99%D7%A9%D7%99%D7%95%D7%9F-%D7%9E%D7%A1%D7%97%D7%A8%D7%99-%D7%9C%D7%A8%D7%97%D7%A4%D7%9F/",
@@ -66,7 +69,13 @@ def load_website_documents() -> List[Document]:
 
 def _infer_topic_from_url(url: str) -> str:
     url = url.lower()
-    if "training" in url or "%d7%a8%d7%99%d7%a9%d7%99%d7%95%d7%9f" in url:
+    # "כל-הפרטים-קורסי-הטסת-רחפנים" -- the flagship course-details page
+    if "%d7%9b%d7%9c-%d7%94%d7%a4%d7%a8%d7%98%d7%99%d7%9d" in url:
+        return "course_details"
+    # "רישיון-מסחרי-לרחפן" -- commercial-license focused page
+    if "%d7%a8%d7%99%d7%a9%d7%99%d7%95%d7%9f" in url:
+        return "course_license"
+    if "training" in url:
         return "courses"
     if "washing" in url:
         return "service_washing"

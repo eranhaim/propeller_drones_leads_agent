@@ -23,8 +23,16 @@ def search_knowledge(query: str, topic: Optional[str] = None) -> str:
     Use this whenever you need a factual answer about the company, courses,
     prices, licenses, services, or industry regulations. Prefer very
     specific queries in Hebrew (e.g. "עלות רישיון עד 25 קג", "משך קורס
-    תיאוריה"). Pass ``topic`` to filter (courses, service_flight,
-    service_washing, about, general).
+    תיאוריה", "מדריכים באקדמיה"). Pass ``topic`` to filter:
+
+    - ``course_details`` -- flagship course-details page (salaries, instructors,
+      industries, "95% first-try pass" stat, full FAQ). Prefer this for
+      convincing/positioning conversations.
+    - ``course_license`` -- commercial license focus (25kg vs 2000kg, CAAI exam).
+    - ``courses`` -- general academy overview.
+    - ``service_flight`` / ``service_washing`` -- commercial services offered.
+    - ``about`` -- company overview / homepage.
+    - ``general`` -- everything else.
     """
     logger.info("Tool search_knowledge: query='{}' topic={}", query, topic)
     return search_as_text(query, k=5, topic=topic)
