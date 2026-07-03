@@ -1,0 +1,30 @@
+.env
+*.pem
+*.key
+key.pem
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Data / persistence
+chroma_db/
+data/knowledge/*
+!data/knowledge/.gitkeep
+*.sqlite
+*.db
+
+# IDE
+.vscode/
+.idea/
+
+# Docker volumes (if bind-mounted)
+postgres_data/
+chroma_data/
+
+# Logs
+*.log
+logs/
