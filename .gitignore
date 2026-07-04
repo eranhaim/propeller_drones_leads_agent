@@ -2,6 +2,8 @@
 *.pem
 *.key
 key.pem
+.aws-*.json
+*.mp4
 __pycache__/
 *.pyc
 *.pyo

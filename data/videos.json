@@ -1,47 +1,22 @@
 [
   {
-    "id": "intro_drones_career",
-    "title": "עולם הרחפנים - הקריירה של העתיד",
-    "description": "סרטון היכרות שמסביר למה תחום הרחפנים הוא הזדמנות קריירה מעולה: משכורות, גיוון תעסוקתי, ושוק שגדל במהירות.",
-    "url": "https://example.com/videos/intro_drones_career.mp4",
-    "trigger_stage": "beginner",
-    "trigger_topics": ["קריירה", "משכורת", "הזדמנות", "התחלה", "מה זה בכלל"],
-    "familiarity_levels": ["unknown", "beginner"]
+    "id": "intro_drones_hype",
+    "title": "עולם הרחפנים - 2 דקות שיכניסו אותך לעניינים",
+    "description": "סרטון תדמית קצר (~2 דקות) שמראה את עולם הרחפנים המסחרי - הטסות מרהיבות, שימושים מקצועיים בשטח, וטעימה למה התחום כל כך מרתק. הכלי הכי טוב שלנו לחמם ליד חדש. שלח אותו מוקדם בשיחה, במיוחד למתחילים ולסקרנים.",
+    "url": "https://propellerdrones.s3.us-east-1.amazonaws.com/videos/intro_drones_hype.mp4",
+    "kind": "file",
+    "trigger_stage": "new",
+    "trigger_topics": ["פתיחה", "היכרות", "השראה", "מה זה בכלל", "סקרנות", "התחלה"],
+    "familiarity_levels": ["unknown", "beginner", "aware"]
   },
   {
-    "id": "propeller_academy_tour",
-    "title": "סיור באקדמיה של פרופלור דרונס",
-    "description": "סיור וירטואלי באקדמיה - כיתות, מדריכים, סימולטורים ומגרשי אימון. מראה מה שמייחד את פרופלור.",
-    "url": "https://example.com/videos/propeller_academy_tour.mp4",
-    "trigger_stage": "aware",
-    "trigger_topics": ["אקדמיה", "מדריכים", "לימודים", "קורס", "השוואה", "למה פרופלור"],
-    "familiarity_levels": ["beginner", "aware"]
-  },
-  {
-    "id": "graduate_testimonial",
-    "title": "בוגר מספר - מהקורס לעבודה במיליון",
-    "description": "עדות אישית של בוגר שסיים את הקורס והשתלב בעבודה. מדגיש את התמיכה של פרופלור לאחר סיום הקורס.",
-    "url": "https://example.com/videos/graduate_testimonial.mp4",
-    "trigger_stage": "aware",
-    "trigger_topics": ["בוגרים", "עדויות", "עבודה", "השמה", "אחרי הקורס"],
-    "familiarity_levels": ["beginner", "aware", "experienced"]
-  },
-  {
-    "id": "commercial_license_explained",
-    "title": "הרישיון המסחרי - מה זה ולמה זה שווה",
-    "description": "הסבר מקצועי על מבחני רת\"א, סוגי הרישיונות (עד 25 ק\"ג ועד 2000 ק\"ג), ולמה רישיון מסחרי הוא כרטיס כניסה לעבודה בתחום.",
-    "url": "https://example.com/videos/commercial_license_explained.mp4",
-    "trigger_stage": "aware",
-    "trigger_topics": ["רישיון", "רת\"א", "מבחן", "תיאוריה", "מסחרי", "רגולציה"],
+    "id": "course_webinar_full",
+    "title": "וובינר מלא (חינם) של קורס הטסת הרחפנים - 55 דקות",
+    "description": "וובינר בחינם של 55 דקות שסוקר במלואו את קורס הטסת הרחפנים של פרופלור - המרצה עובר על הרישיונות, השלבים, החומר הנלמד ושאלות נפוצות. שלח למי שכבר מתעניין ורוצה להעמיק, לא בהתחלה. מצוין לסגירת התלבטות לפני שיחה עם נציג.",
+    "url": "https://www.youtube.com/watch?v=v1xc-lvSGFA",
+    "kind": "link",
+    "trigger_stage": "warm",
+    "trigger_topics": ["וובינר", "קורס", "פרטים", "מסלולים", "רישיון", "העמקה", "התלבטות"],
     "familiarity_levels": ["aware", "experienced"]
-  },
-  {
-    "id": "advanced_operations",
-    "title": "פעילויות מתקדמות עם רחפנים",
-    "description": "מיפוי, פיקוח בנייה, ניטור חקלאי, אבטחה - הצצה למשימות מתקדמות שבוגרים שלנו מבצעים בשוק.",
-    "url": "https://example.com/videos/advanced_operations.mp4",
-    "trigger_stage": "experienced",
-    "trigger_topics": ["מיפוי", "מתקדם", "בטחוני", "חקלאות", "בנייה", "התמחות"],
-    "familiarity_levels": ["experienced", "aware"]
   }
 ]

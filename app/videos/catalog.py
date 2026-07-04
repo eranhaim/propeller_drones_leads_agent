@@ -15,6 +15,16 @@ VIDEOS_JSON = Path("data/videos.json")
 
 @dataclass(frozen=True)
 class Video:
+    """A piece of media the bot can send to a lead.
+
+    ``kind`` decides how it's delivered:
+    - ``"file"`` (default): a public MP4 URL, sent as a native WhatsApp video
+      via GreenAPI's ``sendFileByUrl``.
+    - ``"link"``: an external URL (e.g. YouTube) that WhatsApp can't stream
+      natively -- sent as a plain text message so WhatsApp renders a link
+      preview with thumbnail.
+    """
+
     id: str
     title: str
     description: str
@@ -22,6 +32,7 @@ class Video:
     trigger_stage: str
     trigger_topics: List[str]
     familiarity_levels: List[str]
+    kind: str = "file"
 
     def to_dict(self) -> dict:
         return {
@@ -29,6 +40,7 @@ class Video:
             "title": self.title,
             "description": self.description,
             "url": self.url,
+            "kind": self.kind,
             "trigger_stage": self.trigger_stage,
             "trigger_topics": list(self.trigger_topics),
             "familiarity_levels": list(self.familiarity_levels),
@@ -50,6 +62,7 @@ def load_catalog(path: Path = VIDEOS_JSON) -> List[Video]:
             title=v["title"],
             description=v["description"],
             url=v["url"],
+            kind=v.get("kind", "file"),
             trigger_stage=v.get("trigger_stage", "any"),
             trigger_topics=list(v.get("trigger_topics", [])),
             familiarity_levels=list(v.get("familiarity_levels", [])),
@@ -69,12 +82,14 @@ def get_video(video_id: str) -> Optional[Video]:
 
 def list_for_prompt() -> str:
     """Return a compact catalog listing for injection into the LLM system prompt."""
-    lines = ["Available videos (call send_video with the id):"]
+    lines = ["Available media (call send_video with the id):"]
     for v in load_catalog():
         topics = ", ".join(v.trigger_topics) if v.trigger_topics else "-"
         levels = ", ".join(v.familiarity_levels) if v.familiarity_levels else "any"
+        kind_note = "native video" if v.kind == "file" else "link preview"
         lines.append(
-            f"- id={v.id} | title=\"{v.title}\" | when={v.trigger_stage} "
+            f"- id={v.id} | kind={v.kind} ({kind_note}) | "
+            f"title=\"{v.title}\" | when={v.trigger_stage} "
             f"| levels=[{levels}] | topics=[{topics}]"
         )
         lines.append(f"  desc: {v.description}")

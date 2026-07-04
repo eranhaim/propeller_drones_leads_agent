@@ -32,9 +32,21 @@ class ChatSender:
             raise
 
     def send_video(self, video: Video, caption: Optional[str] = None) -> None:
-        """Send a video from the catalog by URL."""
-        file_name = f"{video.id}.mp4"
+        """Send a piece of media from the catalog.
+
+        For ``kind="file"`` -- fetches the URL as a native WhatsApp video.
+        For ``kind="link"`` -- sends a text message with the URL so WhatsApp
+        renders a link preview (used for YouTube / vimeo / etc that can't be
+        streamed as native video).
+        """
         try:
+            if video.kind == "link":
+                text_caption = caption or video.title
+                message = f"{text_caption}\n{video.url}"
+                self.api.sending.sendMessage(self.chat_id, message)  # type: ignore[attr-defined]
+                return
+
+            file_name = f"{video.id}.mp4"
             self.api.sending.sendFileByUrl(  # type: ignore[attr-defined]
                 self.chat_id,
                 video.url,
@@ -42,7 +54,10 @@ class ChatSender:
                 caption or video.title,
             )
         except Exception:
-            logger.exception("Failed to send video {} to {}", video.id, self.chat_id)
+            logger.exception(
+                "Failed to send media {} (kind={}) to {}",
+                video.id, video.kind, self.chat_id,
+            )
             raise
 
     def send_typing(self) -> None:
