@@ -51,6 +51,17 @@ class Settings(BaseSettings):
     # Access control -- if empty, allow anyone
     allowed_test_phones_raw: str = Field("", alias="ALLOWED_TEST_PHONES")
 
+    # LeadMe CRM (all optional -- if url is empty the client no-ops and just logs)
+    leadme_api_url: str = Field("", alias="LEADME_API_URL")
+    leadme_api_token: str = Field("", alias="LEADME_API_TOKEN")
+    leadme_auth_scheme: str = Field("Bearer", alias="LEADME_AUTH_SCHEME")  # Bearer | Token | Basic | Query | None
+    leadme_auth_query_key: str = Field("api_key", alias="LEADME_AUTH_QUERY_KEY")
+    leadme_ready_status: str = Field("ready_for_call", alias="LEADME_READY_STATUS")
+    leadme_source_label: str = Field("WhatsApp Bot", alias="LEADME_SOURCE_LABEL")
+    # JSON mapping of internal field -> LeadMe field name.
+    # Example: {"phone":"phone","name":"full_name","status":"status","note":"comments"}
+    leadme_field_map_json: str = Field("", alias="LEADME_FIELD_MAP")
+
     # Logging
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 

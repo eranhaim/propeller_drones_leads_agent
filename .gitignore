@@ -30,3 +30,6 @@ chroma_data/
 # Logs
 *.log
 logs/
+
+# Local recon / exploration scratch (contains credentials & session cookies)
+leadme-recon/
