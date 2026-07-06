@@ -76,7 +76,7 @@ def _build_insert_payload(lead: Lead, note: Optional[str]) -> Dict[str, str]:
     settings = get_settings()
     md: Dict[str, Any] = dict(lead.lead_metadata or {})
 
-    display = (lead.display_name or "").strip()
+    display = (lead.name or "").strip()
     first, last = _split_name(display)
 
     note_parts: list[str] = []

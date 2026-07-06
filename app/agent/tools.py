@@ -166,6 +166,10 @@ def schedule_call(summary: Optional[str] = None) -> str:
     ctx = current_context()
     md = ctx.lead.lead_metadata or {}
     slot = md.get("preferred_call_slot")
+    logger.info(
+        "Tool schedule_call lead={} phone={} slot={} summary={!r}",
+        ctx.lead.id, ctx.lead.phone, slot, summary,
+    )
 
     if not slot:
         return (
@@ -186,7 +190,25 @@ def schedule_call(summary: Optional[str] = None) -> str:
     ]
     if summary:
         note_parts.append(f"summary={summary}")
-    mark_ready_for_call(ctx.lead, note=" | ".join(note_parts))
+
+    # Wrap the CRM push -- we do NOT want to break the user-facing handoff
+    # message if LeadMe is momentarily down, but we DO want the failure to
+    # be loud in the logs so we can retry manually.
+    try:
+        ok = mark_ready_for_call(ctx.lead, note=" | ".join(note_parts))
+        if ok:
+            logger.info("schedule_call: LeadMe push succeeded for lead {}",
+                        ctx.lead.id)
+        else:
+            logger.error("schedule_call: LeadMe push returned False for "
+                         "lead {} (see leadme_client logs above)", ctx.lead.id)
+    except Exception:
+        logger.exception(
+            "schedule_call: LeadMe push RAISED for lead {} -- lead is "
+            "marked handed_off in our DB but did NOT reach LeadMe. "
+            "Investigate & replay via app.crm.client.mark_ready_for_call",
+            ctx.lead.id,
+        )
 
     return (
         f"סומן להעברה למכירות והועבר ל-CRM (חלון: {slot}). "
