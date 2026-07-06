@@ -59,18 +59,25 @@ def _normalize_phone(raw: str) -> str:
     """Best-effort E.164-without-plus normalization for Israeli numbers.
 
     Returns a digit-only string like ``972501234567`` suitable for building
-    a WhatsApp chat id. Falls back to keeping just digits if the input
-    can't be identified as Israeli.
+    a WhatsApp chat id. Handles the common "+972-058..." user-typed shape
+    where the local leading 0 wasn't stripped after adding the +972.
     """
     digits = re.sub(r"\D", "", raw or "")
     if not digits:
         return ""
-    if digits.startswith("972"):
-        return digits
+    # 00972... -> 972...
     if digits.startswith("00972"):
-        return digits[2:]
+        digits = digits[2:]
+    # +972 prefix with an incorrectly-kept local leading 0: "9720XXXXXXXXX"
+    # Israeli mobiles are 9 digits after the country code (5X-XXXXXXX).
+    # So if we see 972 followed by 0, drop that 0.
+    if digits.startswith("972"):
+        rest = digits[3:]
+        if rest.startswith("0"):
+            rest = rest.lstrip("0")
+        return "972" + rest
     if digits.startswith("0"):
-        return "972" + digits[1:]
+        return "972" + digits.lstrip("0")
     if 8 <= len(digits) <= 9:
         return "972" + digits.lstrip("0")
     return digits
