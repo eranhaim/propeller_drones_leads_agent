@@ -46,6 +46,11 @@ services:
         condition: service_started
     volumes:
       - ./data:/app/data
+    # Bind the LeadMe webhook to loopback only -- the host nginx will
+    # reverse-proxy public HTTPS traffic to it. Override the host port by
+    # setting WEBHOOK_HOST_PORT in the env before ``docker compose up``.
+    ports:
+      - "127.0.0.1:${WEBHOOK_HOST_PORT:-8082}:8080"
     command: ["python", "-m", "app.main"]
 
 volumes:

@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     # Access control -- if empty, allow anyone
     allowed_test_phones_raw: str = Field("", alias="ALLOWED_TEST_PHONES")
 
+    # Inbound webhook (LeadMe -> our bot: fresh lead arrival)
+    webhook_port: int = Field(8080, alias="WEBHOOK_PORT")
+    # Path segment secret. LeadMe hits /webhook/leadme/{webhook_secret}
+    # Empty => any request accepted (dev-mode only, do NOT run in prod).
+    webhook_secret: str = Field("", alias="WEBHOOK_SECRET")
+
     # LeadMe CRM - public "supplier" API
     # If LEADME_INSERT_URL is empty the client no-ops and just logs.
     # Provisioned in LeadMe under Preferences -> Suppliers -> {supplier} -> API.
