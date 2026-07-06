@@ -1,53 +1,39 @@
-"""LeadMe CMS client.
+"""LeadMe CMS client -- public "supplier" API.
 
-Reverse-engineered against LeadMe (Israeli CRM). Two production paths are
-supported, selected by env vars:
+Reverse-engineered from LeadMe's admin panel. The integration is meant to
+be used exactly the same way LeadMe integrates Facebook, TikTok, and other
+paid lead sources:
 
-1) SESSION MODE (LEADME_MODE=session):
-   Uses the internal admin endpoint POST /app/leads/leadAction, which is
-   the same endpoint the human admin panel uses. Requires an authenticated
-   PHP session cookie (LEADME_PHPSESSID) plus a matching CSRF pair
-   (LEADME_CSRF_COOKIE / LEADME_CSRF_TOKEN, both equal to the same hex
-   string). This is useful for local testing / short-term operation but
-   session cookies expire and re-login requires solving reCAPTCHA, so it
-   is not a long-term production path.
+    1. In LeadMe: Preferences -> Suppliers -> New Supplier.
+    2. Give it a name (e.g. "WhatsApp Bot") and set it Active.
+    3. Check the campaign(s) this supplier is allowed to push into
+       (e.g. campaign 12277 = "leads from WhatsApp").
+    4. Save. LeadMe generates a public URL of the form
+           https://api.leadmecms.co.il/supplier/insert/{link_id}/{slug}
+       (visible in the supplier's "API" dialog on the same edit page).
+    5. Also visible: an UPDATE URL of the form
+           https://api.leadmecms.co.il/supplier/update/p/{slug}
+       which accepts (phone, status, ...) to update an existing lead.
 
-2) WEBHOOK MODE (LEADME_MODE=webhook, default):
-   Posts JSON (or form-encoded, controlled by LEADME_WEBHOOK_ENCODING) to
-   LEADME_API_URL with optional auth (Bearer / Token / Basic / Query
-   header). Use this once Propeller Drones asks LeadMe support to
-   provision a public "external interface" webhook URL for the WhatsApp
-   bot (same pattern LeadMe uses for Facebook / TikTok lead ads).
+Both endpoints accept POST or GET, form-encoded or JSON, no auth headers.
+They dedupe leads by phone within the campaign.
 
-While LEADME_API_URL (webhook mode) and LEADME_PHPSESSID (session mode)
-are empty, the client no-ops and just logs -- so nothing changes
-behaviorally for the bot until you configure it.
+Env vars consumed (see .env.example):
+    LEADME_INSERT_URL           full URL for POST /supplier/insert/...
+                                (per supplier+campaign; empty => no-op stub)
+    LEADME_UPDATE_URL           full URL for POST /supplier/update/p/{slug}
+                                (empty => skip status update after insert)
+    LEADME_STATUS_ID            status id or name to send with update
+                                (e.g. "1", "new", "ready_for_call")
+    LEADME_SOURCE_LABEL         value sent in `tags`
 
-Env vars consumed:
-    LEADME_MODE                  session | webhook   (default: webhook)
-    LEADME_API_URL               webhook URL (webhook mode)
-    LEADME_API_TOKEN             secret token (webhook mode)
-    LEADME_AUTH_SCHEME           Bearer | Token | Basic | Query | None
-    LEADME_AUTH_QUERY_KEY        query-param name when AUTH_SCHEME == Query
-    LEADME_WEBHOOK_ENCODING      json | form  (default: json)
-    LEADME_PHPSESSID             PHPSESSID cookie (session mode)
-    LEADME_CSRF_COOKIE           csrf_cookie_name value (session mode)
-    LEADME_CSRF_TOKEN            same value as CSRF_COOKIE, sent as
-                                 csrf_lmcms form field (session mode)
-    LEADME_CAMPAIGN_ID           LeadMe campaign_id to attach leads to
-                                 (session mode; default: 12277 =
-                                 "leads from WhatsApp")
-    LEADME_STATUS_ID             LeadMe status_id for handed-off leads
-                                 (session mode; default: 1)
-    LEADME_READY_STATUS          label to send in the note (both modes)
-    LEADME_SOURCE_LABEL          source label in the note (both modes)
-    LEADME_FIELD_MAP             JSON dict overriding internal->external
-                                 field names (webhook mode only).
+Custom lead field ids (`clf_XXXXX`) are Propeller-specific and mapped
+against the questions currently on their public lead forms. If the account
+changes its custom fields, update ``PROPELLER_CLF`` below.
 """
 
 from __future__ import annotations
 
-import json
 from typing import Any, Dict, Optional
 
 import httpx
@@ -56,248 +42,163 @@ from loguru import logger
 from app.config import get_settings
 from app.db.models import Lead
 
-LEADME_BASE = "https://www.leadmecms.co.il"
-LEADME_SESSION_ENDPOINT = f"{LEADME_BASE}/app/leads/leadAction"
-LEADME_LEAD_FORM_URL = f"{LEADME_BASE}/app/leads/leadForm"
-
-DEFAULT_FIELD_MAP: Dict[str, str] = {
-    "phone": "phone",
-    "name": "full_name",
-    "email": "email",
-    "status": "status",
-    "note": "comments",
-    "source": "source",
-    "intent": "intent",
-    "industry": "industry",
-    "familiarity": "familiarity",
-    "funnel_stage": "funnel_stage",
-    "preferred_call_slot": "preferred_call_slot",
-    "videos_sent": "videos_sent",
+# --- Propeller-specific custom-field ids in LeadMe --------------------------
+# Discovered by inspecting the "API" instructions dialog on the supplier form
+# for this account. Values are exactly what the LeadMe admin shows.
+PROPELLER_CLF = {
+    "intent":              "clf_116982",  # "אני פה בשביל..."
+    "residence_area":      "clf_116984",  # "מה איזור המגורים שלך?"
+    "experience_level":    "clf_116981",  # "איזה ניסיון יש לך עם רחפנים?"
+    "license_type":        "clf_117019",  # "איזה רישיון הטסת רחפנים יש לך?"
+    "familiarity_1_to_5":  "clf_116142",  # "מ-1 עד 5, כמה אתם מכירים..."
+    "course_of_interest":  "clf_116141",  # "באיזה קורס אתם מעוניינים?"
+    "fields_of_interest":  "clf_116140",  # "איזה מהתחומים הבאים מעניין"
+    "age_bucket":          "clf_116983",  # "מה הגיל שלך?"
+    "has_drone_background": "clf_113565", # "יש רקע בהטסת רחפנים"
+    "wants":               "clf_115314",  # "אני רוצה"
+    "prior_experience":    "clf_115313",  # "האם יש לך ניסיון קודם"
+    "interested_in":       "clf_115312",  # "אני מעוניין/ת"
 }
 
 
-def _internal_payload(lead: Lead, extra_note: Optional[str]) -> Dict[str, Any]:
-    """Normalized internal payload; both modes derive from this."""
-    settings = get_settings()
-    md = dict(lead.lead_metadata or {})
+def _split_name(display: str) -> tuple[str, str]:
+    display = (display or "").strip()
+    if not display:
+        return "", ""
+    if " " in display:
+        first, last = display.split(" ", 1)
+        return first.strip(), last.strip()
+    return display, ""
 
-    note_parts = []
-    if extra_note:
-        note_parts.append(extra_note)
-    if md.get("intent"):
-        note_parts.append(f"Intent: {md['intent']}")
-    if md.get("industry"):
-        note_parts.append(f"Industry: {md['industry']}")
-    if md.get("preferred_call_slot"):
-        note_parts.append(f"Preferred slot: {md['preferred_call_slot']}")
-    if md.get("has_experience") is not None:
-        note_parts.append(f"Has experience: {md['has_experience']}")
-    if lead.videos_sent:
-        note_parts.append(f"Videos sent: {', '.join(lead.videos_sent)}")
+
+def _build_insert_payload(lead: Lead, note: Optional[str]) -> Dict[str, str]:
+    """Build the form-encoded payload for /supplier/insert/{link_id}/{slug}."""
+    settings = get_settings()
+    md: Dict[str, Any] = dict(lead.lead_metadata or {})
 
     display = (lead.display_name or "").strip()
-    if display and " " in display:
-        first, last = display.split(" ", 1)
-    else:
-        first, last = display, ""
+    first, last = _split_name(display)
 
-    return {
-        "phone": lead.phone or "",
-        "name": display,
+    note_parts: list[str] = []
+    if note:
+        note_parts.append(note)
+    if lead.familiarity_level:
+        note_parts.append(f"רמת היכרות: {lead.familiarity_level.value}")
+    if lead.funnel_stage:
+        note_parts.append(f"שלב משפך: {lead.funnel_stage.value}")
+    if md.get("intent"):
+        note_parts.append(f"מטרה: {md['intent']}")
+    if md.get("industry"):
+        note_parts.append(f"תחום: {md['industry']}")
+    if md.get("preferred_call_slot"):
+        note_parts.append(f"חלון שיחה מועדף: {md['preferred_call_slot']}")
+    if md.get("has_experience") is not None:
+        note_parts.append(f"ניסיון קיים: {md['has_experience']}")
+    if lead.videos_sent:
+        note_parts.append(f"סרטונים שנשלחו: {', '.join(lead.videos_sent)}")
+
+    payload: Dict[str, str] = {
+        "action": "new_lead",
+        "fullname": display or lead.phone or "",
         "firstname": first,
         "lastname": last,
+        "phone": lead.phone or "",
         "email": md.get("email") or "",
-        "status": settings.leadme_ready_status,
-        "note": " | ".join(note_parts),
-        "source": settings.leadme_source_label,
-        "intent": md.get("intent") or "",
-        "industry": md.get("industry") or "",
-        "familiarity": (lead.familiarity_level.value if lead.familiarity_level else ""),
-        "funnel_stage": (lead.funnel_stage.value if lead.funnel_stage else ""),
-        "preferred_call_slot": md.get("preferred_call_slot") or "",
-        "videos_sent": ",".join(lead.videos_sent or []),
+        "comment": " | ".join(note_parts),
+        "tags": settings.leadme_source_label,
+        "businesscategory": md.get("industry") or "",
+        "company": md.get("company") or "",
     }
 
-
-def _field_map() -> Dict[str, str]:
-    raw = (get_settings().leadme_field_map_json or "").strip()
-    if not raw:
-        return dict(DEFAULT_FIELD_MAP)
-    try:
-        parsed = json.loads(raw)
-        if isinstance(parsed, dict):
-            return {str(k): str(v) for k, v in parsed.items()}
-    except json.JSONDecodeError:
-        logger.warning("LEADME_FIELD_MAP is not valid JSON, using defaults")
-    return dict(DEFAULT_FIELD_MAP)
-
-
-def _apply_auth(
-    request_kwargs: Dict[str, Any],
-    headers: Dict[str, str],
-    params: Dict[str, str],
-) -> None:
-    settings = get_settings()
-    scheme = (settings.leadme_auth_scheme or "").strip()
-    token = settings.leadme_api_token or ""
-    if not token or scheme.lower() in ("", "none"):
-        return
-    lower = scheme.lower()
-    if lower == "bearer":
-        headers["Authorization"] = f"Bearer {token}"
-    elif lower == "token":
-        headers["Authorization"] = f"Token {token}"
-    elif lower == "basic":
-        request_kwargs["auth"] = ("api", token)
-    elif lower == "query":
-        params[settings.leadme_auth_query_key] = token
-    else:
-        headers["Authorization"] = f"{scheme} {token}"
-
-
-# ---------- webhook mode ---------------------------------------------------
-
-
-def _push_via_webhook(lead: Lead, payload: Dict[str, Any]) -> bool:
-    settings = get_settings()
-    url = settings.leadme_api_url.strip()
-    if not url:
-        logger.info(
-            "[LeadMe STUB] webhook not configured. Would send {} -> LeadMe. payload={}",
-            lead.phone, payload,
-        )
-        return True
-
-    fmap = _field_map()
-    external: Dict[str, Any] = {}
-    for internal_key, ext_key in fmap.items():
-        val = payload.get(internal_key, "")
-        if val == "" or val is None:
+    # Custom Propeller fields -- push whatever we've collected.
+    clf_map = {
+        "intent":              md.get("intent"),
+        "residence_area":      md.get("residence_area"),
+        "experience_level":    md.get("experience_level")
+                               or ("יש" if md.get("has_experience") else
+                                   "אין" if md.get("has_experience") is False
+                                   else None),
+        "license_type":        md.get("license_type"),
+        "familiarity_1_to_5":  md.get("familiarity_1_to_5")
+                               or (lead.familiarity_level.value
+                                   if lead.familiarity_level else None),
+        "course_of_interest":  md.get("course_of_interest"),
+        "fields_of_interest":  md.get("fields_of_interest"),
+        "age_bucket":          md.get("age_bucket"),
+        "has_drone_background": md.get("has_experience"),
+        "wants":               md.get("wants"),
+        "prior_experience":    md.get("prior_experience")
+                               or md.get("has_experience"),
+        "interested_in":       md.get("interested_in") or md.get("intent"),
+    }
+    for logical, clf_id in PROPELLER_CLF.items():
+        val = clf_map.get(logical)
+        if val is None or val == "":
             continue
-        external[ext_key] = val
+        payload[clf_id] = str(val)
 
-    headers = {"Accept": "application/json"}
-    params: Dict[str, str] = {}
-    req_kwargs: Dict[str, Any] = {}
-    _apply_auth(req_kwargs, headers, params)
+    # Drop empties so we don't overwrite existing LeadMe data with blanks.
+    return {k: v for k, v in payload.items() if v not in ("", None)}
 
-    encoding = (get_settings_or_env("LEADME_WEBHOOK_ENCODING") or "json").lower()
+
+def _post(url: str, data: Dict[str, str]) -> tuple[bool, str]:
     try:
-        if encoding == "form":
-            resp = httpx.post(
-                url, data=external, headers=headers,
-                params=params or None, timeout=15.0, **req_kwargs,
-            )
-        else:
-            headers["Content-Type"] = "application/json"
-            resp = httpx.post(
-                url, json=external, headers=headers,
-                params=params or None, timeout=15.0, **req_kwargs,
-            )
+        resp = httpx.post(url, data=data, timeout=15.0, follow_redirects=False)
     except httpx.HTTPError as e:
-        logger.exception("[LeadMe webhook] HTTP error for {}: {}", lead.phone, e)
-        return False
-
-    if 200 <= resp.status_code < 300:
-        logger.info(
-            "[LeadMe webhook] pushed lead {} -> {}", lead.phone, resp.status_code
-        )
-        return True
-    logger.error(
-        "[LeadMe webhook] push failed for {}: {} {}",
-        lead.phone, resp.status_code, resp.text[:400],
-    )
-    return False
-
-
-# ---------- session mode ---------------------------------------------------
-
-
-def _push_via_session(lead: Lead, payload: Dict[str, Any]) -> bool:
-    """POST to the internal /app/leads/leadAction using an existing
-    authenticated PHP session. Field set was reverse-engineered by
-    observing what the admin panel's own Save button submits."""
-    phpsessid = get_settings_or_env("LEADME_PHPSESSID") or ""
-    csrf_cookie = get_settings_or_env("LEADME_CSRF_COOKIE") or ""
-    csrf_token = get_settings_or_env("LEADME_CSRF_TOKEN") or ""
-    if not (phpsessid and csrf_cookie and csrf_token):
-        logger.info(
-            "[LeadMe session STUB] session not configured. Would POST {} to {}."
-            " payload={}",
-            lead.phone, LEADME_SESSION_ENDPOINT, payload,
-        )
-        return True
-
-    campaign_id = get_settings_or_env("LEADME_CAMPAIGN_ID") or "12277"
-    status_id = get_settings_or_env("LEADME_STATUS_ID") or "1"
-
-    form = {
-        "csrf_lmcms": csrf_token,
-        "campaignId": campaign_id,
-        "status": status_id,
-        "firstname": payload["firstname"] or lead.phone,
-        "lastname": payload["lastname"],
-        "phone": payload["phone"],
-        "email": payload["email"],
-        "businessname": "",
-        "address": "",
-        "appartment": "",
-        "city": "",
-        "zipCode": "",
-        "comment": payload["note"],
-        "tags": get_settings_or_env("LEADME_SOURCE_LABEL")
-                or "WhatsApp Bot",
-    }
-
-    cookies = {
-        "PHPSESSID": phpsessid,
-        "csrf_cookie_name": csrf_cookie,
-    }
-    headers = {
-        "Referer": LEADME_LEAD_FORM_URL,
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-        ),
-    }
-
-    try:
-        resp = httpx.post(
-            LEADME_SESSION_ENDPOINT, data=form, cookies=cookies,
-            headers=headers, timeout=20.0, follow_redirects=False,
-        )
-    except httpx.HTTPError as e:
-        logger.exception("[LeadMe session] HTTP error for {}: {}", lead.phone, e)
-        return False
-
-    # 200 or 302 with Location -> success. Session expired -> redirect to /login.
-    location = resp.headers.get("location", "")
-    if "/login" in location:
-        logger.error("[LeadMe session] session expired -- Location={}", location)
-        return False
-    if resp.status_code in (200, 302, 303):
-        logger.info(
-            "[LeadMe session] pushed lead {} -> {} loc={}",
-            lead.phone, resp.status_code, location,
-        )
-        return True
-    logger.error(
-        "[LeadMe session] push failed for {}: {} {}",
-        lead.phone, resp.status_code, resp.text[:400],
-    )
-    return False
-
-
-def get_settings_or_env(name: str) -> str:
-    """Read an override that isn't part of the pydantic Settings model."""
-    import os
-    return os.environ.get(name, "") or ""
+        return False, f"httpx error: {e}"
+    body = (resp.text or "").strip()
+    ok = resp.status_code == 200 and ("success" in body.lower() or body == "")
+    # LeadMe's public API always returns 200. Content differentiates:
+    #   {"type":"success","data":""}  -> lead created / accepted
+    #   {"type":"error","data":""}    -> rejected (usually campaign not linked)
+    #   ""                            -> update endpoint success
+    return ok, f"{resp.status_code} {body[:200]}"
 
 
 def push_lead(lead: Lead, note: Optional[str] = None) -> bool:
-    """Create or update the lead in LeadMe using the configured mode."""
-    payload = _internal_payload(lead, note)
-    mode = (get_settings_or_env("LEADME_MODE") or "webhook").lower()
-    if mode == "session":
-        return _push_via_session(lead, payload)
-    return _push_via_webhook(lead, payload)
+    """Push the lead into LeadMe.
+
+    Creates or upserts via `LEADME_INSERT_URL` (dedupe on phone within the
+    campaign). If `LEADME_UPDATE_URL` is also set and a status id is
+    provided, follow up with a status update so the sales team sees the
+    lead in the correct pipeline column.
+    """
+    settings = get_settings()
+    insert_url = (settings.leadme_insert_url or "").strip()
+    update_url = (settings.leadme_update_url or "").strip()
+    status_val = (settings.leadme_status_id or "").strip()
+
+    payload = _build_insert_payload(lead, note)
+
+    if not insert_url:
+        logger.info(
+            "[LeadMe STUB] LEADME_INSERT_URL not set. Would POST payload={} for {}",
+            payload, lead.phone,
+        )
+        return True
+
+    ok, detail = _post(insert_url, payload)
+    if not ok:
+        logger.error("[LeadMe insert] failed for {}: {}", lead.phone, detail)
+        return False
+    logger.info("[LeadMe insert] pushed lead {} -> {}", lead.phone, detail)
+
+    if update_url and status_val and lead.phone:
+        upd_payload = {
+            "phone": lead.phone,
+            "status": status_val,
+            "comment": payload.get("comment", ""),
+        }
+        ok2, detail2 = _post(update_url, upd_payload)
+        if not ok2:
+            logger.warning(
+                "[LeadMe update] status update failed for {} (insert still ok): {}",
+                lead.phone, detail2,
+            )
+        else:
+            logger.info(
+                "[LeadMe update] status={} for {} -> {}",
+                status_val, lead.phone, detail2,
+            )
+
+    return True
