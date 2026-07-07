@@ -16,6 +16,7 @@ env/
 chroma_db/
 data/knowledge/*
 !data/knowledge/.gitkeep
+!data/knowledge/*.md
 *.sqlite
 *.db
 
