@@ -107,22 +107,31 @@ def load_local_documents(directory: Path = KNOWLEDGE_DIR) -> List[Document]:
         logger.warning("PDF loading failed: {}", exc)
         pdf_docs = []
 
-    text_loader = DirectoryLoader(
-        str(directory),
-        glob="**/*.{txt,md}",
-        loader_cls=TextLoader,
-        loader_kwargs={"encoding": "utf-8"},
-        show_progress=False,
-    )
-    try:
-        text_docs = text_loader.load()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Text loading failed: {}", exc)
-        text_docs = []
+    # NOTE: python glob doesn't support brace expansion ("*.{txt,md}"), so
+    # we load each extension separately and concatenate.
+    text_docs = []
+    for pattern in ("**/*.txt", "**/*.md"):
+        _loader = DirectoryLoader(
+            str(directory),
+            glob=pattern,
+            loader_cls=TextLoader,
+            loader_kwargs={"encoding": "utf-8"},
+            show_progress=False,
+        )
+        try:
+            text_docs.extend(_loader.load())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Text loading failed for pattern {}: {}", pattern, exc)
 
     for doc in pdf_docs + text_docs:
         doc.metadata["origin"] = "document"
-        doc.metadata.setdefault("topic", "documents")
+        src = str(doc.metadata.get("source", "")).lower()
+        if "academy_products" in src:
+            doc.metadata["topic"] = "course_details"
+        elif "ecommerce_store" in src or "store" in src:
+            doc.metadata["topic"] = "shop"
+        else:
+            doc.metadata.setdefault("topic", "documents")
         docs.append(doc)
 
     logger.info(
