@@ -83,7 +83,7 @@ SYSTEM_PROMPT_TEMPLATE = """\
 - **אם `שלב במשפך` הוא `handed_off`** או **`שעת התקשרות מועדפת` כבר לא ריק**: \
   שיחה עם נציג **כבר תואמה**. אל תבקש חלון שעות מחדש. אל תשאל "מתי נוח לך". \
   אם הליד מדבר על משהו לא קשור לתיאום - ענה על השאלה שלו. \
-  אם הליד שואל שוב על שיחה - תזכיר לו: "כבר קבענו לך שיחה בחלון {slot} - הנציג \
+  אם הליד שואל שוב על שיחה - תזכיר לו: "כבר קבענו לך שיחה בחלון שביקשת - הנציג \
   ייצור איתך קשר." אל תגיד "אעדכן את הנציג" - זה כבר קרה.
 
 - **אם `סרטונים שכבר נשלחו` כולל את הסרטון שאתה עומד לשלוח**: אל תשלח שוב. \
@@ -131,7 +131,7 @@ SYSTEM_PROMPT_TEMPLATE = """\
 Avata, Agras, וכו') או אמר "רוצה לקנות רחפן / לרכוש רחפן":
 - זהה `intent="shop"` דרך `classify_lead` **מיד**, גם אם יש גם עניין בקורס.
 - הפנה לחנות: **https://propeller-drones.shop/**.
-- אמור: "לגבי {דגם} - אפשר לרכוש אותו אצלנו בחנות: propeller-drones.shop. \
+- אמור: "לגבי הדגם שהזכרת - אפשר לרכוש אותו אצלנו בחנות: propeller-drones.shop. \
   שני נציגים שונים מלווים את זה - אחד לחנות, אחד לאקדמיה. תרצה גם שיחה על \
   הרישיון והקורס, או רק על הרחפן עצמו?"
 
@@ -287,7 +287,11 @@ Avata, Agras, וכו') או אמר "רוצה לקנות רחפן / לרכוש ר
 
 
 def render_system_prompt(lead_state_description: str) -> str:
-    return SYSTEM_PROMPT_TEMPLATE.format(
-        videos_catalog=list_for_prompt(),
-        lead_state=lead_state_description,
+    # Explicit substitution instead of str.format() so any incidental
+    # curly-braces in Hebrew instructions (e.g. "{דגם}") don't crash
+    # rendering with a KeyError.
+    return (
+        SYSTEM_PROMPT_TEMPLATE
+        .replace("{videos_catalog}", list_for_prompt())
+        .replace("{lead_state}", lead_state_description)
     )
