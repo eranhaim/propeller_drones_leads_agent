@@ -246,13 +246,13 @@ def run_in_background_thread() -> None:
             scheduler.start()
             logger.info(
                 "[followup] scheduler started (every {}min, first={}h, "
-                "second={}h, max={} nudges, quiet {:02d}:00-{:02d}:00 Asia/Jerusalem)",
+                "second={}h, max={} nudges, active {:02d}:00-{:02d}:00 Asia/Jerusalem)",
                 settings.followup_interval_minutes,
                 settings.followup_first_hours,
                 settings.followup_second_hours,
                 settings.followup_max_nudges,
-                settings.followup_quiet_end_hour,
                 settings.followup_quiet_start_hour,
+                settings.followup_quiet_end_hour,
             )
         except Exception:
             logger.exception("[followup] scheduler failed to start")
