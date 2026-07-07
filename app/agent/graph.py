@@ -135,10 +135,20 @@ def handle_message(
     """
     logger.info("Handle message from {} ({} chars)", phone, len(text))
 
+    # ---- Transaction 1: persist the inbound message immediately. -----------
+    # If the agent invocation crashes below, we still have a durable record
+    # of the user's message in the DB. Losing the message means the sales
+    # team has no idea the lead reached out.
     with session_scope() as session:
         lead = repository.get_or_create_lead(session, phone=phone, name=sender_name)
         repository.add_message(session, lead, MessageRole.user, text)
-        session.flush()
+        lead_id = lead.id
+    # ---- Transaction 2: run the agent and persist the reply. ---------------
+    with session_scope() as session:
+        lead = session.get(Lead, lead_id)
+        if lead is None:
+            logger.error("Lead {} vanished between txns; aborting", lead_id)
+            return ""
 
         system_prompt = render_system_prompt(describe_state(lead))
         history_msgs = _history_as_messages(lead, session)

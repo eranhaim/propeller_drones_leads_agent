@@ -178,6 +178,37 @@ def _send_and_record(lead: Lead, nudge_number: int) -> bool:
     return True
 
 
+def _log_unanswered_user_messages(session) -> None:
+    """Loud WARNING for any lead whose most-recent message is from the user
+    and older than 90 seconds. Means the bot never replied -- usually a
+    crash or a dropped notification. We don't try to auto-reply here (the
+    context is stale) but the log line makes it obvious in monitoring."""
+    now = datetime.now(timezone.utc)
+    stale_cutoff = now - timedelta(seconds=90)
+
+    stale = session.execute(
+        select(Lead, Message)
+        .join(Message, Message.lead_id == Lead.id)
+        .where(
+            Message.created_at < stale_cutoff,
+            Message.id == select(Message.id)
+                .where(Message.lead_id == Lead.id)
+                .order_by(Message.created_at.desc())
+                .limit(1)
+                .scalar_subquery(),
+            Message.role == MessageRole.user,
+        )
+    ).all()
+
+    for lead, msg in stale:
+        age = int((now - msg.created_at).total_seconds())
+        logger.warning(
+            "[unanswered] lead {} ({}) has UNANSWERED user msg id={} "
+            "from {}s ago: {!r}",
+            lead.id, lead.phone, msg.id, age, (msg.content or "")[:120],
+        )
+
+
 def run_once() -> None:
     """One pass: pick eligible leads and send nudges. Safe to call from
     a scheduler tick or a manual admin command."""
@@ -187,6 +218,8 @@ def run_once() -> None:
 
     now = datetime.now(timezone.utc)
     with session_scope() as session:
+        _log_unanswered_user_messages(session)
+
         leads = _pick_leads_to_nudge(session, now)
         if not leads:
             logger.debug("[followup] no leads eligible for nudging")

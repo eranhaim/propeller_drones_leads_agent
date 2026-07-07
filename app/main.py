@@ -60,6 +60,10 @@ def _build_bot() -> GreenAPIBot:
     bot = GreenAPIBot(
         settings.green_api_instance_id,
         settings.green_api_token,
+        # Do NOT delete queued notifications on startup. If the bot crashed
+        # or was redeployed while a message was in flight, we still want to
+        # process it. Missing a lead's message = lost lead.
+        delete_notifications_at_startup=False,
     )
     register_handlers(bot)
     return bot
