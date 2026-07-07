@@ -2,12 +2,29 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Optional
 
 from loguru import logger
 
 from app.videos.catalog import Video
+
+# Human-feel typing simulation: never faster than 2s, never slower than 6s,
+# roughly one second per ~35 characters (a plausible typing speed). Keeps
+# the WhatsApp conversation from feeling robotic (instant replies) while
+# not making users wait forever on long answers.
+_TYPING_MIN_SECONDS = 2.0
+_TYPING_MAX_SECONDS = 6.0
+_TYPING_CHARS_PER_SECOND = 35.0
+
+
+def _typing_delay_for(text: str) -> float:
+    length = len(text or "")
+    if length <= 0:
+        return _TYPING_MIN_SECONDS
+    est = length / _TYPING_CHARS_PER_SECOND
+    return max(_TYPING_MIN_SECONDS, min(_TYPING_MAX_SECONDS, est))
 
 
 @dataclass
@@ -22,9 +39,15 @@ class ChatSender:
     api: object
     chat_id: str
 
-    def send_text(self, text: str) -> None:
+    def send_text(self, text: str, humanize: bool = True) -> None:
         if not text:
             return
+        if humanize:
+            # Re-fire typing indicator right before the wait, then sleep for a
+            # length-proportional delay so the "typing..." bubble stays up
+            # while the reply is "being typed". Feels like a person.
+            self.send_typing()
+            time.sleep(_typing_delay_for(text))
         try:
             self.api.sending.sendMessage(self.chat_id, text)  # type: ignore[attr-defined]
         except Exception:

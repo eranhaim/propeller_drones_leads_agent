@@ -130,6 +130,8 @@ def load_local_documents(directory: Path = KNOWLEDGE_DIR) -> List[Document]:
             doc.metadata["topic"] = "course_details"
         elif "ecommerce_store" in src or "store" in src:
             doc.metadata["topic"] = "shop"
+        elif "faq_from_leads" in src or "faq" in src:
+            doc.metadata["topic"] = "faq"
         else:
             doc.metadata.setdefault("topic", "documents")
         docs.append(doc)

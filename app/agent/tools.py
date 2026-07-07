@@ -31,6 +31,9 @@ def search_knowledge(query: str, topic: Optional[str] = None) -> str:
     - ``course_license`` -- commercial license focus (25kg vs 2000kg, CAAI exam).
     - ``courses`` -- general academy overview.
     - ``service_flight`` / ``service_washing`` -- commercial services offered.
+    - ``shop`` -- e-commerce store (drone models, pricing policy, DJI/Enterprise).
+    - ``faq`` -- FAQ from real leads (career, license, salary, licensing rules,
+      buying vs. flying, aftermath of the course).
     - ``about`` -- company overview / homepage.
     - ``general`` -- everything else.
     """
