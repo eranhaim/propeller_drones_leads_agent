@@ -34,6 +34,8 @@ def search_knowledge(query: str, topic: Optional[str] = None) -> str:
     - ``shop`` -- e-commerce store (drone models, pricing policy, DJI/Enterprise).
     - ``faq`` -- FAQ from real leads (career, license, salary, licensing rules,
       buying vs. flying, aftermath of the course).
+    - ``locations`` -- physical addresses of Propeller (Kokhav Yair HQ +
+      Latrun flight training center). Use when asked "where is the course?".
     - ``about`` -- company overview / homepage.
     - ``general`` -- everything else.
     """

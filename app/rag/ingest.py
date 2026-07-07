@@ -5,10 +5,13 @@ Run via ``python -m scripts.ingest_knowledge`` after configuring ``.env``.
 
 from __future__ import annotations
 
+import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Iterable, List
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
+import httpx
 from langchain_community.document_loaders import (
     DirectoryLoader,
     PyPDFLoader,
@@ -42,10 +45,130 @@ DEFAULT_CHUNK_OVERLAP = 200
 
 KNOWLEDGE_DIR = Path("data/knowledge")
 
+# E-commerce store (WooCommerce-based -- exposes sitemap.xml). We seed with
+# the homepage and try to enrich with product URLs discovered via sitemap.
+SHOP_BASE = "https://propeller-drones.shop"
+SHOP_SEED_PATHS: List[str] = [
+    "/",
+    "/shop/",
+]
+# Cap so a bloated catalog doesn't blow up ingest time or token cost.
+SHOP_MAX_URLS = 60
+
 
 def _website_urls() -> List[str]:
     base = get_settings().propeller_website_base.rstrip("/")
     return [urljoin(base + "/", path.lstrip("/")) for path in WEBSITE_PATHS]
+
+
+def _shop_urls() -> List[str]:
+    """Return URLs to scrape from the e-commerce store.
+
+    Strategy: seed with the homepage + /shop/ (always present on
+    WooCommerce), then try to enrich by fetching sitemap.xml. On WooCommerce
+    the sitemap lists every product and category URL. We keep only
+    product-like URLs and cap the total so ingest stays fast even if the
+    catalog grows to hundreds of items.
+    """
+    urls: List[str] = [urljoin(SHOP_BASE + "/", p.lstrip("/")) for p in SHOP_SEED_PATHS]
+    seen = set(urls)
+
+    for sitemap_path in (
+        "/sitemap.xml",
+        "/sitemap_index.xml",
+        "/product-sitemap.xml",
+    ):
+        try:
+            resp = httpx.get(urljoin(SHOP_BASE, sitemap_path), timeout=15)
+            resp.raise_for_status()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Shop sitemap {} not reachable: {}", sitemap_path, exc)
+            continue
+
+        try:
+            root = ET.fromstring(resp.text)
+        except ET.ParseError as exc:
+            logger.debug("Shop sitemap {} not valid XML: {}", sitemap_path, exc)
+            continue
+
+        # Sitemap XML uses a default namespace we need to strip for xpath ease.
+        found = [el.text for el in root.iter() if el.tag.endswith("loc") and el.text]
+
+        # Sitemap-index: recurse one level.
+        expanded: List[str] = []
+        for u in found:
+            if u.endswith(".xml"):
+                try:
+                    sub = httpx.get(u, timeout=15)
+                    sub.raise_for_status()
+                    sub_root = ET.fromstring(sub.text)
+                    expanded.extend(
+                        el.text for el in sub_root.iter()
+                        if el.tag.endswith("loc") and el.text
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("Sub-sitemap {} failed: {}", u, exc)
+            else:
+                expanded.append(u)
+
+        for u in expanded:
+            if not u:
+                continue
+            parsed = urlparse(u)
+            if parsed.netloc != urlparse(SHOP_BASE).netloc:
+                continue
+            path = parsed.path.rstrip("/")
+            # Skip noisy URLs: images, feeds, admin, cart/checkout, tags, authors.
+            if re.search(
+                r"/(cart|checkout|my-account|feed|wp-json|wp-content|wp-admin|"
+                r"\?add-to-cart|tag/|author/|search)",
+                u,
+            ):
+                continue
+            if not path:
+                continue
+            if u in seen:
+                continue
+            seen.add(u)
+            urls.append(u)
+
+        if len(urls) > 3:
+            # Got real content from this sitemap, no need to try the rest.
+            break
+
+    if len(urls) > SHOP_MAX_URLS:
+        logger.info(
+            "Shop yielded {} URLs; capping at {} to bound ingest cost",
+            len(urls), SHOP_MAX_URLS,
+        )
+        urls = urls[:SHOP_MAX_URLS]
+
+    return urls
+
+
+def load_shop_documents() -> List[Document]:
+    urls = _shop_urls()
+    if not urls:
+        return []
+    logger.info("Loading {} pages from propeller-drones.shop", len(urls))
+
+    loader = WebBaseLoader(
+        web_paths=urls,
+        requests_kwargs={"timeout": 30},
+        continue_on_failure=True,
+    )
+    try:
+        docs = loader.load()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Shop scrape failed: {}", exc)
+        return []
+
+    for doc in docs:
+        doc.metadata["origin"] = "shop"
+        doc.metadata["topic"] = "shop"
+
+    logger.info("Fetched {} shop documents", len(docs))
+    return docs
 
 
 def load_website_documents() -> List[Document]:
@@ -132,6 +255,8 @@ def load_local_documents(directory: Path = KNOWLEDGE_DIR) -> List[Document]:
             doc.metadata["topic"] = "shop"
         elif "faq_from_leads" in src or "faq" in src:
             doc.metadata["topic"] = "faq"
+        elif "locations" in src:
+            doc.metadata["topic"] = "locations"
         else:
             doc.metadata.setdefault("topic", "documents")
         docs.append(doc)
@@ -161,8 +286,9 @@ def chunk_documents(
 def ingest(reset: bool = False) -> int:
     """Full ingestion: load, split, embed, store. Returns number of chunks added."""
     website_docs = load_website_documents()
+    shop_docs = load_shop_documents()
     local_docs = load_local_documents()
-    all_docs = website_docs + local_docs
+    all_docs = website_docs + shop_docs + local_docs
 
     if not all_docs:
         logger.warning("No documents to ingest -- aborting")

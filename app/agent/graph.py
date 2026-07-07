@@ -43,6 +43,38 @@ _BOOKING_PROMISE_PATTERNS = [
 _BOOKING_PROMISE_RE = re.compile("|".join(_BOOKING_PROMISE_PATTERNS))
 
 
+# Trailing-filler lines the customer explicitly rejected as "חופר" (annoying).
+# The LLM tends to end nearly every reply with one of these — we sanitize
+# them out in post-processing as a hard safety net in addition to the prompt
+# rule. Applied line-by-line so real content that happens to contain the
+# phrase mid-sentence is left alone.
+_FILLER_PATTERNS = [
+    r"^\s*אם\s+יש\s+לך\s+שאלות\s+נוספות.*$",
+    r"^\s*אם\s+יש\s+לך\s+עוד\s+שאלות.*$",
+    r"^\s*אני\s+כאן\s+(?:בשבילך|לעזור|לרשותך|להסביר)\b.*$",
+    r"^\s*אני\s+זמין(?:ה)?\b.*$",
+    r"^\s*מוזמן(?:ת)?\s+לפנות\b.*$",
+    r"^\s*מקווה\s+שעזרתי\b.*$",
+    r"^\s*אשמח\s+לעזור\b.*$",
+    r"^\s*בשמחה\s+אענה\b.*$",
+    r"^\s*תרגיש(?:י)?\s+חופשי\b.*$",
+]
+_FILLER_RE = re.compile("|".join(_FILLER_PATTERNS))
+
+
+def _strip_filler(reply: str) -> str:
+    """Drop trailing filler-line sign-offs the customer flagged as annoying."""
+    if not reply:
+        return reply
+    lines = reply.splitlines()
+    # Trim from the end while trailing lines are filler or empty. Don't touch
+    # earlier lines -- if a real informative line happens to look like filler
+    # (unlikely) we'd rather keep it than lose real content.
+    while lines and (not lines[-1].strip() or _FILLER_RE.match(lines[-1])):
+        lines.pop()
+    return "\n".join(lines).rstrip()
+
+
 @lru_cache(maxsize=1)
 def _model() -> ChatOpenAI:
     settings = get_settings()
@@ -131,6 +163,7 @@ def handle_message(
         reply = _extract_reply(result) or (
             "רגע, אני חושב על זה... אפשר לחדד קצת מה מעניין אותך?"
         )
+        reply = _strip_filler(reply)
 
         _enforce_booking_promise(session, lead, reply)
 
