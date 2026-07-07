@@ -10,18 +10,37 @@ from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 from loguru import logger
 
+import re
+
 from app.agent.classifier import describe_state
 from app.agent.context import AgentContext, use_context
 from app.agent.prompts import render_system_prompt
 from app.agent.tools import ALL_TOOLS
 from app.config import get_settings
+from app.crm.client import mark_ready_for_call
 from app.db import repository
-from app.db.models import Lead, MessageRole
+from app.db.models import FunnelStage, Lead, MessageRole
 from app.db.session import session_scope
 from app.videos.catalog import Video
 
 
 HISTORY_LIMIT = 30
+
+# Phrases the LLM uses when it *claims* it booked a call. If we see any of
+# these in the outgoing reply but the tool never actually fired (funnel_stage
+# still not handed_off), we auto-invoke schedule_call to keep our promise to
+# the lead. Prevents the "bot promised a call, sales team never got it" bug.
+_BOOKING_PROMISE_PATTERNS = [
+    r"קבעתי\s+לך\s+שיחה",
+    r"תיאמתי\s+לך\s+שיחה",
+    r"קבענו\s+לך\s+שיחה",
+    r"תיאמנו\s+לך\s+שיחה",
+    r"הנציג\s+(?:שלנו\s+)?ייצור\s+איתך\s+קשר",
+    r"נציג\s+(?:שלנו\s+)?ייצור\s+איתך\s+קשר",
+    r"אעדכן\s+את\s+הנציג",
+    r"נציג\s+יחזור\s+אלי[יך]",
+]
+_BOOKING_PROMISE_RE = re.compile("|".join(_BOOKING_PROMISE_PATTERNS))
 
 
 @lru_cache(maxsize=1)
@@ -112,5 +131,61 @@ def handle_message(
         reply = _extract_reply(result) or (
             "רגע, אני חושב על זה... אפשר לחדד קצת מה מעניין אותך?"
         )
+
+        _enforce_booking_promise(session, lead, reply)
+
         repository.add_message(session, lead, MessageRole.assistant, reply)
         return reply
+
+
+def _enforce_booking_promise(session, lead: Lead, reply: str) -> None:
+    """If the reply promises a call but no call was actually scheduled, do it.
+
+    Prompt-only guardrails are not enough -- we saw the LLM tell leads "I
+    booked you a call" while never calling ``schedule_call``. That leaves
+    the lead expecting a rep who will never phone them. This is a
+    belt-and-suspenders safety net: if the outgoing text contains any of
+    the booking-promise phrases and the lead is not yet handed_off, we
+    push to LeadMe here and bump the stage. Loud logging either way so
+    we can measure how often the LLM is being sloppy.
+    """
+    if lead.funnel_stage == FunnelStage.handed_off:
+        return
+    if not _BOOKING_PROMISE_RE.search(reply or ""):
+        return
+
+    md = lead.lead_metadata or {}
+    slot = md.get("preferred_call_slot") or "any"
+
+    logger.warning(
+        "[booking-safety-net] Reply for lead {} promises a call but stage is "
+        "{!r}. Auto-invoking mark_ready_for_call (slot={}).",
+        lead.id, lead.funnel_stage.value, slot,
+    )
+
+    if not md.get("preferred_call_slot"):
+        repository.update_lead_metadata(session, lead, preferred_call_slot="any")
+
+    try:
+        ok = mark_ready_for_call(
+            lead,
+            note=f"safety-net auto-push (slot={slot})",
+        )
+        if ok:
+            repository.update_funnel_stage(session, lead, FunnelStage.handed_off)
+            logger.info(
+                "[booking-safety-net] Auto-pushed lead {} to LeadMe; stage -> handed_off",
+                lead.id,
+            )
+        else:
+            logger.error(
+                "[booking-safety-net] mark_ready_for_call returned False for lead {} "
+                "-- lead was promised a call but LeadMe push failed",
+                lead.id,
+            )
+    except Exception:
+        logger.exception(
+            "[booking-safety-net] mark_ready_for_call raised for lead {} "
+            "-- lead was promised a call but LeadMe push failed",
+            lead.id,
+        )

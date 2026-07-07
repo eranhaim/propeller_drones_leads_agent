@@ -98,7 +98,23 @@ def describe_state(lead: Lead) -> str:
         else "לא ידוע עדיין"
     )
 
+    # Loud banner when a call is already booked, so the LLM can't miss it and
+    # accidentally re-ask for a time slot.
+    banner = ""
+    if lead.funnel_stage == FunnelStage.handed_off:
+        banner = (
+            "⚠️ *שיחה עם נציג כבר תואמה!* אל תבקש חלון שעות מחדש. "
+            f"החלון שנקבע: {slot}. אם הליד שואל על השיחה - תזכיר לו שכבר "
+            "קבענו והנציג ייצור איתו קשר.\n"
+        )
+    elif md.get("preferred_call_slot"):
+        banner = (
+            "ℹ️ *חלון שעות כבר נלכד* (" + str(slot) + "). "
+            "אם הליד מסכים לשיחה - קרא ל-schedule_call() מיד; אל תשאל שוב על השעה.\n"
+        )
+
     return (
+        f"{banner}"
         f"מצב נוכחי של הליד:\n"
         f"- שם: {lead.name or 'לא ידוע'}\n"
         f"- רמת היכרות: {lead.familiarity_level.value} ({fam})\n"
