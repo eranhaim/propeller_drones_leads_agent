@@ -72,8 +72,11 @@ def main() -> None:
     _wait_for_db()
     _run_migrations()
 
-    from app.webhook.server import run_in_background_thread
-    run_in_background_thread()
+    from app.webhook.server import run_in_background_thread as _run_webhook
+    _run_webhook()
+
+    from app.followup.scheduler import run_in_background_thread as _run_followup
+    _run_followup()
 
     bot = _build_bot()
     logger.info("Bot ready -- entering polling loop")

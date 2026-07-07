@@ -65,6 +65,16 @@ class Settings(BaseSettings):
     leadme_status_id: str = Field("", alias="LEADME_STATUS_ID")
     leadme_source_label: str = Field("WhatsApp Bot", alias="LEADME_SOURCE_LABEL")
 
+    # Follow-up nudges (wake-up messages for silent leads)
+    followup_enabled: bool = Field(True, alias="FOLLOWUP_ENABLED")
+    followup_interval_minutes: int = Field(30, alias="FOLLOWUP_INTERVAL_MINUTES")
+    followup_first_hours: int = Field(24, alias="FOLLOWUP_FIRST_HOURS")
+    followup_second_hours: int = Field(72, alias="FOLLOWUP_SECOND_HOURS")
+    followup_max_nudges: int = Field(2, alias="FOLLOWUP_MAX_NUDGES")
+    # Polite window in Asia/Jerusalem local time -- inclusive start, exclusive end.
+    followup_quiet_start_hour: int = Field(9, alias="FOLLOWUP_QUIET_START_HOUR")
+    followup_quiet_end_hour: int = Field(20, alias="FOLLOWUP_QUIET_END_HOUR")
+
     # Logging
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
