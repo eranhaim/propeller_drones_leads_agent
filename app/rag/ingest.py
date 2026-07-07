@@ -79,7 +79,11 @@ def _shop_urls() -> List[str]:
         "/product-sitemap.xml",
     ):
         try:
-            resp = httpx.get(urljoin(SHOP_BASE, sitemap_path), timeout=15)
+            resp = httpx.get(
+                urljoin(SHOP_BASE, sitemap_path),
+                timeout=15,
+                follow_redirects=True,
+            )
             resp.raise_for_status()
         except Exception as exc:  # noqa: BLE001
             logger.debug("Shop sitemap {} not reachable: {}", sitemap_path, exc)
@@ -99,7 +103,7 @@ def _shop_urls() -> List[str]:
         for u in found:
             if u.endswith(".xml"):
                 try:
-                    sub = httpx.get(u, timeout=15)
+                    sub = httpx.get(u, timeout=15, follow_redirects=True)
                     sub.raise_for_status()
                     sub_root = ET.fromstring(sub.text)
                     expanded.extend(
@@ -309,6 +313,17 @@ def ingest(reset: bool = False) -> int:
             logger.warning("Reset failed (collection may not exist yet): {}", exc)
         vectorstore = get_vectorstore()
 
-    vectorstore.add_documents(chunks)
-    logger.info("Ingested {} chunks into Chroma", len(chunks))
-    return len(chunks)
+    # OpenAI's embedding endpoint has a hard 300k tokens-per-request cap.
+    # With the shop scrape we push into the ~500k-1M range easily, so we
+    # batch by chunk count. 50 chunks per batch keeps us well under the
+    # limit even with dense product-page content.
+    BATCH = 50
+    total = 0
+    for i in range(0, len(chunks), BATCH):
+        batch = chunks[i:i + BATCH]
+        vectorstore.add_documents(batch)
+        total += len(batch)
+        logger.info("Embedded {}/{} chunks", total, len(chunks))
+
+    logger.info("Ingested {} chunks into Chroma", total)
+    return total
