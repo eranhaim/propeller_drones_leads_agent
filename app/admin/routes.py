@@ -288,8 +288,10 @@ def _page(title: str, body: str) -> str:
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
 def leads_list(_: str = Depends(_require_admin)) -> str:
+    # Snapshot all data into plain dicts inside the session; ORM objects are
+    # detached after session_scope() exits so we can't touch attributes later.
+    snapshot: list[dict] = []
     with session_scope() as s:
-        # count messages per lead and last message preview
         rows = s.execute(
             select(
                 Lead,
@@ -301,9 +303,7 @@ def leads_list(_: str = Depends(_require_admin)) -> str:
             .order_by(func.max(Message.created_at).desc().nullslast())
         ).all()
 
-        # fetch last message text for each lead (small N, keep it simple)
-        last_msgs: dict[int, str] = {}
-        for lead, _c, _t in rows:
+        for lead, msg_count, last_at in rows:
             last = s.execute(
                 select(Message)
                 .where(Message.lead_id == lead.id)
@@ -313,19 +313,32 @@ def leads_list(_: str = Depends(_require_admin)) -> str:
             if last:
                 prefix = "👤 " if last.role == MessageRole.user else "🤖 "
                 text = (last.content or "").strip().replace("\n", " ")
-                last_msgs[lead.id] = prefix + text[:140]
+                last_msg = prefix + text[:140]
+            else:
+                last_msg = ""
 
-    total_leads = len(rows)
-    handed_off = sum(1 for lead, _c, _t in rows if lead.funnel_stage.value == "handed_off")
-    warm = sum(1 for lead, _c, _t in rows if lead.funnel_stage.value in ("warm", "ready_for_call"))
+            snapshot.append({
+                "id": lead.id,
+                "name": lead.name or "",
+                "phone": lead.phone or "",
+                "stage": lead.funnel_stage.value,
+                "msg_count": int(msg_count or 0),
+                "last_at": last_at,
+                "last_msg": last_msg,
+            })
+
+    total_leads = len(snapshot)
+    handed_off = sum(1 for r in snapshot if r["stage"] == "handed_off")
+    warm = sum(1 for r in snapshot if r["stage"] in ("warm", "ready_for_call"))
     active_24h_cutoff = datetime.now(timezone.utc).timestamp() - 24 * 3600
 
     def _is_recent(t: Optional[datetime]) -> bool:
         if not t:
             return False
-        return t.replace(tzinfo=timezone.utc if t.tzinfo is None else t.tzinfo).timestamp() > active_24h_cutoff
+        tt = t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+        return tt.timestamp() > active_24h_cutoff
 
-    active_24h = sum(1 for lead, _c, t in rows if _is_recent(t))
+    active_24h = sum(1 for r in snapshot if _is_recent(r["last_at"]))
 
     summary_html = f"""
     <div class="summary">
@@ -337,16 +350,17 @@ def leads_list(_: str = Depends(_require_admin)) -> str:
     """
 
     trs = []
-    for lead, msg_count, last_at in rows:
-        badge_color = STAGE_BADGE_COLOR.get(lead.funnel_stage.value, "#64748b")
+    for r in snapshot:
+        badge_color = STAGE_BADGE_COLOR.get(r["stage"], "#64748b")
+        name_html = _escape(r["name"]) if r["name"] else '<span style="color:#64748b">?</span>'
         trs.append(f"""
-        <tr onclick="location.href='/admin/leads/{lead.id}'">
-          <td class="name">{_escape(lead.name) or '<span style="color:#64748b">?</span>'}</td>
-          <td class="phone">{_escape(lead.phone)}</td>
-          <td><span class="badge" style="background:{badge_color}">{_escape(lead.funnel_stage.value)}</span></td>
-          <td class="count">{msg_count}</td>
-          <td class="last-msg">{_escape(last_msgs.get(lead.id, ''))}</td>
-          <td class="time">{_escape(_time_ago(last_at))}<br><span style="opacity:0.6">{_escape(_fmt_ts(last_at))}</span></td>
+        <tr onclick="location.href='/admin/leads/{r['id']}'">
+          <td class="name">{name_html}</td>
+          <td class="phone">{_escape(r['phone'])}</td>
+          <td><span class="badge" style="background:{badge_color}">{_escape(r['stage'])}</span></td>
+          <td class="count">{r['msg_count']}</td>
+          <td class="last-msg">{_escape(r['last_msg'])}</td>
+          <td class="time">{_escape(_time_ago(r['last_at']))}<br><span style="opacity:0.6">{_escape(_fmt_ts(r['last_at']))}</span></td>
         </tr>
         """)
 
@@ -367,21 +381,17 @@ def leads_list(_: str = Depends(_require_admin)) -> str:
 
 @router.get("/leads/{lead_id}", response_class=HTMLResponse)
 def lead_conversation(lead_id: int, _: str = Depends(_require_admin)) -> str:
+    import json as _json
+
+    lead_snapshot: dict = {}
+    msg_snapshots: list[dict] = []
+
     with session_scope() as s:
         lead = s.get(Lead, lead_id)
         if not lead:
             raise HTTPException(status_code=404, detail="Lead not found")
 
-        msgs = list(s.execute(
-            select(Message)
-            .where(Message.lead_id == lead_id)
-            .order_by(Message.created_at.asc())
-        ).scalars().all())
-
-        # Build lead snapshot before leaving session_scope (avoids detached-object issues)
         badge_color = STAGE_BADGE_COLOR.get(lead.funnel_stage.value, "#64748b")
-
-        import json as _json
         metadata_str = _json.dumps(lead.lead_metadata or {}, ensure_ascii=False, indent=2)
         videos_sent_str = ", ".join(lead.videos_sent or []) or "-"
 
@@ -398,31 +408,45 @@ def lead_conversation(lead_id: int, _: str = Depends(_require_admin)) -> str:
             "metadata_str": metadata_str,
         }
 
-        # Group messages by day (Asia/Jerusalem) for day-dividers
-        bubbles = []
-        last_day: Optional[str] = None
+        msgs = list(s.execute(
+            select(Message)
+            .where(Message.lead_id == lead_id)
+            .order_by(Message.created_at.asc())
+        ).scalars().all())
+
         for m in msgs:
-            created = m.created_at
-            if created.tzinfo is None:
-                created = created.replace(tzinfo=timezone.utc)
-            il = created.astimezone(IL)
-            day_key = il.strftime("%Y-%m-%d")
-            if day_key != last_day:
-                bubbles.append(
-                    f'<div class="day-divider">{il.strftime("%A, %d %B %Y")}</div>'
-                )
-                last_day = day_key
-
-            role_class = "user" if m.role == MessageRole.user else "assistant"
             nudge = m.msg_metadata.get("nudge") if isinstance(m.msg_metadata, dict) else None
-            extra = " nudge" if nudge else ""
-            time_str = il.strftime("%H:%M")
-            role_label = "User" if m.role == MessageRole.user else ("Bot · nudge #" + str(nudge) if nudge else "Bot")
+            msg_snapshots.append({
+                "id": m.id,
+                "role": "user" if m.role == MessageRole.user else "assistant",
+                "content": m.content or "",
+                "created_at": m.created_at,
+                "nudge": nudge,
+            })
 
-            content_html = _escape(m.content or "")
-            bubbles.append(f"""
-            <div class="bubble {role_class}{extra}">{content_html}<span class="meta">{_escape(role_label)} · {time_str} · #{m.id}</span></div>
-            """)
+    bubbles = []
+    last_day: Optional[str] = None
+    for m in msg_snapshots:
+        created = m["created_at"]
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        il = created.astimezone(IL)
+        day_key = il.strftime("%Y-%m-%d")
+        if day_key != last_day:
+            bubbles.append(
+                f'<div class="day-divider">{il.strftime("%A, %d %B %Y")}</div>'
+            )
+            last_day = day_key
+
+        role_class = m["role"]
+        nudge = m["nudge"]
+        extra = " nudge" if nudge else ""
+        time_str = il.strftime("%H:%M")
+        role_label = "User" if role_class == "user" else ("Bot · nudge #" + str(nudge) if nudge else "Bot")
+        content_html = _escape(m["content"])
+        bubbles.append(f"""
+        <div class="bubble {role_class}{extra}">{content_html}<span class="meta">{_escape(role_label)} · {time_str} · #{m['id']}</span></div>
+        """)
 
     ls = lead_snapshot
     body = f"""
