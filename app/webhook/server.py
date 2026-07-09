@@ -30,6 +30,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
 
+from app.admin.routes import router as admin_router
 from app.config import get_settings
 from app.webhook.opener import handle_new_lead
 
@@ -115,6 +116,7 @@ def _flatten_payload(raw: Any) -> Dict[str, Any]:
 
 
 app = FastAPI(title="Propeller Drones lead webhook", docs_url=None, redoc_url=None)
+app.include_router(admin_router)
 
 
 @app.get("/health")

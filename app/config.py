@@ -65,6 +65,10 @@ class Settings(BaseSettings):
     leadme_status_id: str = Field("", alias="LEADME_STATUS_ID")
     leadme_source_label: str = Field("WhatsApp Bot", alias="LEADME_SOURCE_LABEL")
 
+    # Admin UI (HTTP Basic auth for /admin routes)
+    admin_user: str = Field("", alias="ADMIN_USER")
+    admin_password: str = Field("", alias="ADMIN_PASSWORD")
+
     # Follow-up nudges (wake-up messages for silent leads)
     followup_enabled: bool = Field(True, alias="FOLLOWUP_ENABLED")
     followup_interval_minutes: int = Field(30, alias="FOLLOWUP_INTERVAL_MINUTES")
