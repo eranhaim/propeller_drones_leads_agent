@@ -493,6 +493,21 @@ def lead_conversation(lead_id: int, _: str = Depends(_require_admin)) -> str:
           <dt>Videos sent</dt><dd>{_escape(ls['videos_sent'])}</dd>
           <dt>Metadata</dt><dd><pre>{_escape(ls['metadata_str'])}</pre></dd>
         </dl>
+        <hr style="border:none;border-top:1px solid var(--border);margin:20px 0">
+        <h3 style="color:#dc2626">Danger zone</h3>
+        <p style="color:var(--text-dim);font-size:12px;margin:0 0 10px 0">
+          Wipe this lead + all messages from the DB. Use this to restart a
+          fresh conversation on the SAME WhatsApp number (e.g. for manual
+          QA). The next inbound message will create a brand-new lead.
+        </p>
+        <form method="post" action="/admin/leads/{ls['id']}/delete"
+              onsubmit="return confirm('Delete lead {_escape(ls['phone'])} and ALL {len(msg_snapshots)} messages? This cannot be undone.');">
+          <button type="submit"
+                  style="background:#dc2626;color:white;border:none;padding:8px 14px;
+                         border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">
+            Delete lead &amp; reset conversation
+          </button>
+        </form>
       </aside>
     </div>
     """
@@ -522,3 +537,23 @@ def mute_lead(lead_id: int, _: str = Depends(_require_admin)) -> RedirectRespons
 def unmute_lead(lead_id: int, _: str = Depends(_require_admin)) -> RedirectResponse:
     _set_muted(lead_id, False)
     return RedirectResponse(url=f"/admin/leads/{lead_id}", status_code=303)
+
+
+@router.post("/leads/{lead_id}/delete")
+def delete_lead(lead_id: int, _: str = Depends(_require_admin)) -> RedirectResponse:
+    """Hard-delete a lead and all its messages so the next inbound WhatsApp
+    from that number starts a completely fresh conversation. Intended for
+    manual QA of the opener/warm-up flow. Messages cascade via the
+    ondelete=CASCADE on Message.lead_id."""
+    from loguru import logger
+    with session_scope() as s:
+        lead = s.get(Lead, lead_id)
+        if not lead:
+            raise HTTPException(status_code=404, detail="Lead not found")
+        phone = lead.phone
+        s.delete(lead)
+        logger.warning(
+            "[admin] hard-deleted lead {} (phone={}) via /admin UI",
+            lead_id, phone,
+        )
+    return RedirectResponse(url="/admin", status_code=303)
