@@ -94,15 +94,15 @@ def _time_ago(dt: Optional[datetime]) -> str:
     delta = datetime.now(timezone.utc) - dt
     secs = int(delta.total_seconds())
     if secs < 60:
-        return f"{secs}s ago"
+        return f"לפני {secs} שנ'"
     mins = secs // 60
     if mins < 60:
-        return f"{mins}m ago"
+        return f"לפני {mins} דק'"
     hours = mins // 60
     if hours < 24:
-        return f"{hours}h ago"
+        return f"לפני {hours} שע'"
     days = hours // 24
-    return f"{days}d ago"
+    return f"לפני {days} ימים"
 
 
 STAGE_BADGE_COLOR = {
@@ -111,6 +111,21 @@ STAGE_BADGE_COLOR = {
     "warm": "#f59e0b",
     "ready_for_call": "#10b981",
     "handed_off": "#8b5cf6",
+}
+
+STAGE_LABEL_HE = {
+    "new": "חדש",
+    "engaged": "מעורב",
+    "warm": "חם",
+    "ready_for_call": "בשל לשיחה",
+    "handed_off": "הועבר",
+}
+
+FAMILIARITY_LABEL_HE = {
+    "unknown": "לא ידוע",
+    "beginner": "מתחיל",
+    "aware": "מודע",
+    "experienced": "מנוסה",
 }
 
 
@@ -290,7 +305,7 @@ table.leads {
 
 def _page(title: str, body: str, *, back_href: Optional[str] = None) -> str:
     back_btn = (
-        f'<a class="hdr-btn" href="{_escape(back_href)}">← Back to leads</a>'
+        f'<a class="hdr-btn" href="{_escape(back_href)}">→ חזרה לרשימת הלידים</a>'
         if back_href else ""
     )
     return f"""<!DOCTYPE html>
@@ -303,11 +318,11 @@ def _page(title: str, body: str, *, back_href: Optional[str] = None) -> str:
 </head>
 <body>
 <header>
-  <h1><span class="dot"></span>Propeller Drones · Admin</h1>
+  <h1><span class="dot"></span>פרופלור דרונס · ניהול</h1>
   <div class="hdr-actions">
     <span class="meta">{_escape(title)}</span>
     {back_btn}
-    <a class="hdr-btn danger" href="/admin/logout">Log out</a>
+    <a class="hdr-btn danger" href="/admin/logout">יציאה</a>
   </div>
 </header>
 <main>{body}</main>
@@ -377,32 +392,34 @@ def leads_list(_: str = Depends(_require_admin)) -> str:
 
     summary_html = f"""
     <div class="summary">
-      <div class="stat"><div class="num">{total_leads}</div><div class="lbl">Total Leads</div></div>
-      <div class="stat"><div class="num">{active_24h}</div><div class="lbl">Active (24h)</div></div>
-      <div class="stat"><div class="num">{warm}</div><div class="lbl">Warm / Ready</div></div>
-      <div class="stat"><div class="num">{handed_off}</div><div class="lbl">Handed off</div></div>
+      <div class="stat"><div class="num">{total_leads}</div><div class="lbl">סה&quot;כ לידים</div></div>
+      <div class="stat"><div class="num">{active_24h}</div><div class="lbl">פעילים ב-24ש'</div></div>
+      <div class="stat"><div class="num">{warm}</div><div class="lbl">חמים · בשלים</div></div>
+      <div class="stat"><div class="num">{handed_off}</div><div class="lbl">הועברו למכירות</div></div>
     </div>
     """
 
     trs = []
     for r in snapshot:
         badge_color = STAGE_BADGE_COLOR.get(r["stage"], "#64748b")
+        stage_label = STAGE_LABEL_HE.get(r["stage"], r["stage"])
         name_html = _escape(r["name"]) if r["name"] else '<span style="color:#64748b">?</span>'
         mute_pill = (
-            '<span class="badge" style="background:#dc2626;margin-inline-start:6px">BOT OFF</span>'
+            '<span class="badge" style="background:#dc2626;margin-inline-start:6px">בוט מושתק</span>'
             if r["muted"] else ""
         )
         haystack = " ".join([
             r["name"] or "",
             r["phone"] or "",
             r["stage"] or "",
+            stage_label,
             r["last_msg"] or "",
         ]).lower()
         trs.append(f"""
         <tr data-search="{_escape(haystack)}" onclick="location.href='/admin/leads/{r['id']}'">
           <td class="name">{name_html}{mute_pill}</td>
           <td class="phone">{_escape(r['phone'])}</td>
-          <td><span class="badge" style="background:{badge_color}">{_escape(r['stage'])}</span></td>
+          <td><span class="badge" style="background:{badge_color}">{_escape(stage_label)}</span></td>
           <td class="count">{r['msg_count']}</td>
           <td class="last-msg">{_escape(r['last_msg'])}</td>
           <td class="time">{_escape(_time_ago(r['last_at']))}<br><span style="opacity:0.6">{_escape(_fmt_ts(r['last_at']))}</span></td>
@@ -412,9 +429,9 @@ def leads_list(_: str = Depends(_require_admin)) -> str:
     search_html = f"""
     <div class="searchbar">
       <input id="lead-search" type="search" autofocus
-             placeholder="Search by name, phone, stage, or last message..."
+             placeholder="חפש לפי שם, טלפון, שלב, או הודעה אחרונה..."
              oninput="filterLeads(this.value)">
-      <span class="count" id="lead-count">{total_leads} / {total_leads}</span>
+      <span class="count" id="lead-count">{total_leads} מתוך {total_leads}</span>
     </div>
     <script>
     function filterLeads(q) {{
@@ -427,7 +444,7 @@ def leads_list(_: str = Depends(_require_admin)) -> str:
         r.classList.toggle('hidden-row', !match);
         if (match) shown++;
       }});
-      document.getElementById('lead-count').textContent = shown + ' / ' + rows.length;
+      document.getElementById('lead-count').textContent = shown + ' מתוך ' + rows.length;
     }}
     document.addEventListener('keydown', e => {{
       if (e.key === '/' && document.activeElement.tagName !== 'INPUT') {{
@@ -442,15 +459,15 @@ def leads_list(_: str = Depends(_require_admin)) -> str:
     <table class="leads">
       <thead>
         <tr>
-          <th>Name</th><th>Phone</th><th>Stage</th><th style="text-align:right"># msgs</th>
-          <th>Last message</th><th>Last activity (IL)</th>
+          <th>שם</th><th>טלפון</th><th>שלב</th><th style="text-align:right">הודעות</th>
+          <th>הודעה אחרונה</th><th>פעילות אחרונה (שעון ישראל)</th>
         </tr>
       </thead>
-      <tbody>{''.join(trs) or '<tr><td colspan="6" style="padding:40px;text-align:center;color:#64748b">No leads yet.</td></tr>'}</tbody>
+      <tbody>{''.join(trs) or '<tr><td colspan="6" style="padding:40px;text-align:center;color:#64748b">אין לידים עדיין.</td></tr>'}</tbody>
     </table>
     """
 
-    return _page(f"Leads · {total_leads}", body)
+    return _page(f"לידים · {total_leads}", body)
 
 
 @router.get("/leads/{lead_id}", response_class=HTMLResponse)
@@ -517,71 +534,81 @@ def lead_conversation(lead_id: int, _: str = Depends(_require_admin)) -> str:
         nudge = m["nudge"]
         extra = " nudge" if nudge else ""
         time_str = il.strftime("%H:%M")
-        role_label = "User" if role_class == "user" else ("Bot · nudge #" + str(nudge) if nudge else "Bot")
+        role_label = "לקוח" if role_class == "user" else (
+            "בוט · תזכורת #" + str(nudge) if nudge else "בוט"
+        )
         content_html = _escape(m["content"])
         bubbles.append(f"""
         <div class="bubble {role_class}{extra}">{content_html}<span class="meta">{_escape(role_label)} · {time_str} · #{m['id']}</span></div>
         """)
 
     ls = lead_snapshot
+    stage_label = STAGE_LABEL_HE.get(ls["stage"], ls["stage"])
+    familiarity_label = FAMILIARITY_LABEL_HE.get(ls["familiarity"], ls["familiarity"])
 
     if ls["muted"]:
         bot_pill = (
-            '<span class="badge" style="background:#dc2626">BOT OFF</span>'
+            '<span class="badge" style="background:#dc2626">בוט מושתק</span>'
         )
         toggle_action = f"/admin/leads/{ls['id']}/unmute"
-        toggle_label = "Resume bot"
+        toggle_label = "הפעל בוט מחדש"
         toggle_bg = "#10b981"
     else:
         bot_pill = (
-            '<span class="badge" style="background:#10b981">BOT ON</span>'
+            '<span class="badge" style="background:#10b981">בוט פעיל</span>'
         )
         toggle_action = f"/admin/leads/{ls['id']}/mute"
-        toggle_label = "Pause bot (I'll take over)"
+        toggle_label = "השתק בוט (אני משתלט)"
         toggle_bg = "#dc2626"
+
+    # JS confirm: single-quotes in JS + escaped quote for the alert message
+    confirm_msg = (
+        f"למחוק את הליד {ls['phone']} ואת כל {len(msg_snapshots)} ההודעות? "
+        "פעולה זו אינה הפיכה."
+    ).replace("'", "\\'")
 
     body = f"""
     <div class="conv-wrap">
       <div class="chat">
-        {''.join(bubbles) or '<p style="color:#64748b">No messages yet.</p>'}
+        {''.join(bubbles) or '<p style="color:#64748b">אין הודעות עדיין.</p>'}
       </div>
       <aside class="sidepanel">
-        <a class="back" href="/admin">← All leads</a>
-        <h3>{_escape(ls['name']) or '(no name)'}</h3>
+        <a class="back" href="/admin">→ כל הלידים</a>
+        <h3>{_escape(ls['name']) or '(ללא שם)'}</h3>
         <dl>
-          <dt>Bot</dt><dd>{bot_pill}
+          <dt>בוט</dt><dd>{bot_pill}
             <form method="post" action="{toggle_action}" style="display:inline;margin-inline-start:8px">
               <button type="submit" style="background:{toggle_bg};color:white;border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">{_escape(toggle_label)}</button>
             </form>
           </dd>
-          <dt>Phone</dt><dd style="font-family:ui-monospace">{_escape(ls['phone'])}</dd>
-          <dt>Stage</dt><dd><span class="badge" style="background:{ls['badge_color']}">{_escape(ls['stage'])}</span></dd>
-          <dt>Familiarity</dt><dd>{_escape(ls['familiarity'])}</dd>
-          <dt>Created</dt><dd>{_escape(ls['created_at'])}</dd>
-          <dt>Last message</dt><dd>{_escape(ls['last_message_at'])}</dd>
-          <dt>Videos sent</dt><dd>{_escape(ls['videos_sent'])}</dd>
-          <dt>Metadata</dt><dd><pre>{_escape(ls['metadata_str'])}</pre></dd>
+          <dt>טלפון</dt><dd style="font-family:ui-monospace">{_escape(ls['phone'])}</dd>
+          <dt>שלב</dt><dd><span class="badge" style="background:{ls['badge_color']}">{_escape(stage_label)}</span></dd>
+          <dt>רמת היכרות</dt><dd>{_escape(familiarity_label)}</dd>
+          <dt>נוצר</dt><dd>{_escape(ls['created_at'])}</dd>
+          <dt>הודעה אחרונה</dt><dd>{_escape(ls['last_message_at'])}</dd>
+          <dt>סרטונים שנשלחו</dt><dd>{_escape(ls['videos_sent'])}</dd>
+          <dt>מטא-דאטה</dt><dd><pre>{_escape(ls['metadata_str'])}</pre></dd>
         </dl>
         <hr style="border:none;border-top:1px solid var(--border);margin:20px 0">
-        <h3 style="color:#dc2626">Danger zone</h3>
+        <h3 style="color:#dc2626">אזור מסוכן</h3>
         <p style="color:var(--text-dim);font-size:12px;margin:0 0 10px 0">
-          Wipe this lead + all messages from the DB. Use this to restart a
-          fresh conversation on the SAME WhatsApp number (e.g. for manual
-          QA). The next inbound message will create a brand-new lead.
+          מחיקת הליד וכל ההודעות שלו כדי להתחיל שיחה חדשה מאפס עם אותו
+          מספר וואטסאפ (שימושי לבדיקה ידנית). ההודעה הנכנסת הבאה תיצור
+          ליד חדש לגמרי.
         </p>
         <form method="post" action="/admin/leads/{ls['id']}/delete"
-              onsubmit="return confirm('Delete lead {_escape(ls['phone'])} and ALL {len(msg_snapshots)} messages? This cannot be undone.');">
+              onsubmit="return confirm('{confirm_msg}');">
           <button type="submit"
                   style="background:#dc2626;color:white;border:none;padding:8px 14px;
                          border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">
-            Delete lead &amp; reset conversation
+            מחק ליד ואפס שיחה
           </button>
         </form>
       </aside>
     </div>
     """
     return _page(
-        f"Lead {ls['id']} · {ls['name'] or ls['phone']}",
+        f"ליד {ls['id']} · {ls['name'] or ls['phone']}",
         body,
         back_href="/admin",
     )
@@ -625,17 +652,18 @@ def logout() -> HTMLResponse:
     instead of a raw browser error.
     """
     html_body = """
-    <div style="max-width:420px;margin:80px auto;text-align:center;
+    <div dir="rtl" style="max-width:420px;margin:80px auto;text-align:center;
                 background:#1e293b;padding:32px;border-radius:12px;
-                border:1px solid #334155;color:#f1f5f9;font-family:sans-serif">
-      <h2 style="margin:0 0 12px 0">Logged out</h2>
+                border:1px solid #334155;color:#f1f5f9;
+                font-family:'Heebo','Assistant',sans-serif">
+      <h2 style="margin:0 0 12px 0">התנתקת מהמערכת</h2>
       <p style="color:#94a3b8;margin:0 0 20px 0">
-        Your browser has been asked to forget the admin credentials.
+        הדפדפן התבקש לשכוח את פרטי הכניסה של הניהול.
       </p>
       <a href="/admin/"
          style="display:inline-block;padding:10px 18px;background:#38bdf8;
                 color:#0f172a;border-radius:6px;text-decoration:none;
-                font-weight:600">Log in again</a>
+                font-weight:600">התחבר שוב</a>
     </div>
     """
     return HTMLResponse(

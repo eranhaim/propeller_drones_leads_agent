@@ -191,7 +191,7 @@ def send_video(video_id: str, caption: Optional[str] = None) -> str:
     # Track webinar-specific send time so the follow-up scheduler can send
     # a "did you watch?" nudge tailored to the webinar rather than the
     # generic silence nudge.
-    if video.id == "propeller_webinar_full_55min":
+    if video.id == "course_webinar_full":
         from datetime import datetime, timezone as _tz
         repository.update_lead_metadata(
             ctx.session, ctx.lead,

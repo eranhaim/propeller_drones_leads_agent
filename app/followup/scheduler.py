@@ -42,6 +42,19 @@ from app.db.session import session_scope
 
 ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 
+# Belt-and-suspenders: any of these captured on a lead means "the lead
+# already committed to a call window" -- we skip nudging regardless of
+# funnel_stage. This closes the gap the customer flagged where a nudge
+# fired the day after a call was booked, because the schedule_call tool
+# never actually ran (or ran but the transaction lost) so stage stayed
+# != handed_off.
+_BOOKED_SLOTS = {"9-12", "12-15", "15-18", "any"}
+
+
+def _lead_already_booked(md: dict) -> bool:
+    slot = (md.get("preferred_call_slot") or "").strip().lower()
+    return slot in _BOOKED_SLOTS
+
 
 # --- nudge copy ---------------------------------------------------------
 # Kept as canned Hebrew templates: safe, cheap, and predictable. If we
@@ -138,6 +151,8 @@ def _pick_webinar_followups(session, now: datetime) -> list[Lead]:
     picks: list[Lead] = []
     for lead in candidates:
         md = dict(lead.lead_metadata or {})
+        if _lead_already_booked(md):
+            continue
         webinar_iso = md.get("webinar_sent_at")
         if not webinar_iso:
             continue
@@ -194,6 +209,11 @@ def _pick_leads_to_nudge(session, now: datetime) -> list[Lead]:
     picks: list[Lead] = []
     for lead in candidates:
         md = dict(lead.lead_metadata or {})
+        if _lead_already_booked(md):
+            # Customer flag: don't nudge a lead who already gave us a call
+            # window -- even if funnel_stage somehow didn't advance to
+            # handed_off. If they booked, they're the salesman's problem now.
+            continue
         nudges_sent = int(md.get("nudge_count", 0) or 0)
         if nudges_sent >= max_nudges:
             continue
