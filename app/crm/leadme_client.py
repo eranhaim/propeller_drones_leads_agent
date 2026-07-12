@@ -97,6 +97,13 @@ def _build_insert_payload(lead: Lead, note: Optional[str]) -> Dict[str, str]:
     if lead.videos_sent:
         note_parts.append(f"סרטונים שנשלחו: {', '.join(lead.videos_sent)}")
 
+    tag_parts: list[str] = []
+    if settings.leadme_source_label:
+        tag_parts.append(settings.leadme_source_label)
+    slot = (md.get("preferred_call_slot") or "").strip()
+    if slot and slot.lower() != "none":
+        tag_parts.append(f"חלון: {slot}")
+
     payload: Dict[str, str] = {
         "action": "new_lead",
         "fullname": display or lead.phone or "",
@@ -105,7 +112,7 @@ def _build_insert_payload(lead: Lead, note: Optional[str]) -> Dict[str, str]:
         "phone": lead.phone or "",
         "email": md.get("email") or "",
         "comment": " | ".join(note_parts),
-        "tags": settings.leadme_source_label,
+        "tags": ",".join(tag_parts),
         "businesscategory": md.get("industry") or "",
         "company": md.get("company") or "",
     }
@@ -189,6 +196,8 @@ def push_lead(lead: Lead, note: Optional[str] = None) -> bool:
             "status": status_val,
             "comment": payload.get("comment", ""),
         }
+        if payload.get("tags"):
+            upd_payload["tags"] = payload["tags"]
         ok2, detail2 = _post(update_url, upd_payload)
         if not ok2:
             logger.warning(
