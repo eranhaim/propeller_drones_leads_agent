@@ -103,9 +103,9 @@ def describe_state(lead: Lead) -> str:
     banner = ""
     if lead.funnel_stage == FunnelStage.handed_off:
         banner = (
-            "⚠️ *שיחה עם נציג כבר תואמה!* אל תבקש חלון שעות מחדש. "
+            "⚠️ *שיחה עם יועץ לימודים כבר תואמה!* אל תבקש חלון שעות מחדש. "
             f"החלון שנקבע: {slot}. אם הליד שואל על השיחה - תזכיר לו שכבר "
-            "קבענו והנציג ייצור איתו קשר.\n"
+            "קבענו והיועץ ייצור איתו קשר.\n"
         )
     elif md.get("preferred_call_slot"):
         banner = (

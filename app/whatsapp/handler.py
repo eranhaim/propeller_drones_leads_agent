@@ -13,6 +13,9 @@ from whatsapp_chatbot_python import GreenAPIBot, Notification
 
 from app.agent.graph import handle_message
 from app.config import get_settings
+from app.db import repository
+from app.db.models import MessageRole
+from app.db.session import session_scope
 from app.whatsapp.sender import ChatSender
 
 
@@ -80,6 +83,22 @@ def register_handlers(bot: GreenAPIBot) -> None:
             logger.debug("Notification with no extractable text, skipping")
             return
 
+        # Human-takeover: if an admin muted the bot for this lead we still
+        # persist the inbound message so the human sees it in the admin UI,
+        # but we do NOT invoke the agent or send anything back.
+        with session_scope() as session:
+            lead = repository.get_or_create_lead(
+                session, phone=phone, name=sender_name,
+            )
+            if lead.bot_muted:
+                repository.add_message(session, lead, MessageRole.user, text)
+                logger.info(
+                    "[mute] lead {} ({}) is muted; recorded inbound msg but "
+                    "skipping agent + reply.",
+                    lead.id, phone,
+                )
+                return
+
         sender = ChatSender(api=notification.api, chat_id=chat_id)
         sender.send_typing()
 
@@ -94,7 +113,7 @@ def register_handlers(bot: GreenAPIBot) -> None:
             logger.exception("Failed to process message from {}", phone)
             reply = (
                 "סליחה, יש לי כרגע תקלה. אנסה שוב תוך רגע - "
-                "או שאפשר להשאיר טלפון ונציג יחזור אליך."
+                "או שאפשר להשאיר טלפון ויועץ יחזור אליך."
             )
 
         if reply:

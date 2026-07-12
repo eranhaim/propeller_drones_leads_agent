@@ -28,7 +28,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from sqlalchemy import func, select
 
@@ -322,6 +322,7 @@ def leads_list(_: str = Depends(_require_admin)) -> str:
                 "name": lead.name or "",
                 "phone": lead.phone or "",
                 "stage": lead.funnel_stage.value,
+                "muted": bool(lead.bot_muted),
                 "msg_count": int(msg_count or 0),
                 "last_at": last_at,
                 "last_msg": last_msg,
@@ -353,9 +354,13 @@ def leads_list(_: str = Depends(_require_admin)) -> str:
     for r in snapshot:
         badge_color = STAGE_BADGE_COLOR.get(r["stage"], "#64748b")
         name_html = _escape(r["name"]) if r["name"] else '<span style="color:#64748b">?</span>'
+        mute_pill = (
+            '<span class="badge" style="background:#dc2626;margin-inline-start:6px">BOT OFF</span>'
+            if r["muted"] else ""
+        )
         trs.append(f"""
         <tr onclick="location.href='/admin/leads/{r['id']}'">
-          <td class="name">{name_html}</td>
+          <td class="name">{name_html}{mute_pill}</td>
           <td class="phone">{_escape(r['phone'])}</td>
           <td><span class="badge" style="background:{badge_color}">{_escape(r['stage'])}</span></td>
           <td class="count">{r['msg_count']}</td>
@@ -402,6 +407,7 @@ def lead_conversation(lead_id: int, _: str = Depends(_require_admin)) -> str:
             "stage": lead.funnel_stage.value,
             "badge_color": badge_color,
             "familiarity": lead.familiarity_level.value,
+            "muted": bool(lead.bot_muted),
             "created_at": _fmt_ts(lead.created_at),
             "last_message_at": _fmt_ts(lead.last_message_at),
             "videos_sent": videos_sent_str,
@@ -449,6 +455,22 @@ def lead_conversation(lead_id: int, _: str = Depends(_require_admin)) -> str:
         """)
 
     ls = lead_snapshot
+
+    if ls["muted"]:
+        bot_pill = (
+            '<span class="badge" style="background:#dc2626">BOT OFF</span>'
+        )
+        toggle_action = f"/admin/leads/{ls['id']}/unmute"
+        toggle_label = "Resume bot"
+        toggle_bg = "#10b981"
+    else:
+        bot_pill = (
+            '<span class="badge" style="background:#10b981">BOT ON</span>'
+        )
+        toggle_action = f"/admin/leads/{ls['id']}/mute"
+        toggle_label = "Pause bot (I'll take over)"
+        toggle_bg = "#dc2626"
+
     body = f"""
     <div class="conv-wrap">
       <div class="chat">
@@ -458,6 +480,11 @@ def lead_conversation(lead_id: int, _: str = Depends(_require_admin)) -> str:
         <a class="back" href="/admin">← All leads</a>
         <h3>{_escape(ls['name']) or '(no name)'}</h3>
         <dl>
+          <dt>Bot</dt><dd>{bot_pill}
+            <form method="post" action="{toggle_action}" style="display:inline;margin-inline-start:8px">
+              <button type="submit" style="background:{toggle_bg};color:white;border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">{_escape(toggle_label)}</button>
+            </form>
+          </dd>
           <dt>Phone</dt><dd style="font-family:ui-monospace">{_escape(ls['phone'])}</dd>
           <dt>Stage</dt><dd><span class="badge" style="background:{ls['badge_color']}">{_escape(ls['stage'])}</span></dd>
           <dt>Familiarity</dt><dd>{_escape(ls['familiarity'])}</dd>
@@ -470,3 +497,28 @@ def lead_conversation(lead_id: int, _: str = Depends(_require_admin)) -> str:
     </div>
     """
     return _page(f"Lead {ls['id']} · {ls['name'] or ls['phone']}", body)
+
+
+def _set_muted(lead_id: int, muted: bool) -> None:
+    from loguru import logger
+    with session_scope() as s:
+        lead = s.get(Lead, lead_id)
+        if not lead:
+            raise HTTPException(status_code=404, detail="Lead not found")
+        lead.bot_muted = muted
+        logger.info(
+            "[admin] lead {} bot_muted -> {} (via /admin UI)",
+            lead_id, muted,
+        )
+
+
+@router.post("/leads/{lead_id}/mute")
+def mute_lead(lead_id: int, _: str = Depends(_require_admin)) -> RedirectResponse:
+    _set_muted(lead_id, True)
+    return RedirectResponse(url=f"/admin/leads/{lead_id}", status_code=303)
+
+
+@router.post("/leads/{lead_id}/unmute")
+def unmute_lead(lead_id: int, _: str = Depends(_require_admin)) -> RedirectResponse:
+    _set_muted(lead_id, False)
+    return RedirectResponse(url=f"/admin/leads/{lead_id}", status_code=303)

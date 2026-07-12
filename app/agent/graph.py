@@ -35,10 +35,9 @@ _BOOKING_PROMISE_PATTERNS = [
     r"תיאמתי\s+לך\s+שיחה",
     r"קבענו\s+לך\s+שיחה",
     r"תיאמנו\s+לך\s+שיחה",
-    r"הנציג\s+(?:שלנו\s+)?ייצור\s+איתך\s+קשר",
-    r"נציג\s+(?:שלנו\s+)?ייצור\s+איתך\s+קשר",
-    r"אעדכן\s+את\s+הנציג",
-    r"נציג\s+יחזור\s+אלי[יך]",
+    r"(?:יועץ|נציג)(?:\s+לימודים)?(?:\s+שלנו)?\s+ייצור\s+איתך\s+קשר",
+    r"אעדכן\s+את\s+(?:יועץ|הנציג)",
+    r"(?:יועץ|נציג)\s+יחזור\s+אלי[יך]",
 ]
 _BOOKING_PROMISE_RE = re.compile("|".join(_BOOKING_PROMISE_PATTERNS))
 
@@ -60,6 +59,30 @@ _FILLER_PATTERNS = [
     r"^\s*תרגיש(?:י)?\s+חופשי\b.*$",
 ]
 _FILLER_RE = re.compile("|".join(_FILLER_PATTERNS))
+
+
+_HEBREW_CHAR_RE = re.compile(r"[\u0590-\u05FF]")
+
+
+def _looks_like_english(reply: str) -> bool:
+    """Return True if the reply is mostly non-Hebrew and long enough to matter.
+
+    Customer flagged: 'הבוט עונה באנגלית כשהלקוח כותב באנגלית'. The FB
+    campaign auto-DMs some leads in English, the LLM mirrors the language,
+    and the customer wants Hebrew replies always. This heuristic catches
+    that case as a hard safety net on top of the prompt rule.
+    """
+    if not reply:
+        return False
+    trimmed = reply.strip()
+    if len(trimmed) < 20:
+        # Very short replies (emojis, "ok") aren't worth re-running for.
+        return False
+    hebrew_chars = len(_HEBREW_CHAR_RE.findall(trimmed))
+    letter_chars = sum(1 for c in trimmed if c.isalpha())
+    if letter_chars == 0:
+        return False
+    return (hebrew_chars / letter_chars) < 0.15
 
 
 def _strip_filler(reply: str) -> str:
@@ -165,14 +188,59 @@ def handle_message(
                 logger.exception("Agent invocation failed for lead {}", lead.id)
                 fallback = (
                     "סליחה, יש לי כרגע בעיה קטנה בצד שלי. "
-                    "אני אחזור אליך תוך דקה - או שכבר אפשר לקבוע שיחה עם יועץ?"
+                    "אני אחזור אליך תוך דקה - או שכבר אפשר לקבוע שיחה עם יועץ לימודים?"
                 )
                 repository.add_message(session, lead, MessageRole.assistant, fallback)
                 return fallback
 
-        reply = _extract_reply(result) or (
-            "רגע, אני חושב על זה... אפשר לחדד קצת מה מעניין אותך?"
-        )
+            reply = _extract_reply(result) or (
+                "רגע, אני חושב על זה... אפשר לחדד קצת מה מעניין אותך?"
+            )
+
+            # Hebrew safety net: if the reply came back mostly in English
+            # (or another non-Hebrew script) despite the prompt rule, run
+            # the agent ONCE more with an explicit "reply in Hebrew" nudge.
+            if _looks_like_english(reply):
+                logger.warning(
+                    "[hebrew-safety-net] lead {} got non-Hebrew reply "
+                    "({} chars); retrying with Hebrew reminder",
+                    lead.id, len(reply),
+                )
+                retry_messages = list(input_messages) + [
+                    AIMessage(content=reply),
+                    HumanMessage(content=(
+                        "תזכורת מערכת: תמיד ענה בעברית בלבד, גם אם הליד "
+                        "כתב באנגלית. תכתוב מחדש את התשובה האחרונה שלך "
+                        "בעברית תקנית ונקייה, בלי לתרגם לאנגלית ובלי "
+                        "לכתוב את שתי השפות."
+                    )),
+                ]
+                try:
+                    retry_result = _agent().invoke({"messages": retry_messages})
+                    retry_reply = _extract_reply(retry_result)
+                    if retry_reply and not _looks_like_english(retry_reply):
+                        reply = retry_reply
+                        logger.info(
+                            "[hebrew-safety-net] retry succeeded for lead {}",
+                            lead.id,
+                        )
+                    else:
+                        logger.error(
+                            "[hebrew-safety-net] retry still non-Hebrew for "
+                            "lead {}; falling back to canned Hebrew reply",
+                            lead.id,
+                        )
+                        reply = (
+                            "היי, אצלנו בפרופלור דרונס אנחנו מדברים בעברית 🙂 "
+                            "תוכל לספר לי בעברית מה מעניין אותך - קורס, "
+                            "רחפן, או שירות מסחרי?"
+                        )
+                except Exception:
+                    logger.exception(
+                        "[hebrew-safety-net] retry raised for lead {}",
+                        lead.id,
+                    )
+
         reply = _strip_filler(reply)
 
         _enforce_booking_promise(session, lead, reply)

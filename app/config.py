@@ -79,6 +79,10 @@ class Settings(BaseSettings):
     followup_quiet_start_hour: int = Field(9, alias="FOLLOWUP_QUIET_START_HOUR")
     followup_quiet_end_hour: int = Field(20, alias="FOLLOWUP_QUIET_END_HOUR")
 
+    # Webinar-specific follow-up (a separate nudge after the 55-min webinar
+    # was sent; asks "did you watch?" rather than the generic silence nudge).
+    webinar_followup_hours: int = Field(6, alias="WEBINAR_FOLLOWUP_HOURS")
+
     # Logging
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 

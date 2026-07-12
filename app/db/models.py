@@ -8,6 +8,7 @@ from typing import List, Optional
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     Enum,
     ForeignKey,
     Integer,
@@ -71,6 +72,13 @@ class Lead(Base):
 
     videos_sent: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     lead_metadata: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+
+    # When True, the agent stops replying to inbound messages for this lead
+    # and the follow-up scheduler stops nudging them. Used when a human
+    # takes over the chat via the admin UI (Pause bot button).
+    bot_muted: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False,
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), default=_utcnow, server_default=func.now(), nullable=False

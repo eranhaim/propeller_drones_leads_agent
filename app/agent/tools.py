@@ -9,11 +9,17 @@ from loguru import logger
 
 from app.agent.classifier import apply_classification
 from app.agent.context import current_context
-from app.crm.client import mark_ready_for_call
+from app.crm.client import cancel_ready_for_call, mark_ready_for_call
 from app.db import repository
 from app.db.models import FunnelStage
 from app.rag.retriever import search_as_text
 from app.videos.catalog import get_video, recommend
+
+
+# Canonical set of call-window values LeadMe / our sales team recognise.
+# Anything else is a hallucination (customer flagged: "הנדסת בניין" got
+# recorded as slot="12-15"). classify_lead REJECTS non-canonical values.
+_VALID_SLOTS = {"9-12", "12-15", "15-18", "any", "none"}
 
 
 @tool
@@ -36,8 +42,16 @@ def search_knowledge(query: str, topic: Optional[str] = None) -> str:
       buying vs. flying, aftermath of the course).
     - ``locations`` -- physical addresses of Propeller (Kokhav Yair HQ +
       Latrun flight training center). Use when asked "where is the course?".
+    - ``hr`` -- HR contact info for job-seekers (hr@propeller-drones.com).
+      Use when the lead asks about working AT Propeller, not about a course.
     - ``about`` -- company overview / homepage.
     - ``general`` -- everything else.
+
+    IMPORTANT for the 25kg license question (customer flagged this bug):
+    ``search_knowledge(topic="course_license", query="רישיון עד 25 קג")``
+    returns the authoritative answer: theory-only, online CAAI exam, NO
+    practical part required. Practical is only for the heavy (25-2000kg)
+    track.
     """
     logger.info("Tool search_knowledge: query='{}' topic={}", query, topic)
     return search_as_text(query, k=5, topic=topic)
@@ -65,12 +79,18 @@ def classify_lead(
         * ``service`` -- wants Propeller to perform a commercial drone job
           (mapping, security, agriculture, washing...)
         * ``hobby`` -- personal / recreational use only, not commercial
+        * ``job`` -- looking for employment AT Propeller. Route to HR
+          email (hr@propeller-drones.com), do NOT push a course, and mark
+          ``stage=handed_off``.
         * ``unknown``
     - ``industry``: one of ``security``, ``solar``, ``agriculture``,
       ``mapping``, ``infrastructure``, ``cinema``, ``delivery``, ``washing``,
       ``other`` -- or a free-form Hebrew phrase.
-    - ``preferred_call_slot``: ``9-12`` / ``12-15`` / ``15-18`` / ``any``
-      / ``none``.
+    - ``preferred_call_slot``: MUST be EXACTLY one of ``9-12`` / ``12-15``
+      / ``15-18`` / ``any`` / ``none``. Anything else (city names, industry
+      names, free-text times like "13:00" or "in the morning") is REJECTED
+      and logged as a bug. Only pass a value here when the lead has
+      literally answered with one of the 3 canonical windows.
     - ``has_experience``: True/False -- do they have prior drone flying
       experience?
 
@@ -83,6 +103,22 @@ def classify_lead(
         ctx.lead.id, familiarity, stage, intent, industry,
         preferred_call_slot, has_experience,
     )
+
+    # Reject non-canonical slot values so free-text like "הנדסת בניין" or
+    # "תל אביב" never gets recorded as a preferred_call_slot. The prompt
+    # already teaches this rule; this is a hard safety net.
+    slot_rejected: Optional[str] = None
+    if preferred_call_slot is not None:
+        normalized = str(preferred_call_slot).strip().lower()
+        if normalized not in _VALID_SLOTS:
+            logger.warning(
+                "[classify_lead] REJECTED bogus slot={!r} for lead {} "
+                "(not one of {})",
+                preferred_call_slot, ctx.lead.id, sorted(_VALID_SLOTS),
+            )
+            slot_rejected = preferred_call_slot
+            preferred_call_slot = None  # don't persist it
+
     apply_classification(ctx.session, ctx.lead, familiarity=familiarity, stage=stage)
     repository.update_lead_metadata(
         ctx.session,
@@ -93,13 +129,20 @@ def classify_lead(
         has_experience=has_experience,
     )
     md = ctx.lead.lead_metadata or {}
-    return (
+    summary = (
         f"עודכן. רמת היכרות={ctx.lead.familiarity_level.value}, "
         f"שלב={ctx.lead.funnel_stage.value}, "
         f"כוונה={md.get('intent', '-')}, "
         f"תעשייה={md.get('industry', '-')}, "
         f"שעת התקשרות={md.get('preferred_call_slot', '-')}."
     )
+    if slot_rejected is not None:
+        summary += (
+            f" ⚠️ התעלמתי מהערך '{slot_rejected}' עבור preferred_call_slot - "
+            "חלון שעות חייב להיות אחד מ: 9-12 / 12-15 / 15-18 / any. "
+            "אל תקבע שיחה עד שהליד נותן חלון חוקי במפורש."
+        )
+    return summary
 
 
 @tool
@@ -118,6 +161,21 @@ def send_video(video_id: str, caption: Optional[str] = None) -> str:
     if video.id in (ctx.lead.videos_sent or []):
         return f"הסרטון {video_id} כבר נשלח ללקוח -- לא נשלח שוב."
 
+    # In-turn dedup: if the LLM tries to send the same video twice within
+    # the same agent turn, the second call is rejected before touching
+    # GreenAPI. This catches the "sent Oded's video twice" bug the customer
+    # flagged, since the DB commit for videos_sent only happens after the
+    # first send returns.
+    if video.id in ctx.videos_sent_this_turn:
+        logger.warning(
+            "[send_video] IN-TURN DUPLICATE blocked: lead {} tried to send "
+            "video {!r} twice in one reply", ctx.lead.id, video.id,
+        )
+        return (
+            f"הסרטון {video_id} כבר נשלח בהודעה הנוכחית -- אל תשלח אותו שוב."
+        )
+    ctx.videos_sent_this_turn.add(video.id)
+
     if ctx.send_video is None:
         logger.warning("send_video called but no sender configured")
         return "שגיאה טכנית: לא ניתן לשלוח סרטונים כרגע."
@@ -129,6 +187,19 @@ def send_video(video_id: str, caption: Optional[str] = None) -> str:
         return f"שגיאת שליחה: {exc}"
 
     repository.mark_video_sent(ctx.session, ctx.lead, video.id)
+
+    # Track webinar-specific send time so the follow-up scheduler can send
+    # a "did you watch?" nudge tailored to the webinar rather than the
+    # generic silence nudge.
+    if video.id == "propeller_webinar_full_55min":
+        from datetime import datetime, timezone as _tz
+        repository.update_lead_metadata(
+            ctx.session, ctx.lead,
+            webinar_sent_at=datetime.now(_tz.utc).isoformat(),
+        )
+        logger.info("[send_video] webinar sent -> tracking for follow-up (lead {})",
+                    ctx.lead.id)
+
     return f"הסרטון '{video.title}' נשלח בהצלחה."
 
 
@@ -217,7 +288,61 @@ def schedule_call(summary: Optional[str] = None) -> str:
 
     return (
         f"סומן להעברה למכירות והועבר ל-CRM (חלון: {slot}). "
-        "כעת אמור ללקוח שנציג יצור איתו קשר בחלון הזה, ותודה לו."
+        "כעת אמור ללקוח שיועץ הלימודים יצור איתו קשר בחלון הזה, ותודה לו."
+    )
+
+
+@tool
+def cancel_call(reason: Optional[str] = None) -> str:
+    """Cancel a previously-scheduled call and reset the lead's booking state.
+
+    Call this ONLY when the lead explicitly says the booking is wrong or
+    they want to change/cancel it (e.g. "לא זה לא נכון", "תבטל", "תשנה
+    את השעה", "רגע, זה טעות"). It:
+
+    - Clears ``preferred_call_slot`` in ``lead_metadata``.
+    - Sends a cancellation note to LeadMe so the sales rep sees it.
+    - Rewinds ``funnel_stage`` from ``handed_off`` back to ``warm`` so the
+      normal booking flow can happen again once the lead gives a valid
+      slot.
+
+    After calling this, apologize briefly, then ask the lead for the
+    correct slot (9-12 / 12-15 / 15-18). Do not schedule a new call in the
+    same turn -- wait for their explicit answer.
+    """
+    ctx = current_context()
+    md = ctx.lead.lead_metadata or {}
+    old_slot = md.get("preferred_call_slot")
+
+    logger.info(
+        "Tool cancel_call lead={} phone={} old_slot={} reason={!r}",
+        ctx.lead.id, ctx.lead.phone, old_slot, reason,
+    )
+
+    try:
+        ok = cancel_ready_for_call(ctx.lead, reason=reason)
+        if not ok:
+            logger.error(
+                "[cancel_call] LeadMe cancel push failed for lead {}",
+                ctx.lead.id,
+            )
+    except Exception:
+        logger.exception(
+            "[cancel_call] LeadMe cancel push RAISED for lead {}",
+            ctx.lead.id,
+        )
+
+    # Reset local state either way -- the lead-facing reality is more
+    # important than the CRM sync (we can retry the CRM manually).
+    repository.update_lead_metadata(
+        ctx.session, ctx.lead, preferred_call_slot=None,
+    )
+    repository.update_funnel_stage(ctx.session, ctx.lead, FunnelStage.warm)
+
+    return (
+        "התיאום בוטל, המצב חזר לשלב 'warm'. "
+        "כעת התנצל בקצרה מול הליד ושאל אותו על החלון הנכון "
+        "(9-12 / 12-15 / 15-18). אל תקבע שיחה בהודעה הזאת - חכה לתשובתו."
     )
 
 
@@ -227,4 +352,5 @@ ALL_TOOLS = [
     send_video,
     recommend_video,
     schedule_call,
+    cancel_call,
 ]

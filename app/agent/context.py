@@ -10,7 +10,8 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Iterator, Optional
+from dataclasses import field
+from typing import Iterator, Optional, Set
 
 from sqlalchemy.orm import Session
 
@@ -24,6 +25,12 @@ class AgentContext:
     # Callback to actually send outbound messages / files on WhatsApp.
     # (chatId is implicit -- the sender is bound to the current lead's phone.)
     send_video: Optional[callable] = None  # type: ignore[type-arg]
+    # In-turn video de-dup guard. When the LLM calls send_video twice in the
+    # same reply turn (has happened: Oded's video sent twice), the second
+    # call short-circuits before hitting GreenAPI. The DB-level videos_sent
+    # check only fires after the row is committed, so we need this in-memory
+    # guard too.
+    videos_sent_this_turn: Set[str] = field(default_factory=set)
 
 
 _current_ctx: ContextVar[Optional[AgentContext]] = ContextVar(

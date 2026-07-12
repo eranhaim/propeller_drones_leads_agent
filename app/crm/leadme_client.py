@@ -202,3 +202,39 @@ def push_lead(lead: Lead, note: Optional[str] = None) -> bool:
             )
 
     return True
+
+
+def push_lead_cancellation(lead: Lead, reason: Optional[str] = None) -> bool:
+    """Mark a previously handed-off lead as cancelled/re-open in LeadMe.
+
+    Used when the user says "actually no, cancel that call" after the bot
+    already pushed them as ready_for_call. We do NOT delete the LeadMe lead
+    (it still needs to be visible to sales) -- we just append a comment
+    explaining the cancellation so a human can follow up cleanly. If
+    ``LEADME_UPDATE_URL`` is set we also POST a status update carrying the
+    "cancelled" note.
+    """
+    settings = get_settings()
+    update_url = (settings.leadme_update_url or "").strip()
+    if not update_url or not lead.phone:
+        logger.info(
+            "[LeadMe cancel STUB] no LEADME_UPDATE_URL or phone; would "
+            "cancel lead {} (reason={!r})", lead.phone, reason,
+        )
+        return True
+
+    comment = "SLOT CANCELLED BY LEAD"
+    if reason:
+        comment += f": {reason}"
+    upd_payload = {
+        "phone": lead.phone,
+        "status": (settings.leadme_status_id or "").strip() or "1",
+        "comment": comment,
+    }
+    ok, detail = _post(update_url, upd_payload)
+    if ok:
+        logger.info("[LeadMe cancel] pushed cancellation for {} -> {}",
+                    lead.phone, detail)
+    else:
+        logger.error("[LeadMe cancel] failed for {}: {}", lead.phone, detail)
+    return ok
