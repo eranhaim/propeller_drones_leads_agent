@@ -161,6 +161,32 @@ header h1 .dot {
     background: #10b981; box-shadow: 0 0 8px #10b98180;
 }
 header .meta { color: var(--text-dim); font-size: 12px; }
+header .hdr-actions {
+    display: flex; align-items: center; gap: 12px;
+}
+.hdr-btn {
+    display: inline-block; padding: 6px 12px; border-radius: 6px;
+    background: var(--panel-2); color: var(--text); font-size: 12px;
+    font-weight: 600; border: 1px solid var(--border);
+    text-decoration: none;
+}
+.hdr-btn:hover { background: var(--border); text-decoration: none; }
+.hdr-btn.danger { background: transparent; color: #f87171; border-color: #7f1d1d; }
+.hdr-btn.danger:hover { background: #7f1d1d; color: white; }
+
+/* Search bar */
+.searchbar {
+    display: flex; gap: 10px; margin-bottom: 16px; align-items: center;
+}
+.searchbar input {
+    flex: 1; padding: 10px 14px; border-radius: 8px;
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); font-size: 14px;
+    direction: ltr; /* phones and English names read better LTR */
+}
+.searchbar input:focus { outline: none; border-color: var(--accent); }
+.searchbar .count { color: var(--text-dim); font-size: 12px; min-width: 90px; text-align: left; }
+tr.hidden-row { display: none; }
 main { padding: 24px; max-width: 1400px; margin: 0 auto; }
 
 /* Leads table */
@@ -262,7 +288,11 @@ table.leads {
 """
 
 
-def _page(title: str, body: str) -> str:
+def _page(title: str, body: str, *, back_href: Optional[str] = None) -> str:
+    back_btn = (
+        f'<a class="hdr-btn" href="{_escape(back_href)}">← Back to leads</a>'
+        if back_href else ""
+    )
     return f"""<!DOCTYPE html>
 <html lang="he" dir="rtl">
 <head>
@@ -274,7 +304,11 @@ def _page(title: str, body: str) -> str:
 <body>
 <header>
   <h1><span class="dot"></span>Propeller Drones · Admin</h1>
-  <div class="meta">{_escape(title)}</div>
+  <div class="hdr-actions">
+    <span class="meta">{_escape(title)}</span>
+    {back_btn}
+    <a class="hdr-btn danger" href="/admin/logout">Log out</a>
+  </div>
 </header>
 <main>{body}</main>
 </body>
@@ -358,8 +392,14 @@ def leads_list(_: str = Depends(_require_admin)) -> str:
             '<span class="badge" style="background:#dc2626;margin-inline-start:6px">BOT OFF</span>'
             if r["muted"] else ""
         )
+        haystack = " ".join([
+            r["name"] or "",
+            r["phone"] or "",
+            r["stage"] or "",
+            r["last_msg"] or "",
+        ]).lower()
         trs.append(f"""
-        <tr onclick="location.href='/admin/leads/{r['id']}'">
+        <tr data-search="{_escape(haystack)}" onclick="location.href='/admin/leads/{r['id']}'">
           <td class="name">{name_html}{mute_pill}</td>
           <td class="phone">{_escape(r['phone'])}</td>
           <td><span class="badge" style="background:{badge_color}">{_escape(r['stage'])}</span></td>
@@ -369,7 +409,36 @@ def leads_list(_: str = Depends(_require_admin)) -> str:
         </tr>
         """)
 
-    body = summary_html + f"""
+    search_html = f"""
+    <div class="searchbar">
+      <input id="lead-search" type="search" autofocus
+             placeholder="Search by name, phone, stage, or last message..."
+             oninput="filterLeads(this.value)">
+      <span class="count" id="lead-count">{total_leads} / {total_leads}</span>
+    </div>
+    <script>
+    function filterLeads(q) {{
+      q = (q || '').trim().toLowerCase();
+      const rows = document.querySelectorAll('table.leads tbody tr[data-search]');
+      let shown = 0;
+      rows.forEach(r => {{
+        const hay = r.getAttribute('data-search');
+        const match = !q || hay.indexOf(q) !== -1;
+        r.classList.toggle('hidden-row', !match);
+        if (match) shown++;
+      }});
+      document.getElementById('lead-count').textContent = shown + ' / ' + rows.length;
+    }}
+    document.addEventListener('keydown', e => {{
+      if (e.key === '/' && document.activeElement.tagName !== 'INPUT') {{
+        e.preventDefault();
+        document.getElementById('lead-search').focus();
+      }}
+    }});
+    </script>
+    """
+
+    body = summary_html + search_html + f"""
     <table class="leads">
       <thead>
         <tr>
@@ -511,7 +580,11 @@ def lead_conversation(lead_id: int, _: str = Depends(_require_admin)) -> str:
       </aside>
     </div>
     """
-    return _page(f"Lead {ls['id']} · {ls['name'] or ls['phone']}", body)
+    return _page(
+        f"Lead {ls['id']} · {ls['name'] or ls['phone']}",
+        body,
+        back_href="/admin",
+    )
 
 
 def _set_muted(lead_id: int, muted: bool) -> None:
@@ -537,6 +610,39 @@ def mute_lead(lead_id: int, _: str = Depends(_require_admin)) -> RedirectRespons
 def unmute_lead(lead_id: int, _: str = Depends(_require_admin)) -> RedirectResponse:
     _set_muted(lead_id, False)
     return RedirectResponse(url=f"/admin/leads/{lead_id}", status_code=303)
+
+
+@router.get("/logout", response_class=HTMLResponse)
+def logout() -> HTMLResponse:
+    """Force the browser to forget its HTTP Basic credentials.
+
+    HTTP Basic has no formal 'logout' — browsers cache the Authorization
+    header until they see a 401 for the same realm. The trick used here:
+    return a 401 with the same realm without validating creds. Most
+    browsers respond by clearing the cached credentials for that realm,
+    and the user gets a fresh login prompt on the next request. We wrap
+    it in a small HTML page so they see a friendly 'Logged out' screen
+    instead of a raw browser error.
+    """
+    html_body = """
+    <div style="max-width:420px;margin:80px auto;text-align:center;
+                background:#1e293b;padding:32px;border-radius:12px;
+                border:1px solid #334155;color:#f1f5f9;font-family:sans-serif">
+      <h2 style="margin:0 0 12px 0">Logged out</h2>
+      <p style="color:#94a3b8;margin:0 0 20px 0">
+        Your browser has been asked to forget the admin credentials.
+      </p>
+      <a href="/admin/"
+         style="display:inline-block;padding:10px 18px;background:#38bdf8;
+                color:#0f172a;border-radius:6px;text-decoration:none;
+                font-weight:600">Log in again</a>
+    </div>
+    """
+    return HTMLResponse(
+        content=html_body,
+        status_code=401,
+        headers={"WWW-Authenticate": 'Basic realm="Propeller Admin - logged out"'},
+    )
 
 
 @router.post("/leads/{lead_id}/delete")
