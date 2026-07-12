@@ -248,12 +248,13 @@ SCENARIOS: List[Scenario] = [
                     Assertion("reply is Hebrew", is_hebrew(0.6)),
                     Assertion(
                         "gives the range (1,200 and 11 or 10)",
-                        # 11,000 or "11 אלף" or "10,800" all acceptable
+                        # 15,000 / "15 אלף" all acceptable (customer bumped
+                        # the top of the range from 11k to 15k in round 3)
                         contains_any("1,200", "1200"),
                     ),
                     Assertion(
-                        "mentions high end (11,000 / 10,800 / 11 אלף)",
-                        contains_any("11,000", "11000", "11 אלף", "10,800", "10800"),
+                        "mentions high end (15,000 / 15 אלף)",
+                        contains_any("15,000", "15000", "15 אלף"),
                     ),
                     Assertion(
                         "refers to advisor (יועץ)",
