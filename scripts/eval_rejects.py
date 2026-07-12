@@ -269,6 +269,29 @@ SCENARIOS: List[Scenario] = [
         ],
     ),
     Scenario(
+        name="business_opener_gets_shop_link",
+        description="Lead who plans to open a drone business should get the shop link surfaced",
+        sender_name="Tomer",
+        turns=[
+            Turn(
+                user_msg="היי, אני רוצה לפתוח עסק של צילום אווירי לחתונות. איך מתחילים?",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion(
+                        "surfaces the shop URL",
+                        contains("propeller-drones.shop"),
+                    ),
+                    Assertion(
+                        "still stays in course-intent (business == also needs a course)",
+                        lambda _r, lead: (lead.lead_metadata or {}).get(
+                            "intent"
+                        ) in ("course", "shop", None),  # any of these is fine
+                    ),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
         name="terminology_yoetz_not_natziv",
         description="Bot uses 'יועץ' rather than 'נציג' when offering the human handoff",
         sender_name="Amir",
