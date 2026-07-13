@@ -227,19 +227,48 @@ def recommend_video(topics_context: Optional[str] = None) -> str:
 
 
 @tool
-def schedule_call(summary: Optional[str] = None) -> str:
+def schedule_call(
+    summary: Optional[str] = None,
+    preferred_call_slot: Optional[str] = None,
+) -> str:
     """Mark the lead as ready for a sales call.
 
     Updates the funnel stage to ``handed_off`` and pushes the status to
-    the CRM (currently a stub -- see ``app/crm/client.py``). Only call
-    this AFTER you have (a) an explicit yes from the lead, and (b) captured
-    their ``preferred_call_slot`` via ``classify_lead``. ``summary`` is an
-    optional short internal note about the lead (in Hebrew).
+    the CRM. Only call this AFTER you have an explicit yes from the lead
+    and know their preferred time window.
+
+    - ``summary`` -- optional short Hebrew internal note about the lead.
+    - ``preferred_call_slot`` -- MUST be one of ``9-12`` / ``12-15`` /
+      ``15-18`` / ``any``. Pass it here if the lead just gave you a slot
+      in the current message; the tool will persist it before pushing to
+      CRM. If omitted, the tool falls back to whatever slot was previously
+      captured via ``classify_lead``.
 
     After calling this, thank the lead in Hebrew and tell them the rep will
     reach out in their preferred time window.
     """
     ctx = current_context()
+
+    # Accept a slot passed inline (the common case: lead literally just
+    # replied "12-15"). This closes the "schedule_call was called without
+    # classify_lead first" bug that made the bot say "technical error"
+    # even though nothing was broken.
+    if preferred_call_slot is not None:
+        normalized = str(preferred_call_slot).strip().lower()
+        if normalized in _VALID_SLOTS and normalized != "none":
+            repository.update_lead_metadata(
+                ctx.session, ctx.lead, preferred_call_slot=normalized,
+            )
+            logger.info(
+                "[schedule_call] inline slot={!r} persisted for lead {}",
+                normalized, ctx.lead.id,
+            )
+        else:
+            logger.warning(
+                "[schedule_call] IGNORED bogus inline slot={!r} for lead {}",
+                preferred_call_slot, ctx.lead.id,
+            )
+
     md = ctx.lead.lead_metadata or {}
     slot = md.get("preferred_call_slot")
     logger.info(
@@ -248,10 +277,14 @@ def schedule_call(summary: Optional[str] = None) -> str:
     )
 
     if not slot:
+        # This is NOT a technical error -- the tool executed fine, we just
+        # don't have a slot yet. The wording is deliberately explicit to
+        # stop the LLM from triggering the "yesh li beaya technit" rule.
         return (
-            "לא הועבר עדיין -- חסר preferred_call_slot. "
-            "שאל את הלקוח באיזה חלון שעות עדיף לו (9-12 / 12-15 / 15-18), "
-            "עדכן דרך classify_lead, ואז קרא ל-schedule_call שוב."
+            "NOT_AN_ERROR: אין עדיין חלון שעות מועדף. "
+            "אל תגיד ללקוח שיש תקלה טכנית. פשוט שאל אותו: "
+            "'באיזה חלון שעות עדיף לך שהיועץ יתקשר: 9-12, 12-15, או 15-18?'. "
+            "כשהוא יענה, קרא ל-schedule_call(preferred_call_slot=\"<תשובתו>\")."
         )
 
     repository.update_funnel_stage(ctx.session, ctx.lead, FunnelStage.handed_off)

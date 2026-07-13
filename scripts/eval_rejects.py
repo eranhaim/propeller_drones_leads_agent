@@ -293,6 +293,161 @@ SCENARIOS: List[Scenario] = [
         ],
     ),
     Scenario(
+        name="iftah_bug_slot_answer_schedules_cleanly",
+        description=(
+            "REGRESSION for the Iftah bug: user asked 'depends on which day', "
+            "bot offered slots, user replied '12-15', bot then said "
+            "'technical glitch' instead of scheduling. Must schedule cleanly "
+            "without mentioning any error / technical issue."
+        ),
+        sender_name="Iftah",
+        turns=[
+            Turn(user_msg="היי, מתעניין"),
+            Turn(user_msg="כן, אשמח לשיחה"),
+            Turn(user_msg="תלוי באיזה יום"),
+            Turn(
+                user_msg="12-15",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion(
+                        "does NOT mention a technical glitch / error",
+                        not_contains(
+                            "תקלה טכנית",
+                            "בעיה טכנית",
+                            "יש לי תקלה",
+                            "נראה שיש תקלה",
+                        ),
+                    ),
+                    Assertion(
+                        "preferred_call_slot captured as 12-15",
+                        slot_equals("12-15"),
+                    ),
+                    Assertion(
+                        "funnel_stage is handed_off",
+                        stage_equals(FunnelStage.handed_off),
+                    ),
+                    Assertion(
+                        "mentions the confirmed window 12-15",
+                        contains_any("12-15", "12 ל-15", "12-15", "בין 12"),
+                    ),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
+        name="slot_any_time_works",
+        description=(
+            "Lead who is flexible ('לא משנה', 'מתי שנוח') should still get "
+            "scheduled -- 'any' is a valid slot."
+        ),
+        sender_name="Noa",
+        turns=[
+            Turn(user_msg="היי, מתעניינת בקורס"),
+            Turn(user_msg="כן, שיחה זה מעולה"),
+            Turn(
+                user_msg="לא משנה, מתי שנוח לכם",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion(
+                        "does NOT falsely claim technical glitch",
+                        not_contains("תקלה טכנית", "בעיה טכנית"),
+                    ),
+                    # We accept either: bot scheduled with slot=any, OR bot
+                    # is still asking for a specific window. What we REJECT
+                    # is the "technical issue" fallback.
+                ],
+            ),
+        ],
+    ),
+    Scenario(
+        name="cancel_and_rebook",
+        description=(
+            "Lead schedules, then says 'רגע זה טעות, אני רוצה בבוקר'. Bot "
+            "must call cancel_call, rewind, and re-schedule with the new slot "
+            "without a technical-error message."
+        ),
+        sender_name="Ehud",
+        turns=[
+            Turn(user_msg="היי, כן אני רוצה שיחה"),
+            Turn(user_msg="15-18"),
+            Turn(
+                user_msg="רגע זה טעות, אני רוצה בבוקר בין 9 ל-12",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion(
+                        "does NOT say technical glitch",
+                        not_contains("תקלה טכנית", "בעיה טכנית"),
+                    ),
+                    Assertion(
+                        "final slot is 9-12 (rebooked correctly)",
+                        slot_equals("9-12"),
+                    ),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
+        name="specific_drone_model_routes_to_shop",
+        description=(
+            "Lead mentions a specific drone model (Mavic 3) mid-course "
+            "conversation. Bot must surface the shop, not push the course "
+            "exclusively."
+        ),
+        sender_name="Roni",
+        turns=[
+            Turn(user_msg="היי, מתעניין בקורס"),
+            Turn(
+                user_msg="אני רוצה לקנות Mavic 3, יש לכם?",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion(
+                        "surfaces shop URL or shop intent language",
+                        contains_any(
+                            "propeller-drones.shop",
+                            "חנות",
+                            "shop",
+                        ),
+                    ),
+                    Assertion(
+                        "intent classified as shop",
+                        lambda _r, lead: (lead.lead_metadata or {}).get(
+                            "intent"
+                        ) == "shop",
+                    ),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
+        name="lead_refuses_call_gracefully",
+        description=(
+            "Lead explicitly says 'לא מעוניין בשיחה כרגע, רק אינפורמציה'. "
+            "Bot must NOT keep pushing a slot -- it should stay in info mode."
+        ),
+        sender_name="Maya",
+        turns=[
+            Turn(user_msg="היי, רוצה מידע על הקורס"),
+            Turn(
+                user_msg="לא מעוניינת בשיחה כרגע, רק אינפורמציה",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion(
+                        "does NOT push a time-window question in the same reply",
+                        not_contains(
+                            "9-12", "12-15", "15-18",
+                            "איזה חלון",
+                            "מתי נוח לך",
+                        ),
+                    ),
+                    Assertion(
+                        "funnel NOT handed_off (no premature scheduling)",
+                        lambda _r, lead: lead.funnel_stage != FunnelStage.handed_off,
+                    ),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
         name="terminology_yoetz_not_natziv",
         description="Bot uses 'יועץ' rather than 'נציג' when offering the human handoff",
         sender_name="Amir",
