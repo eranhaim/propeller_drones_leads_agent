@@ -27,7 +27,10 @@ from datetime import datetime, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import json
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, Form, HTTPException, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from sqlalchemy import func, select
@@ -322,6 +325,7 @@ def _page(title: str, body: str, *, back_href: Optional[str] = None) -> str:
   <div class="hdr-actions">
     <span class="meta">{_escape(title)}</span>
     {back_btn}
+    <a class="hdr-btn" href="/admin/leadme-cookies">עוגיות LeadMe</a>
     <a class="hdr-btn danger" href="/admin/logout">יציאה</a>
   </div>
 </header>
@@ -722,3 +726,172 @@ def delete_lead(lead_id: int, _: str = Depends(_require_admin)) -> RedirectRespo
         lead_id, phone, leadme_msg or "leadme=skipped",
     )
     return RedirectResponse(url="/admin", status_code=303)
+
+
+# --- LeadMe cookies self-service ---------------------------------------
+#
+# LeadMe does not offer a real API for deleting leads, so we drive their
+# internal admin XHRs with a saved PHPSESSID cookie. That cookie expires
+# on the order of hours-to-days. This page lets the admin refresh those
+# cookies in ~30 seconds without SSH-ing into the box:
+#
+#   1. In Chrome, log into leadmecms.co.il, open DevTools.
+#   2. Application tab -> Cookies -> https://www.leadmecms.co.il -> copy
+#      all the cookies (or use a JSON-export extension).
+#   3. Paste the JSON here and hit save.
+#
+# Format accepted: the same JSON list Playwright / Chrome's cookie
+# export extensions produce -- [{name, value, domain, path, ...}, ...].
+
+
+def _cookies_file_status() -> tuple[str, str]:
+    """Return (badge_text, extra_line) describing the current cookies file."""
+    settings = get_settings()
+    raw_path = (settings.leadme_cookies_path or "").strip()
+    if not raw_path:
+        return ("לא מוגדר", "משתנה הסביבה LEADME_COOKIES_PATH ריק.")
+    p = Path(raw_path)
+    if not p.exists():
+        return ("חסר", f"הקובץ {raw_path} לא קיים על הדיסק.")
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        return ("שבור", f"שגיאה בקריאת JSON: {exc}")
+    leadme = [c for c in data if "leadmecms.co.il" in (c.get("domain") or "")]
+    has_session = any(c.get("name") == "PHPSESSID" for c in leadme)
+    has_csrf = any(c.get("name") == "csrf_cookie_name" for c in leadme)
+    mtime = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
+    age = _time_ago(mtime)
+    if not has_session:
+        return ("שבור", f"אין עוגיית PHPSESSID (עודכן לאחרונה {age}).")
+    return (
+        "פעיל",
+        f"נמצאו {len(leadme)} עוגיות של leadmecms.co.il "
+        f"(PHPSESSID={'✓' if has_session else '✗'}, "
+        f"CSRF={'✓' if has_csrf else '✗'}). עודכן לאחרונה {age}.",
+    )
+
+
+@router.get("/leadme-cookies", response_class=HTMLResponse)
+def leadme_cookies_form(
+    _: str = Depends(_require_admin),
+    saved: Optional[str] = None,
+    error: Optional[str] = None,
+) -> str:
+    badge, detail = _cookies_file_status()
+    flash = ""
+    if saved:
+        flash = (
+            '<div style="background:#065f46;color:#d1fae5;padding:12px 16px;'
+            'border-radius:8px;margin-bottom:16px">✓ העוגיות נשמרו בהצלחה. '
+            'עכשיו נסה למחוק ליד מהאדמין ובדוק שהמחיקה עוברת גם ב-LeadMe.</div>'
+        )
+    if error:
+        flash = (
+            '<div style="background:#7f1d1d;color:#fecaca;padding:12px 16px;'
+            f'border-radius:8px;margin-bottom:16px">✗ {_escape(error)}</div>'
+        )
+
+    body = f"""
+{flash}
+<div class="panel">
+  <h2>עוגיות LeadMe לצורך מחיקה</h2>
+  <p class="muted">
+    כדי שכפתור "מחק ליד" באדמין ימחק את הליד גם ב-LeadMe (ולא רק ב-DB
+    המקומי), אנחנו צריכים עוגיות התחברות של חשבון LeadMe. הן פוגות אחרי
+    כמה שעות/ימים -- אז מפעם לפעם צריך לרענן אותן דרך העמוד הזה.
+  </p>
+
+  <div style="margin:16px 0;padding:12px 16px;background:#0f172a;
+              border-radius:8px;border:1px solid #334155">
+    <b>מצב נוכחי:</b> <span style="color:#38bdf8">{_escape(badge)}</span><br>
+    <span class="muted">{_escape(detail)}</span>
+  </div>
+
+  <h3>איך מרעננים עוגיות (30 שניות):</h3>
+  <ol style="line-height:1.9">
+    <li>פתח Chrome וודא שאתה מחובר ל-
+      <a href="https://www.leadmecms.co.il/app/leads" target="_blank"
+         style="color:#38bdf8">leadmecms.co.il/app/leads</a>.</li>
+    <li>לחץ F12 → Application → Cookies → www.leadmecms.co.il.</li>
+    <li>הפעל את התוסף
+      <a href="https://chromewebstore.google.com/search/cookie%20editor"
+         target="_blank" style="color:#38bdf8">Cookie-Editor</a>
+      (או דומה) → Export → JSON.</li>
+    <li>הדבק את ה-JSON בשדה למטה ולחץ "שמור".</li>
+  </ol>
+
+  <form method="post" action="/admin/leadme-cookies" style="margin-top:20px">
+    <label style="display:block;margin-bottom:8px;font-weight:600">
+      JSON של עוגיות (רשימת אובייקטים):
+    </label>
+    <textarea name="cookies_json" required
+              placeholder='[{{"name":"PHPSESSID","value":"...","domain":".leadmecms.co.il",...}}, ...]'
+              style="width:100%;min-height:240px;background:#0f172a;
+                     color:#e2e8f0;border:1px solid #334155;border-radius:8px;
+                     padding:12px;font-family:monospace;font-size:12px;
+                     direction:ltr" dir="ltr"></textarea>
+    <div style="margin-top:12px;display:flex;gap:12px">
+      <button type="submit" style="padding:10px 20px;background:#38bdf8;
+              color:#0f172a;border:none;border-radius:6px;font-weight:600;
+              cursor:pointer">שמור עוגיות</button>
+      <a href="/admin" style="padding:10px 20px;color:#94a3b8;
+         text-decoration:none">חזור</a>
+    </div>
+  </form>
+</div>
+"""
+    return _page("עוגיות LeadMe", body, back_href="/admin/")
+
+
+@router.post("/leadme-cookies")
+def leadme_cookies_save(
+    cookies_json: str = Form(...),
+    _: str = Depends(_require_admin),
+) -> RedirectResponse:
+    from loguru import logger
+    settings = get_settings()
+    raw_path = (settings.leadme_cookies_path or "").strip()
+    if not raw_path:
+        return RedirectResponse(
+            url="/admin/leadme-cookies?error="
+                "LEADME_COOKIES_PATH+not+configured",
+            status_code=303,
+        )
+
+    try:
+        parsed = json.loads(cookies_json)
+    except json.JSONDecodeError as exc:
+        return RedirectResponse(
+            url=f"/admin/leadme-cookies?error=Invalid+JSON:+{exc}",
+            status_code=303,
+        )
+    if not isinstance(parsed, list):
+        return RedirectResponse(
+            url="/admin/leadme-cookies?error="
+                "Expected+a+JSON+array+of+cookie+objects",
+            status_code=303,
+        )
+
+    # Minimum viability check: must contain PHPSESSID for leadmecms.co.il.
+    has_session = any(
+        c.get("name") == "PHPSESSID"
+        and "leadmecms.co.il" in (c.get("domain") or "")
+        for c in parsed
+        if isinstance(c, dict)
+    )
+    if not has_session:
+        return RedirectResponse(
+            url="/admin/leadme-cookies?error="
+                "Missing+PHPSESSID+cookie+for+leadmecms.co.il",
+            status_code=303,
+        )
+
+    p = Path(raw_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(parsed, indent=2), encoding="utf-8")
+    logger.warning(
+        "[admin] LeadMe cookies refreshed via UI ({} cookies, "
+        "PHPSESSID present)", len(parsed),
+    )
+    return RedirectResponse(url="/admin/leadme-cookies?saved=1", status_code=303)

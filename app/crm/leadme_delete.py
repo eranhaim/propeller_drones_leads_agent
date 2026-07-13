@@ -147,9 +147,24 @@ def _build_client() -> Optional[httpx.Client]:
 
 
 def find_leadme_id_by_phone(phone: str, client: httpx.Client) -> Optional[str]:
-    """Return the numeric LeadMe lead id for ``phone``, or None."""
+    """Return the numeric LeadMe lead id for ``phone``, or None.
+
+    Prime the session by visiting ``/app/leads`` first (LeadMe's admin
+    stores a per-tab "active datatable" in the session; calls to the
+    ajax endpoint 302 -> /404 without it). Then call
+    ``/app/leads/getDataForTable`` -- reverse-engineered from the actual
+    working URL rather than the /app/ajax/getDataForTable path that
+    appears in some old DevTools captures (which redirects to /404 for
+    us now).
+    """
     settings = get_settings()
-    url = settings.leadme_admin_base + "/app/ajax/getDataForTable"
+    base = settings.leadme_admin_base
+    # Prime the session -- without this the ajax endpoint 302s to /404.
+    try:
+        client.get(base + "/app/leads")
+    except httpx.HTTPError:
+        pass  # not fatal, try the ajax call anyway
+    url = base + "/app/leads/getDataForTable"
     params = _search_params(phone)
     try:
         resp = client.get(url, params=params)
@@ -198,36 +213,46 @@ def find_leadme_id_by_phone(phone: str, client: httpx.Client) -> Optional[str]:
 
 
 def delete_leadme_id(leadme_id: str, client: httpx.Client) -> tuple[bool, str]:
-    """Fire the actual /app/ajax/deleteLeads POST. Returns (ok, detail)."""
+    """Fire the deleteLeads POST. Returns (ok, detail).
+
+    Tries both known endpoint paths (LeadMe's admin has moved things
+    around between versions) and both known payload keys (the DevTools
+    screenshots we have from two different points in time show two
+    different names: ``data[leadId][]`` and ``leadIds[]``).
+    """
     settings = get_settings()
-    url = settings.leadme_admin_base + "/app/ajax/deleteLeads"
-    csrf = client.__dict__.get("_csrf_token") or ""
+    base = settings.leadme_admin_base
+    csrf = client.cookies.get("csrf_cookie_name") \
+        or client.__dict__.get("_csrf_token") or ""
 
-    # Refresh CSRF from cookies in case a prior request rotated it.
-    refreshed = client.cookies.get("csrf_cookie_name")
-    if refreshed:
-        csrf = refreshed
+    last_detail = "no attempts"
+    for url in [base + "/app/ajax/deleteLeads",
+                base + "/app/leads/deleteLeads"]:
+        for payload_key in ["data[leadId][]", "leadIds[]"]:
+            # Refresh CSRF each attempt in case the framework rotated it.
+            csrf_now = client.cookies.get("csrf_cookie_name") or csrf
+            data = [(payload_key, leadme_id), ("csrf_lmcms", csrf_now)]
+            try:
+                resp = client.post(url, data=data)
+            except httpx.HTTPError as e:
+                last_detail = f"httpx error at {url}: {e}"
+                continue
+            if resp.status_code != 200:
+                last_detail = (f"HTTP {resp.status_code} at {url} "
+                               f"key={payload_key}: {resp.text[:120]}")
+                continue
+            try:
+                body = resp.json()
+            except json.JSONDecodeError:
+                last_detail = (f"non-JSON at {url} key={payload_key} "
+                               f"(session likely expired): {resp.text[:120]}")
+                continue
+            if body.get("result") is True or body.get("type") == "success":
+                return True, (f"deleted leadme_id={leadme_id} via {url} "
+                              f"(key={payload_key})")
+            last_detail = f"rejected by {url} key={payload_key}: {body!r}"
 
-    data = [
-        ("data[leadId][]", leadme_id),
-        ("csrf_lmcms", csrf),
-    ]
-    try:
-        resp = client.post(url, data=data)
-    except httpx.HTTPError as e:
-        return False, f"httpx error: {e}"
-
-    if resp.status_code != 200:
-        return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
-
-    try:
-        body = resp.json()
-    except json.JSONDecodeError:
-        return False, f"non-JSON response (login redirect?): {resp.text[:200]}"
-
-    if body.get("result") is True:
-        return True, f"deleted leadme_id={body.get('data', leadme_id)}"
-    return False, f"LeadMe rejected: {body!r}"
+    return False, last_detail
 
 
 def delete_from_leadme(phone: str) -> tuple[bool, str]:
