@@ -339,9 +339,14 @@ def cancel_call(reason: Optional[str] = None) -> str:
       normal booking flow can happen again once the lead gives a valid
       slot.
 
-    After calling this, apologize briefly, then ask the lead for the
-    correct slot (9-12 / 12-15 / 15-18). Do not schedule a new call in the
-    same turn -- wait for their explicit answer.
+    After calling this, apologize briefly, then either:
+
+    - If the lead's message ALREADY contained a valid new slot
+      (e.g. "רגע זה טעות, אני רוצה בבוקר בין 9 ל-12"), immediately
+      call ``schedule_call(preferred_call_slot="9-12")`` in the same
+      turn -- do NOT make them repeat themselves.
+    - Otherwise, ask them for the correct window (9-12 / 12-15 /
+      15-18) and wait for their reply before scheduling.
     """
     ctx = current_context()
     md = ctx.lead.lead_metadata or {}
