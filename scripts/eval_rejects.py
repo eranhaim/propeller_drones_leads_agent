@@ -530,6 +530,7 @@ SCENARIOS: List[Scenario] = [
         sender_name="Gilad",
         turns=[
             Turn(user_msg="היי מתעניין בקורס"),
+            Turn(user_msg="כן, אשמח לשיחה עם יועץ"),
             Turn(user_msg="12-15"),
             Turn(
                 user_msg="ומה אפשר לעשות אחרי הקורס?",
