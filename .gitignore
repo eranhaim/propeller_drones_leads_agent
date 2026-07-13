@@ -34,3 +34,5 @@ logs/
 
 # Local recon / exploration scratch (contains credentials & session cookies)
 leadme-recon/
+# Session cookies mounted into the container for LeadMe internal delete
+data/leadme_cookies.json

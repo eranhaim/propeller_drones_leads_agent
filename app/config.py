@@ -65,6 +65,25 @@ class Settings(BaseSettings):
     leadme_status_id: str = Field("", alias="LEADME_STATUS_ID")
     leadme_source_label: str = Field("WhatsApp Bot", alias="LEADME_SOURCE_LABEL")
 
+    # LeadMe's PUBLIC supplier API can only INSERT and UPDATE, not delete. To
+    # let the admin panel wipe a lead from LeadMe as well (used for manual
+    # QA -- reset a phone and re-submit the form), we fall back to LeadMe's
+    # INTERNAL admin endpoints via httpx with saved session cookies +
+    # CodeIgniter CSRF token. Both files are exported once from a logged-in
+    # browser and mounted into the container.
+    #
+    # - leadme_cookies_path: JSON file exported from Chrome/Playwright with
+    #   the LeadMe session cookies (PHPSESSID + csrf_cookie_name).
+    #   Empty string => admin delete only wipes our local DB, not LeadMe.
+    # - leadme_admin_base: base URL of the admin app (as opposed to the
+    #   /supplier public API).
+    leadme_cookies_path: str = Field(
+        "data/leadme_cookies.json", alias="LEADME_COOKIES_PATH",
+    )
+    leadme_admin_base: str = Field(
+        "https://www.leadmecms.co.il", alias="LEADME_ADMIN_BASE",
+    )
+
     # Admin UI (HTTP Basic auth for /admin routes)
     admin_user: str = Field("", alias="ADMIN_USER")
     admin_password: str = Field("", alias="ADMIN_PASSWORD")

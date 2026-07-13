@@ -677,17 +677,48 @@ def logout() -> HTMLResponse:
 def delete_lead(lead_id: int, _: str = Depends(_require_admin)) -> RedirectResponse:
     """Hard-delete a lead and all its messages so the next inbound WhatsApp
     from that number starts a completely fresh conversation. Intended for
-    manual QA of the opener/warm-up flow. Messages cascade via the
-    ondelete=CASCADE on Message.lead_id."""
+    manual QA of the opener/warm-up flow.
+
+    Two deletes happen, in this order:
+
+    1. LeadMe delete via saved session cookies (best-effort; if LeadMe
+       cookies are missing/expired the local delete still proceeds).
+    2. Local DB delete. Messages cascade via ondelete=CASCADE on
+       Message.lead_id.
+
+    Reason for LeadMe-first: if the local DB delete succeeds but the
+    LeadMe delete fails, the admin needs to know so they can clean up
+    manually -- if LeadMe first, the admin sees the outcome BEFORE
+    committing to the irreversible local wipe. If LeadMe fails, we
+    still delete locally (we don't want a broken LeadMe integration to
+    block QA) but surface the outcome in a query-string flash.
+    """
     from loguru import logger
+    from app.crm.leadme_delete import delete_from_leadme
+
     with session_scope() as s:
         lead = s.get(Lead, lead_id)
         if not lead:
             raise HTTPException(status_code=404, detail="Lead not found")
-        phone = lead.phone
-        s.delete(lead)
-        logger.warning(
-            "[admin] hard-deleted lead {} (phone={}) via /admin UI",
-            lead_id, phone,
-        )
+        phone = lead.phone or ""
+
+    leadme_msg = ""
+    if phone:
+        try:
+            ok, detail = delete_from_leadme(phone)
+        except Exception:  # noqa: BLE001 -- must never block local delete
+            logger.exception("[admin] LeadMe delete raised for {}", phone)
+            ok, detail = False, "leadme delete raised (see logs)"
+        leadme_msg = f"leadme={'ok' if ok else 'fail'}: {detail}"
+        logger.info("[admin] pre-delete LeadMe attempt for {}: {}",
+                    phone, leadme_msg)
+
+    with session_scope() as s:
+        lead = s.get(Lead, lead_id)
+        if lead is not None:
+            s.delete(lead)
+    logger.warning(
+        "[admin] hard-deleted lead {} (phone={}) via /admin UI ({})",
+        lead_id, phone, leadme_msg or "leadme=skipped",
+    )
     return RedirectResponse(url="/admin", status_code=303)
