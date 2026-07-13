@@ -1,0 +1,91 @@
+flowchart TD
+    START(["הליד מקבל הודעת פתיחה<br/>אחרי מילוי טופס באתר"]) --> Q1["הבוט: <br/>'היי, מה מסקרן אותך בעולם הרחפנים?<br/>יש לך ניסיון קודם?'"]
+
+    Q1 --> INTENT{"זיהוי כוונה<br/>(intent)"}
+
+    INTENT -->|"'רוצה קורס' / 'רישיון' /<br/>'ללמוד להטיס'"| C0[מסלול קורס]
+    INTENT -->|"'רוצה לקנות Mavic' /<br/>'איזה רחפן מתאים'"| SHOP["הפניה לחנות:<br/>propeller-drones.shop<br/>+ הצעה למידע על קורס"]
+    INTENT -->|"'יש לי מפעל' /<br/>'צריך מיפוי/שטיפה'"| SERVICE["בירור התעשייה<br/>→ תיאום שיחה עם יועץ"]
+    INTENT -->|"'רוצה לטוס בסופ״ש' /<br/>'לצלם את הילדים'"| HOBBY["הסבר על רישיון פנאי<br/>+ הפניה לחנות"]
+    INTENT -->|"'מגייסים?' / 'יש עבודה?'"| JOB["מייל HR:<br/>hr@propeller-drones.com<br/>סיום שיחה"]
+
+    SHOP --> BOOK
+    SERVICE --> BOOK
+    HOBBY --> BOOK
+    JOB --> END([סיום])
+
+    C0 --> FAM{"רמת היכרות של הליד"}
+
+    FAM -->|"מתחיל לגמרי"| BEG["מסלול מתחיל"]
+    FAM -->|"מכיר משהו"| AWR["מסלול מודע"]
+    FAM -->|"יש ניסיון/רישיון"| EXP["מסלול מנוסה"]
+
+    BEG --> BEGQ{"האם שאל 2 שאלות<br/>כלליות ומעלה?"}
+    BEGQ -->|"כן"| WEB["🎬 שלח וובינר מלא<br/>(55 דק')"]
+    BEGQ -->|"לא"| INSP
+
+    AWR --> INSP
+    EXP --> INSP
+
+    INSP["הצגת התחום להשראה:<br/>'בוגרים שלנו עובדים באבטחה,<br/>חקלאות, מיפוי, קולנוע...'<br/>❌ בלי מחירים, בלי המלצת מסלול"]
+
+    INSP --> VID["🎬 שלח סרטון תדמית קצר<br/>(intro_drones_hype)"]
+
+    VID --> OFFERWEB{"הליד הגיב בחיוב?"}
+    OFFERWEB -->|"כן"| WEBQ["הצע וובינר מלא:<br/>'רוצה לראות את הוובינר<br/>המלא של 55 דק?'"]
+    OFFERWEB -->|"לא/שאלה אחרת"| Q2
+
+    WEBQ -->|"'כן'"| WEB
+    WEBQ -->|"'לא'"| Q2
+    WEB --> Q2
+
+    Q2["מה עוד מעניין אותך?<br/>הליד שואל שאלות ספציפיות"]
+
+    Q2 --> PRICEQ{"שאלה על מחיר?"}
+    PRICEQ -->|"כן"| PRICE["תשובת מחיר:<br/>'הטווח שלנו 1,200 ₪ – 15,000 ₪<br/>יועץ יסביר לך את המחיר המדויק<br/>בשיחה של 10 דקות'<br/><br/>❌ אסור לנקוב במחיר של מסלול ספציפי"]
+    PRICEQ -->|"לא"| WHYPQ
+
+    WHYPQ{"שאלה 'למה דווקא פרופלור?'"}
+    WHYPQ -->|"כן"| PROP["פרטים על פרופלור:<br/>2500+ בוגרים · 95% מעבירים בטסט<br/>מדריכים מנוסים · יחס אחד-על-אחד<br/>ליווי אחרי הקורס"]
+    WHYPQ -->|"לא"| Q3
+
+    PRICE --> Q3
+    PROP --> Q3
+
+    Q3["מה התחום שהכי מעניין אותך?"] --> INDUSTRY["🏷️ שמירת תעשיית עניין<br/>(אבטחה / חקלאות / מיפוי /<br/>קולנוע / תשתיות / אחר)"]
+
+    INDUSTRY --> INVITE["הצע שיחה:<br/>'רוצה שיועץ לימודים ייצור<br/>איתך קשר לספר עוד?'"]
+
+    INVITE --> INVANS{"תשובת הליד"}
+    INVANS -->|"'כן'"| BOOK
+    INVANS -->|"'לא כרגע'"| END
+
+    BOOK["שאל לחלון שעות:<br/>'באיזה חלון עדיף לך:<br/>9-12 / 12-15 / 15-18?'"]
+
+    BOOK --> SLOT{"תשובת הליד"}
+    SLOT -->|"9-12 / 12-15 / 15-18 / כל שעה"| OK["✅ schedule_call<br/>→ עדכון LeadMe<br/>→ handed_off<br/>→ 'מעולה, יועץ יחזור אליך<br/>בחלון X. תודה!'"]
+    SLOT -->|"שם עיר, תחום עניין,<br/>שעה חופשית ('בערב')"| REJ["❌ אל תשמור כ-slot!<br/>הצע שוב את שלושת<br/>החלונות המדויקים"]
+
+    REJ --> BOOK
+    OK --> POST[מצב: הועבר לסוכן]
+
+    POST --> Q4{"הליד ממשיך לכתוב?"}
+    Q4 -->|"שאלה חדשה"| ANS["ענה על השאלה<br/>❌ בלי לבקש חלון שעות שוב"]
+    Q4 -->|"'רגע זה טעות' /<br/>'תבטל'"| CAN["cancel_call<br/>→ אפס slot<br/>→ 'סליחה, ביטלתי.<br/>באיזה חלון נכון עדיף לך?'"]
+
+    CAN --> BOOK
+    ANS --> Q4
+
+    Q4 -->|"אין תגובה 24 שעות"| NUDGE["🕒 תזכורת אוטומטית<br/>מהמערכת"]
+
+    classDef start fill:#312e81,stroke:#818cf8,color:#e0e7ff
+    classDef ending fill:#065f46,stroke:#34d399,color:#d1fae5
+    classDef decision fill:#78350f,stroke:#fbbf24,color:#fef3c7
+    classDef action fill:#1e3a8a,stroke:#60a5fa,color:#dbeafe
+    classDef warn fill:#7f1d1d,stroke:#f87171,color:#fecaca
+
+    class START start
+    class END,OK,POST,NUDGE ending
+    class INTENT,FAM,BEGQ,PRICEQ,WHYPQ,INVANS,SLOT,Q4,OFFERWEB decision
+    class Q1,Q2,Q3,WEBQ,WEB,VID,INSP,SHOP,SERVICE,HOBBY,JOB,PROP,PRICE,INDUSTRY,INVITE,BOOK,ANS,CAN,BEG,AWR,EXP,C0 action
+    class REJ warn
