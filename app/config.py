@@ -83,6 +83,10 @@ class Settings(BaseSettings):
     leadme_admin_base: str = Field(
         "https://www.leadmecms.co.il", alias="LEADME_ADMIN_BASE",
     )
+    # When true, ALL LeadMe writes (insert/update/cancel) become no-ops that
+    # only log. Read-side (search/delete) still works. Used by the eval
+    # harness so fake 999xxx phones don't pollute LeadMe.
+    leadme_test_mode: bool = Field(False, alias="LEADME_TEST_MODE")
 
     # Admin UI (HTTP Basic auth for /admin routes)
     admin_user: str = Field("", alias="ADMIN_USER")

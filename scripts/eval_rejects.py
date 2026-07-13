@@ -17,17 +17,32 @@ Exits with code 0 if all pass, 1 if any fail. Prints a table.
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 import uuid
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
+
+# MUST be set BEFORE app.config.get_settings() is ever called (which
+# happens on the first import of most app modules). Turning this on
+# makes app.crm.leadme_client no-op every write so fake test phones
+# don't pollute LeadMe / the 'הוסרו מ-whatsapp' trash campaign.
+os.environ["LEADME_TEST_MODE"] = "1"
+
+
 from sqlalchemy import select
 
 from app.agent.graph import handle_message
 from app.db.models import FunnelStage, Lead
 from app.db.session import session_scope
+
+
+# Every fake lead created by this harness gets this name prefix so the
+# customer can immediately spot them in the admin panel / LeadMe if any
+# leak past the two hard guards (LEADME_TEST_MODE + 999-phone filter).
+TEST_LEAD_NAME_PREFIX = "TEST-EVAL"
 
 
 HEBREW_RE = re.compile(r"[\u0590-\u05FF]")
@@ -448,6 +463,170 @@ SCENARIOS: List[Scenario] = [
         ],
     ),
     Scenario(
+        name="specific_price_ask_stays_range",
+        description=(
+            "Even under repeat pressure, bot must not quote a per-course price; "
+            "must reroute to a call with the advisor."
+        ),
+        sender_name="Amit",
+        turns=[
+            Turn(user_msg="כמה עולה הקורס?"),
+            Turn(
+                user_msg="לא, אני רוצה מחיר מדויק. כמה עולה המסלול הבסיסי?",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion(
+                        "does NOT quote a specific numeric price like 5,499 / 3,200 / 4,700",
+                        # Any 4-digit number BETWEEN the endpoints (excluding
+                        # the range endpoints themselves 1200 and 15000).
+                        lambda r, _l: not re.search(
+                            r"(?<!\d)(?:1[3-9]\d{2}|[2-9]\d{3}|1[0-4],?\d{3})(?!\d)",
+                            r or "",
+                        ),
+                    ),
+                    Assertion(
+                        "refers to advisor (יועץ)",
+                        contains("יועץ"),
+                    ),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
+        name="beginner_asking_which_course_no_recommendation",
+        description=(
+            "Beginner asks 'which course should I take?' -- bot must NOT "
+            "recommend a specific course. Must defer to the human advisor."
+        ),
+        sender_name="Liran",
+        turns=[
+            Turn(user_msg="היי, אני חדש לחלוטין. אין לי שום ניסיון."),
+            Turn(
+                user_msg="איזה קורס הכי מתאים לי?",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion(
+                        "does NOT recommend basic/25kg/beginner course",
+                        not_contains(
+                            "מומלץ להתחיל", "כדאי לך המסלול הבסיסי",
+                            "רוב המתחילים בוחרים",
+                            "המסלול המומלץ",
+                        ),
+                    ),
+                    Assertion(
+                        "defers to the advisor",
+                        contains("יועץ"),
+                    ),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
+        name="already_booked_does_not_re_ask_slot",
+        description=(
+            "Lead already has a slot captured. When they ask a follow-up "
+            "question, bot must NOT ask for the time window again."
+        ),
+        sender_name="Gilad",
+        turns=[
+            Turn(user_msg="היי מתעניין בקורס"),
+            Turn(user_msg="12-15"),
+            Turn(
+                user_msg="ומה אפשר לעשות אחרי הקורס?",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion(
+                        "does NOT re-ask the slot question",
+                        not_contains(
+                            "איזה חלון",
+                            "מתי נוח לך",
+                            "9-12, 12-15",
+                        ),
+                    ),
+                    Assertion(
+                        "slot is still 12-15 (unchanged)",
+                        slot_equals("12-15"),
+                    ),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
+        name="filler_phrase_ban_end_of_reply",
+        description=(
+            "Bot must not end replies with 'אני כאן לעזור' / 'מוזמן לפנות' etc."
+        ),
+        sender_name="Shani",
+        turns=[
+            Turn(user_msg="היי, שאלה קטנה"),
+            Turn(
+                user_msg="כמה זמן לוקח קורס תיאוריה?",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion(
+                        "no forbidden filler ending",
+                        not_contains(
+                            "אני כאן לעזור",
+                            "אני כאן בשבילך",
+                            "מוזמן לפנות",
+                            "מקווה שעזרתי",
+                            "אשמח לעזור",
+                            "אני זמין לכל שאלה",
+                        ),
+                    ),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
+        name="one_question_per_message",
+        description="Bot must ask at most one question per message.",
+        sender_name="Ori",
+        turns=[
+            Turn(
+                user_msg="היי, מתעניין בקורס רחפנים",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion(
+                        "at most one '?' in the reply",
+                        lambda r, _l: (r or "").count("?") <= 1,
+                    ),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
+        name="fake_time_like_18_30_not_a_slot",
+        description=(
+            "Lead answers slot question with '18:30' -- not a canonical "
+            "window. Bot must NOT accept it as slot and NOT auto-schedule."
+        ),
+        sender_name="Barak",
+        turns=[
+            Turn(user_msg="היי, כן אני רוצה שיחה עם יועץ"),
+            Turn(
+                user_msg="18:30",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion(
+                        "slot NOT set to bogus '18:30'",
+                        lambda _r, lead: (lead.lead_metadata or {}).get(
+                            "preferred_call_slot"
+                        ) in (None, "any", "9-12", "12-15", "15-18"),
+                    ),
+                    Assertion(
+                        "funnel NOT handed_off yet",
+                        lambda _r, lead: lead.funnel_stage != FunnelStage.handed_off,
+                    ),
+                    Assertion(
+                        "bot re-offers the 3 canonical windows",
+                        contains_any("9-12", "12-15", "15-18"),
+                    ),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
         name="terminology_yoetz_not_natziv",
         description="Bot uses 'יועץ' rather than 'נציג' when offering the human handoff",
         sender_name="Amir",
@@ -481,16 +660,24 @@ def _no_op_send_video(*_args, **_kwargs) -> None:
     return None
 
 
-def _run_scenario(scenario: Scenario) -> tuple[int, int, list[str]]:
-    """Return (passed, total, failure_lines)."""
+def _run_scenario(scenario: Scenario) -> tuple[int, int, list[str], str]:
+    """Return (passed, total, failure_lines, fake_phone_used)."""
     fake_phone = f"999{uuid.uuid4().int % 10**8:08d}"
     passed = 0
     total = 0
     failures: list[str] = []
 
+    # Prepend the TEST- prefix to the sender name so any lead that slips
+    # past the guards is obvious in the admin panel.
+    tagged_sender_name = (
+        f"{TEST_LEAD_NAME_PREFIX} {scenario.sender_name}"
+        if scenario.sender_name
+        else TEST_LEAD_NAME_PREFIX
+    )
+
     print(f"\n=== {scenario.name} ===")
     print(f"    {scenario.description}")
-    print(f"    phone={fake_phone}")
+    print(f"    phone={fake_phone} name={tagged_sender_name!r}")
 
     for i, turn in enumerate(scenario.turns, 1):
         print(f"  turn {i}: user={turn.user_msg[:70]!r}")
@@ -498,7 +685,7 @@ def _run_scenario(scenario: Scenario) -> tuple[int, int, list[str]]:
             reply = handle_message(
                 phone=fake_phone,
                 text=turn.user_msg,
-                sender_name=scenario.sender_name,
+                sender_name=tagged_sender_name,
                 send_video_fn=_no_op_send_video,
             )
         except Exception as exc:  # noqa: BLE001
@@ -522,28 +709,53 @@ def _run_scenario(scenario: Scenario) -> tuple[int, int, list[str]]:
                 else:
                     failures.append(f"{scenario.name} turn {i}: {a.name}")
 
-    return passed, total, failures
+    return passed, total, failures, fake_phone
+
+
+def _cleanup_test_leads(phones: list[str]) -> None:
+    """Hard-delete every fake lead this run created + all pre-existing
+    999xxx leads (from earlier runs). Cascades to messages. LeadMe is
+    untouched -- test mode ensured we never pushed there in the first
+    place."""
+    from app.db.models import Lead as LeadModel  # avoid confusing scope
+    print("\n" + "-" * 60)
+    print("[cleanup] deleting fake test leads created by this run...")
+    with session_scope() as s:
+        # Delete this run's phones AND every 999xxxx lead lingering from
+        # earlier runs so the local DB stays clean.
+        stmt = select(LeadModel).where(LeadModel.phone.like("999%"))
+        rows = s.execute(stmt).scalars().all()
+        for lead in rows:
+            s.delete(lead)
+        print(f"[cleanup] deleted {len(rows)} test leads "
+              f"(this run + leftovers from earlier runs)")
 
 
 def main() -> int:
     total_passed = 0
     total_all = 0
     all_failures: list[str] = []
+    created_phones: list[str] = []
 
-    for scenario in SCENARIOS:
-        p, t, f = _run_scenario(scenario)
-        total_passed += p
-        total_all += t
-        all_failures.extend(f)
+    try:
+        for scenario in SCENARIOS:
+            p, t, f, phone = _run_scenario(scenario)
+            total_passed += p
+            total_all += t
+            all_failures.extend(f)
+            created_phones.append(phone)
 
-    print("\n" + "=" * 60)
-    print(f"RESULTS: {total_passed}/{total_all} assertions passed")
+        print("\n" + "=" * 60)
+        print(f"RESULTS: {total_passed}/{total_all} assertions passed")
+        if all_failures:
+            print("\nFAILURES:")
+            for line in all_failures:
+                print(f"  - {line}")
+    finally:
+        _cleanup_test_leads(created_phones)
+
     if all_failures:
-        print("\nFAILURES:")
-        for line in all_failures:
-            print(f"  - {line}")
         return 1
-
     print("\nALL PASS \\o/")
     return 0
 

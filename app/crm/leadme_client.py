@@ -162,6 +162,19 @@ def _post(url: str, data: Dict[str, str]) -> tuple[bool, str]:
     return ok, f"{resp.status_code} {body[:200]}"
 
 
+def _is_test_phone(phone: Optional[str]) -> bool:
+    """Return True for synthetic phones used by the eval harness.
+
+    Any push for a phone that starts with the `999` prefix is a test-lead
+    push that must NEVER reach LeadMe -- the eval harness churns dozens
+    of them per run and they were showing up in the customer's
+    'הוסרו מ-whatsapp' trash campaign because LeadMe dedupes on phone
+    and upserts previously-trashed numbers back into the trash campaign.
+    """
+    p = (phone or "").strip()
+    return p.startswith("999")
+
+
 def push_lead(lead: Lead, note: Optional[str] = None) -> bool:
     """Push the lead into LeadMe.
 
@@ -169,8 +182,28 @@ def push_lead(lead: Lead, note: Optional[str] = None) -> bool:
     campaign). If `LEADME_UPDATE_URL` is also set and a status id is
     provided, follow up with a status update so the sales team sees the
     lead in the correct pipeline column.
+
+    Two hard guards:
+    - if the settings flag `leadme_test_mode` is on -> full no-op (log only).
+    - if the phone starts with the eval-harness `999` prefix -> full no-op
+      (log a WARNING so we notice if this ever fires against a real lead).
     """
     settings = get_settings()
+
+    if settings.leadme_test_mode:
+        logger.info(
+            "[LeadMe TEST_MODE] skipping push_lead for {} (test mode on)",
+            lead.phone,
+        )
+        return True
+    if _is_test_phone(lead.phone):
+        logger.warning(
+            "[LeadMe] REFUSING push for test-prefix phone {} -- if this is "
+            "a real lead, remove the 999 prefix.",
+            lead.phone,
+        )
+        return True
+
     insert_url = (settings.leadme_insert_url or "").strip()
     update_url = (settings.leadme_update_url or "").strip()
     status_val = (settings.leadme_status_id or "").strip()
@@ -224,6 +257,19 @@ def push_lead_cancellation(lead: Lead, reason: Optional[str] = None) -> bool:
     "cancelled" note.
     """
     settings = get_settings()
+
+    if settings.leadme_test_mode:
+        logger.info(
+            "[LeadMe TEST_MODE] skipping cancel_lead for {} (test mode on)",
+            lead.phone,
+        )
+        return True
+    if _is_test_phone(lead.phone):
+        logger.warning(
+            "[LeadMe] REFUSING cancel for test-prefix phone {}", lead.phone,
+        )
+        return True
+
     update_url = (settings.leadme_update_url or "").strip()
     if not update_url or not lead.phone:
         logger.info(
