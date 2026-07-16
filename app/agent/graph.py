@@ -197,10 +197,14 @@ def handle_message(
         prior_user_msgs = sum(
             1 for m in (lead.messages or []) if m.role == MessageRole.user
         )
+        # Trigger Level 2 (replied) on first user message unless we already
+        # have a higher-engagement state (Level 1 = booked). NOTE: Level 3
+        # (silent) SHOULD be overridden -- a lead who replies is no longer
+        # silent. push_engagement_level enforces the upgrade rules.
         if (
             prior_user_msgs == 0
             and lead.funnel_stage != FunnelStage.handed_off
-            and (already_level is None or int(already_level) < 2)
+            and already_level != 1
         ):
             push_level_2 = True
 

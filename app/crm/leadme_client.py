@@ -313,26 +313,58 @@ def push_engagement_level(
 ) -> bool:
     """Convenience wrapper: push an engagement level (1/2/3) to LeadMe.
 
-    Idempotent per (lead, level): if the lead's ``lead_metadata`` already
-    records this exact level as pushed, returns True without hitting
-    LeadMe. Prevents thrashing when e.g. a lead sends two messages in a
-    row and both would try to push level 2.
+    Level semantics (numerically LOWER = more engaged):
+        1 = booked a call.
+        2 = replied to the bot.
+        3 = never replied to the opener.
+
+    Transitions we allow (engagement can only INCREASE over time):
+
+        Any -> 1 (booked): always allowed. Book might happen after any
+                           prior state, including cancel+rebook.
+        3   -> 2 (silent lead replied): allowed. The bulk classifier
+                           pushes Level 3 at scale, then a live reply
+                           must upgrade to Level 2.
+        None -> 2 / 3    : allowed (first-time classification).
+        Same level        : no-op, idempotent.
+        1 -> 2 / 3        : REFUSED (never downgrade a booked lead).
+        2 -> 3            : REFUSED (a lead who replied isn't "silent").
     """
     if level not in (1, 2, 3):
         logger.warning("[LeadMe] ignoring invalid engagement level {}", level)
         return False
+
     md = dict(lead.lead_metadata or {})
     already = md.get("leadme_last_level")
-    if already is not None and int(already) >= int(level) and level != 1:
+    already_int = int(already) if already is not None else None
+
+    # Same level -> nothing to do.
+    if already_int == level:
         logger.info(
-            "[LeadMe] lead {} already at level {} (>= requested {}), "
-            "skipping", lead.phone, already, level,
+            "[LeadMe] lead {} already at level {}, skipping duplicate",
+            lead.phone, level,
         )
         return True
+
+    # Booked never downgrades.
+    if already_int == 1 and level in (2, 3):
+        logger.info(
+            "[LeadMe] lead {} is already booked (L1); refusing downgrade "
+            "to L{}", lead.phone, level,
+        )
+        return True
+
+    # Replied never downgrades to silent.
+    if already_int == 2 and level == 3:
+        logger.info(
+            "[LeadMe] lead {} already replied (L2); refusing downgrade "
+            "to L3", lead.phone,
+        )
+        return True
+
+    # 3 -> 2, 3 -> 1, 2 -> 1, None -> any: proceed.
     ok = push_lead(lead, note=note, level=level)
     if ok:
-        # Persist last-pushed level on the ORM object; the caller is
-        # expected to commit the surrounding session.
         md["leadme_last_level"] = int(level)
         lead.lead_metadata = md
     return ok
