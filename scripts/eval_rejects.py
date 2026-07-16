@@ -651,6 +651,35 @@ SCENARIOS: List[Scenario] = [
         ],
     ),
     Scenario(
+        name="no_markdown_links_in_whatsapp_reply",
+        description=(
+            "WhatsApp doesn't render markdown. Bot must not emit "
+            "'[text](url)' or '**url**' syntax; just plain URLs."
+        ),
+        sender_name="Yaron",
+        turns=[
+            Turn(user_msg="היי, אני מתכנן לפתוח עסק לצילום 3D בעזרת רחפנים"),
+            Turn(
+                user_msg="איפה אפשר לקנות רחפן?",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion(
+                        "no markdown-link '[text](url)' syntax",
+                        lambda r, _l: not re.search(
+                            r"\[[^\]]+\]\(https?://", r or "",
+                        ),
+                    ),
+                    Assertion(
+                        "no bold-wrapped URL like '**https://...**'",
+                        lambda r, _l: not re.search(
+                            r"\*\*https?://", r or "",
+                        ),
+                    ),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
         name="four_professions_lists_master_track",
         description=(
             "Lead from the '4 professions' campaign asks what the 4 "

@@ -98,6 +98,27 @@ def _strip_filler(reply: str) -> str:
     return "\n".join(lines).rstrip()
 
 
+# WhatsApp does NOT render markdown links. The LLM sometimes falls back
+# to markdown syntax anyway ('[label](url)' or '**url**') and the lead
+# sees the raw brackets/asterisks. Convert every markdown link to just
+# its URL and strip bold-asterisks around URLs.
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
+_BOLD_URL_RE = re.compile(r"\*\*(https?://\S+?)\*\*")
+_BOLD_EMAIL_RE = re.compile(r"\*\*([\w.+-]+@[\w.-]+\.[A-Za-z]{2,})\*\*")
+
+
+def _strip_markdown_links(reply: str) -> str:
+    """WhatsApp-safe: turn markdown-link and bold-URL syntax into plain URLs."""
+    if not reply:
+        return reply
+    # [text](url) -> url (drop the label; label is usually the same as the
+    # URL anyway, and WhatsApp will linkify the bare URL cleanly).
+    reply = _MD_LINK_RE.sub(r"\2", reply)
+    reply = _BOLD_URL_RE.sub(r"\1", reply)
+    reply = _BOLD_EMAIL_RE.sub(r"\1", reply)
+    return reply
+
+
 @lru_cache(maxsize=1)
 def _model() -> ChatOpenAI:
     settings = get_settings()
@@ -273,6 +294,7 @@ def handle_message(
                     )
 
         reply = _strip_filler(reply)
+        reply = _strip_markdown_links(reply)
 
         _enforce_booking_promise(session, lead, reply)
 
