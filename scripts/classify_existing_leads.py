@@ -41,6 +41,7 @@ from app.crm.leadme_client import (
     push_engagement_level,
     push_lead,
 )
+from app.crm.leadme_delete import _build_client, get_current_status_text
 from app.db.models import FunnelStage, Lead, Message, MessageRole
 from app.db.session import session_scope
 
@@ -80,14 +81,34 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--force", action="store_true",
         help="Push even if leadme_last_level already records this level.",
     )
+    parser.add_argument(
+        "--only-if-still-new", action="store_true",
+        help=(
+            "Before pushing, query LeadMe for the lead's current status via "
+            "the admin API. Skip any lead whose current status is NOT the "
+            "plain 'חדש' (e.g., anything a human already moved to a Level "
+            "1/2/3 status or any other status). Requires fresh cookies at "
+            "LEADME_COOKIES_PATH."
+        ),
+    )
     args = parser.parse_args(argv)
 
     counts: Counter[int] = Counter()
     skipped_test = 0
     skipped_muted = 0
     skipped_already = 0
+    skipped_not_new = 0
+    skipped_no_lm = 0
     pushed_ok = 0
     pushed_fail = 0
+
+    lm_client = None
+    if args.only_if_still_new and args.commit:
+        lm_client = _build_client()
+        if lm_client is None:
+            print("ERROR: --only-if-still-new requires LEADME_COOKIES_PATH "
+                  "with a valid cookies file. Aborting.")
+            return 2
 
     with session_scope() as session:
         # Order oldest -> newest so LeadMe sees a stable timeline of updates.
@@ -126,6 +147,23 @@ def main(argv: Optional[list[str]] = None) -> int:
                     skipped_already += 1
                     continue
 
+            if args.only_if_still_new and args.commit and lm_client is not None:
+                status_text = get_current_status_text(lead.phone, lm_client)
+                if status_text is None:
+                    logger.warning(
+                        "[classify] no LeadMe row for phone={} -- skipping",
+                        lead.phone,
+                    )
+                    skipped_no_lm += 1
+                    continue
+                # Anything OTHER than the plain "חדש" bucket = human already
+                # touched it (רמה 1/2/3, מעוניין, לא רלוונטי, וכו'). Skip.
+                if "רמה" in status_text or "חדש" not in status_text:
+                    print(f"SKIP (not חדש) lead={lead.id} phone={lead.phone!r} "
+                          f"leadme_status={status_text!r}")
+                    skipped_not_new += 1
+                    continue
+
             print(_describe(lead, level, user_count))
 
             if args.commit:
@@ -160,11 +198,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     print("\n" + "=" * 60)
     print(f"Would classify: L1={counts[1]}  L2={counts[2]}  L3={counts[3]}")
     print(f"skipped: test={skipped_test} muted={skipped_muted} "
-          f"already-classified={skipped_already}")
+          f"already-classified={skipped_already} "
+          f"not-חדש-in-leadme={skipped_not_new} "
+          f"not-in-leadme={skipped_no_lm}")
     if args.commit:
         print(f"pushed to LeadMe: ok={pushed_ok} failed={pushed_fail}")
     else:
         print("DRY RUN (no LeadMe pushes). Add --commit to execute.")
+    if lm_client is not None:
+        try:
+            lm_client.close()
+        except Exception:  # noqa: BLE001
+            pass
     return 0
 
 

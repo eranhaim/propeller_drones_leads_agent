@@ -212,6 +212,69 @@ def find_leadme_id_by_phone(phone: str, client: httpx.Client) -> Optional[str]:
     return None
 
 
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def get_row_by_phone(phone: str, client: httpx.Client) -> Optional[list]:
+    """Return the raw DataTables row for ``phone`` (list of cell HTML), or None.
+
+    Same underlying request as :func:`find_leadme_id_by_phone` but returns the
+    full row so callers can inspect other cells (status column, campaign,
+    etc.) without a second HTTP round-trip.
+    """
+    settings = get_settings()
+    base = settings.leadme_admin_base
+    try:
+        client.get(base + "/app/leads")
+    except httpx.HTTPError:
+        pass
+    url = base + "/app/leads/getDataForTable"
+    try:
+        resp = client.get(url, params=_search_params(phone))
+    except httpx.HTTPError as e:
+        logger.error("[leadme-status] search request failed: {}", e)
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        body = resp.json()
+    except json.JSONDecodeError:
+        return None
+    rows = body.get("data") or []
+    if not rows:
+        return None
+    row = rows[0]
+    if isinstance(row, list):
+        return row
+    return None
+
+
+def get_current_status_text(phone: str, client: httpx.Client) -> Optional[str]:
+    """Return the status column plain-text ("חדש", "חדש - רמה 1", ...) or None.
+
+    Scans every cell of the row, strips HTML tags, and returns the first
+    cell whose text contains a known status keyword. If nothing looks like
+    a status, returns the concatenated stripped text of all cells (still
+    useful — the caller can .contains-check whatever it needs).
+    """
+    row = get_row_by_phone(phone, client)
+    if row is None:
+        return None
+
+    status_keywords = ("חדש", "מעוניין", "לא רלוונטי", "לא ענה",
+                       "עסקה", "בטיפול", "נדחה", "נסגר")
+    texts = []
+    for cell in row:
+        if not isinstance(cell, str):
+            continue
+        text = _HTML_TAG_RE.sub(" ", cell)
+        text = re.sub(r"\s+", " ", text).strip()
+        texts.append(text)
+        if any(kw in text for kw in status_keywords):
+            return text
+    return " | ".join(texts) if texts else None
+
+
 def delete_leadme_id(leadme_id: str, client: httpx.Client) -> tuple[bool, str]:
     """Fire the deleteLeads POST. Returns (ok, detail).
 
