@@ -146,81 +146,40 @@ def _build_client() -> Optional[httpx.Client]:
     return client
 
 
-def find_leadme_id_by_phone(phone: str, client: httpx.Client) -> Optional[str]:
-    """Return the numeric LeadMe lead id for ``phone``, or None.
+def _phone_variants(phone: str) -> list[str]:
+    """Return search variants for a phone in different formats.
 
-    Prime the session by visiting ``/app/leads`` first (LeadMe's admin
-    stores a per-tab "active datatable" in the session; calls to the
-    ajax endpoint 302 -> /404 without it). Then call
-    ``/app/leads/getDataForTable`` -- reverse-engineered from the actual
-    working URL rather than the /app/ajax/getDataForTable path that
-    appears in some old DevTools captures (which redirects to /404 for
-    us now).
+    LeadMe stores phones in Israeli local format (e.g., ``053-346-0489``),
+    but our DB stores E.164-ish (``972533460489``). Their DataTables search
+    matches substrings, so the last 9 digits (``533460489``) hits the
+    normalized digits regardless of dashes. We keep a couple of fallbacks
+    just in case a lead was inserted in a different format.
     """
-    settings = get_settings()
-    base = settings.leadme_admin_base
-    # Prime the session -- without this the ajax endpoint 302s to /404.
-    try:
-        client.get(base + "/app/leads")
-    except httpx.HTTPError:
-        pass  # not fatal, try the ajax call anyway
-    url = base + "/app/leads/getDataForTable"
-    params = _search_params(phone)
-    try:
-        resp = client.get(url, params=params)
-    except httpx.HTTPError as e:
-        logger.error("[leadme-delete] search request failed: {}", e)
-        return None
-
-    if resp.status_code != 200:
-        logger.warning(
-            "[leadme-delete] search HTTP {} for phone={} (session cookie "
-            "may be expired) -- body preview: {!r}",
-            resp.status_code, phone, resp.text[:200],
-        )
-        return None
-
-    try:
-        body = resp.json()
-    except json.JSONDecodeError:
-        # A redirect to the login page comes back as HTML, not JSON -- the
-        # canonical "your cookies expired" signal.
-        logger.warning(
-            "[leadme-delete] search returned non-JSON for phone={} -- "
-            "cookies likely expired. First 200 chars: {!r}",
-            phone, resp.text[:200],
-        )
-        return None
-
-    rows = body.get("data") or []
-    for row in rows:
-        # Row is an array of HTML cells; first cell has the checkbox with
-        # the leadme id as ``value=""``.
-        cell = row[0] if row and isinstance(row, list) else None
-        if not isinstance(cell, str):
-            continue
-        m = _LEADME_ID_RE.search(cell)
-        if m:
-            leadme_id = m.group(1)
-            logger.info(
-                "[leadme-delete] resolved phone={} -> leadme_id={}",
-                phone, leadme_id,
-            )
-            return leadme_id
-
-    logger.info("[leadme-delete] no LeadMe lead found for phone={}", phone)
-    return None
+    digits = "".join(ch for ch in phone if ch.isdigit())
+    variants: list[str] = []
+    if len(digits) >= 9:
+        variants.append(digits[-9:])
+    if len(digits) >= 10:
+        variants.append(digits[-10:])
+    if digits.startswith("972"):
+        variants.append("0" + digits[3:])
+    variants.append(digits)
+    # dedupe preserving order
+    seen: set[str] = set()
+    out: list[str] = []
+    for v in variants:
+        if v and v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
 
 
-_HTML_TAG_RE = re.compile(r"<[^>]+>")
+def _fetch_row(phone: str, client: httpx.Client) -> Optional[list]:
+    """Fetch the DataTables row for ``phone``. Tries a couple of formats.
 
-
-def get_row_by_phone(phone: str, client: httpx.Client) -> Optional[list]:
-    """Return the raw DataTables row for ``phone`` (list of cell HTML), or None.
-
-    Same underlying request as :func:`find_leadme_id_by_phone` but returns the
-    full row so callers can inspect other cells (status column, campaign,
-    etc.) without a second HTTP round-trip.
+    Uses ``/app/ajax/getDataForTable`` (the current path -- the older
+    ``/app/leads/getDataForTable`` now 404s). Session must be primed first
+    (``GET /app/leads``); we do that once here per call.
     """
     settings = get_settings()
     base = settings.leadme_admin_base
@@ -228,51 +187,76 @@ def get_row_by_phone(phone: str, client: httpx.Client) -> Optional[list]:
         client.get(base + "/app/leads")
     except httpx.HTTPError:
         pass
-    url = base + "/app/leads/getDataForTable"
-    try:
-        resp = client.get(url, params=_search_params(phone))
-    except httpx.HTTPError as e:
-        logger.error("[leadme-status] search request failed: {}", e)
-        return None
-    if resp.status_code != 200:
-        return None
-    try:
-        body = resp.json()
-    except json.JSONDecodeError:
-        return None
-    rows = body.get("data") or []
-    if not rows:
-        return None
-    row = rows[0]
-    if isinstance(row, list):
-        return row
+    url = base + "/app/ajax/getDataForTable"
+    for variant in _phone_variants(phone):
+        try:
+            resp = client.get(url, params=_search_params(variant))
+        except httpx.HTTPError as e:
+            logger.error("[leadme-delete] search failed for {}: {}", variant, e)
+            continue
+        if resp.status_code != 200:
+            continue
+        try:
+            body = resp.json()
+        except json.JSONDecodeError:
+            continue
+        rows = body.get("data") or []
+        if rows and isinstance(rows[0], list):
+            return rows[0]
     return None
 
 
-def get_current_status_text(phone: str, client: httpx.Client) -> Optional[str]:
-    """Return the status column plain-text ("חדש", "חדש - רמה 1", ...) or None.
+def find_leadme_id_by_phone(phone: str, client: httpx.Client) -> Optional[str]:
+    """Return the numeric LeadMe lead id for ``phone``, or None."""
+    row = _fetch_row(phone, client)
+    if row is None:
+        logger.info("[leadme-delete] no LeadMe lead found for phone={}", phone)
+        return None
+    # cell[1] holds the plain numeric id; cell[0] holds the checkbox HTML
+    # with the same id inside value="". Prefer cell[1] for robustness.
+    if len(row) > 1 and isinstance(row[1], (str, int)):
+        val = str(row[1]).strip()
+        if val.isdigit():
+            logger.info("[leadme-delete] resolved phone={} -> leadme_id={}",
+                        phone, val)
+            return val
+    cell0 = row[0] if row else None
+    if isinstance(cell0, str):
+        m = _LEADME_ID_RE.search(cell0)
+        if m:
+            leadme_id = m.group(1)
+            logger.info("[leadme-delete] resolved phone={} -> leadme_id={}",
+                        phone, leadme_id)
+            return leadme_id
+    return None
 
-    Scans every cell of the row, strips HTML tags, and returns the first
-    cell whose text contains a known status keyword. If nothing looks like
-    a status, returns the concatenated stripped text of all cells (still
-    useful — the caller can .contains-check whatever it needs).
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def get_row_by_phone(phone: str, client: httpx.Client) -> Optional[list]:
+    """Return the raw DataTables row for ``phone`` (list of cell HTML), or None."""
+    return _fetch_row(phone, client)
+
+
+def get_current_status_text(phone: str, client: httpx.Client) -> Optional[str]:
+    """Return the status column plain-text for ``phone``, or None.
+
+    Status lives in cell[5] as an HTML fragment like::
+
+        <span class="label status" style="...">חדש</span>
+        <span class="label status" style="...">חדש - רמה 1</span>
+        <span class="label status" style="...">מאגר - בדיקה</span>
+
+    We strip tags and return the visible text.
     """
     row = get_row_by_phone(phone, client)
     if row is None:
         return None
-
-    status_keywords = ("חדש", "מעוניין", "לא רלוונטי", "לא ענה",
-                       "עסקה", "בטיפול", "נדחה", "נסגר")
-    texts = []
-    for cell in row:
-        if not isinstance(cell, str):
-            continue
-        text = _HTML_TAG_RE.sub(" ", cell)
-        text = re.sub(r"\s+", " ", text).strip()
-        texts.append(text)
-        if any(kw in text for kw in status_keywords):
-            return text
-    return " | ".join(texts) if texts else None
+    if len(row) < 6 or not isinstance(row[5], str):
+        return None
+    text = _HTML_TAG_RE.sub(" ", row[5])
+    return re.sub(r"\s+", " ", text).strip() or None
 
 
 def delete_leadme_id(leadme_id: str, client: httpx.Client) -> tuple[bool, str]:

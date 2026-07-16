@@ -103,7 +103,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     pushed_fail = 0
 
     lm_client = None
-    if args.only_if_still_new and args.commit:
+    if args.only_if_still_new:
         lm_client = _build_client()
         if lm_client is None:
             print("ERROR: --only-if-still-new requires LEADME_COOKIES_PATH "
@@ -147,7 +147,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     skipped_already += 1
                     continue
 
-            if args.only_if_still_new and args.commit and lm_client is not None:
+            if args.only_if_still_new and lm_client is not None:
                 status_text = get_current_status_text(lead.phone, lm_client)
                 if status_text is None:
                     logger.warning(
@@ -156,11 +156,13 @@ def main(argv: Optional[list[str]] = None) -> int:
                     )
                     skipped_no_lm += 1
                     continue
-                # Anything OTHER than the plain "חדש" bucket = human already
-                # touched it (רמה 1/2/3, מעוניין, לא רלוונטי, וכו'). Skip.
-                if "רמה" in status_text or "חדש" not in status_text:
-                    print(f"SKIP (not חדש) lead={lead.id} phone={lead.phone!r} "
-                          f"leadme_status={status_text!r}")
+                # Only push when the status is literally the default "חדש".
+                # Roy manually reclassifies to "חדש - רמה N" or other
+                # statuses (e.g., "מאגר - בדיקה", "מעוניין"), and we must
+                # never overwrite his work.
+                if status_text.strip() != "חדש":
+                    print(f"SKIP (leadme status={status_text!r}) "
+                          f"lead={lead.id} phone={lead.phone!r}")
                     skipped_not_new += 1
                     continue
 
