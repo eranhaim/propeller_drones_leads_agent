@@ -402,6 +402,80 @@ def run_once() -> None:
                         )
 
 
+# --- LeadMe leak canary -------------------------------------------------
+
+_LAST_LEAK_COUNT: Optional[int] = None
+
+
+def _campaign_leak_canary() -> None:
+    """Periodically read campaign 12277's lead count and alarm on growth.
+
+    We poll LeadMe's ``/app/ajax4/getPieData`` for the "trash" campaign
+    (id 12277 == "הוסרו מ-Whatsapp"). If the count grows between two
+    consecutive ticks, log an ERROR so it surfaces in Docker logs / any
+    log-based alert wired to the process. This is a "defense in depth"
+    tripwire: the actual push path already refuses to create leads (see
+    ``push_lead`` in :mod:`app.crm.leadme_client`), so a growth event
+    means either a manual push, a rogue integration, or a regression we
+    should fix immediately.
+    """
+    global _LAST_LEAK_COUNT
+    try:
+        import json
+        from app.crm.leadme_client import BANNED_LEAKY_CAMPAIGN_ID
+        from app.crm.leadme_delete import _build_client
+        client = _build_client()
+        if client is None:
+            return
+        try:
+            base = get_settings().leadme_admin_base
+            client.get(base
+                       + f"/app/campaigns/manageCampaign/{BANNED_LEAKY_CAMPAIGN_ID}")
+            csrf = client.cookies.get("csrf_cookie_name") \
+                or client.__dict__.get("_csrf_token") or ""
+            resp = client.post(
+                base + "/app/ajax4/getPieData",
+                data={
+                    "campaignId": BANNED_LEAKY_CAMPAIGN_ID,
+                    "startDate": "01/01/2020",
+                    "endDate": "31/12/2099",
+                    "csrf_lmcms": csrf,
+                },
+            )
+            if resp.status_code != 200:
+                return
+            body = json.loads(resp.text)
+            data = body.get("pieData", {}).get("dataD") or []
+            current = int(sum(data)) if data else 0
+        finally:
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+        if _LAST_LEAK_COUNT is None:
+            logger.info(
+                "[leak-canary] baseline for campaign {} = {} leads",
+                BANNED_LEAKY_CAMPAIGN_ID, current,
+            )
+        elif current > _LAST_LEAK_COUNT:
+            logger.error(
+                "[leak-canary] ERROR: campaign {} grew from {} to {} "
+                "leads between ticks -- a leak may have occurred. Check "
+                "the last few push_lead log lines.",
+                BANNED_LEAKY_CAMPAIGN_ID, _LAST_LEAK_COUNT, current,
+            )
+        elif current < _LAST_LEAK_COUNT:
+            logger.info(
+                "[leak-canary] campaign {} shrunk from {} to {} (someone "
+                "cleaned up)", BANNED_LEAKY_CAMPAIGN_ID,
+                _LAST_LEAK_COUNT, current,
+            )
+        _LAST_LEAK_COUNT = current
+    except Exception:
+        logger.exception("[leak-canary] tick failed")
+
+
 # --- scheduler wiring ---------------------------------------------------
 
 
@@ -424,6 +498,19 @@ def run_in_background_thread() -> None:
         max_instances=1,
         coalesce=True,
         next_run_time=datetime.now(ISRAEL_TZ) + timedelta(minutes=1),
+    )
+    # Canary: watch LeadMe campaign 12277 ("הוסרו מ-Whatsapp") for any
+    # unexpected growth. If the bot ever leaks a lead into it again, this
+    # tick will log a loud ERROR that shows up in monitoring so we catch
+    # a regression the same day instead of via a customer complaint.
+    scheduler.add_job(
+        _campaign_leak_canary,
+        trigger="interval",
+        minutes=max(15, settings.followup_interval_minutes),
+        id="leadme_leak_canary",
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(ISRAEL_TZ) + timedelta(minutes=2),
     )
 
     def _start() -> None:

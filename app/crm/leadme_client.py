@@ -1,165 +1,37 @@
-"""LeadMe CMS client -- public "supplier" API.
+"""LeadMe CMS client -- ADMIN-ONLY path.
 
-Reverse-engineered from LeadMe's admin panel. The integration is meant to
-be used exactly the same way LeadMe integrates Facebook, TikTok, and other
-paid lead sources:
+Historical note: LeadMe exposes a public "supplier" API (``/supplier/insert``
+and ``/supplier/update``) intended for lead-source integrations (Facebook,
+TikTok, etc.). On this account BOTH endpoints act as an UPSERT: when the
+phone can't be resolved inside a supplier-linked campaign, LeadMe silently
+creates a duplicate lead in the supplier's default campaign (id 12277 =
+"הוסרו מ-Whatsapp"). That's the "leads keep leaking into the wrong
+campaign" bug the customer reported. To make it structurally impossible
+for us to reintroduce that bug, all supplier-API code has been DELETED
+from this module. Do NOT reintroduce ``httpx.post`` calls to any
+``https://api.leadmecms.co.il/supplier/...`` URL. Everything the bot does
+now goes through the internal admin endpoints using session cookies:
 
-    1. In LeadMe: Preferences -> Suppliers -> New Supplier.
-    2. Give it a name (e.g. "WhatsApp Bot") and set it Active.
-    3. Check the campaign(s) this supplier is allowed to push into
-       (e.g. campaign 12277 = "leads from WhatsApp").
-    4. Save. LeadMe generates a public URL of the form
-           https://api.leadmecms.co.il/supplier/insert/{link_id}/{slug}
-       (visible in the supplier's "API" dialog on the same edit page).
-    5. Also visible: an UPDATE URL of the form
-           https://api.leadmecms.co.il/supplier/update/p/{slug}
-       which accepts (phone, status, ...) to update an existing lead.
+    POST /app/leads/changeLeadsStatus   -- change status pill
+    POST /app/ajax/addLeadTag           -- attach engagement tag
+    (see :mod:`app.crm.leadme_delete`   -- delete + phone-lookup)
 
-Both endpoints accept POST or GET, form-encoded or JSON, no auth headers.
-They dedupe leads by phone within the campaign.
-
-Env vars consumed (see .env.example):
-    LEADME_INSERT_URL           full URL for POST /supplier/insert/...
-                                (per supplier+campaign; empty => no-op stub)
-    LEADME_UPDATE_URL           full URL for POST /supplier/update/p/{slug}
-                                (empty => skip status update after insert)
-    LEADME_STATUS_ID            status id or name to send with update
-                                (e.g. "1", "new", "ready_for_call")
-    LEADME_SOURCE_LABEL         value sent in `tags`
-
-Custom lead field ids (`clf_XXXXX`) are Propeller-specific and mapped
-against the questions currently on their public lead forms. If the account
-changes its custom fields, update ``PROPELLER_CLF`` below.
+Env vars still consumed:
+    LEADME_STATUS_LEVEL_1/2/3  -- numeric status ids for engagement tiers
+    LEADME_STATUS_ID           -- fallback for level 1 if the tier var is empty
+    LEADME_INSERT_MODE=never   -- kill-switch (skip all LeadMe pushes)
+    LEADME_TEST_MODE           -- log-only, no HTTP calls
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Optional
 
 import httpx
 from loguru import logger
 
 from app.config import get_settings
 from app.db.models import Lead
-
-# --- Propeller-specific custom-field ids in LeadMe --------------------------
-# Discovered by inspecting the "API" instructions dialog on the supplier form
-# for this account. Values are exactly what the LeadMe admin shows.
-PROPELLER_CLF = {
-    "intent":              "clf_116982",  # "אני פה בשביל..."
-    "residence_area":      "clf_116984",  # "מה איזור המגורים שלך?"
-    "experience_level":    "clf_116981",  # "איזה ניסיון יש לך עם רחפנים?"
-    "license_type":        "clf_117019",  # "איזה רישיון הטסת רחפנים יש לך?"
-    "familiarity_1_to_5":  "clf_116142",  # "מ-1 עד 5, כמה אתם מכירים..."
-    "course_of_interest":  "clf_116141",  # "באיזה קורס אתם מעוניינים?"
-    "fields_of_interest":  "clf_116140",  # "איזה מהתחומים הבאים מעניין"
-    "age_bucket":          "clf_116983",  # "מה הגיל שלך?"
-    "has_drone_background": "clf_113565", # "יש רקע בהטסת רחפנים"
-    "wants":               "clf_115314",  # "אני רוצה"
-    "prior_experience":    "clf_115313",  # "האם יש לך ניסיון קודם"
-    "interested_in":       "clf_115312",  # "אני מעוניין/ת"
-}
-
-
-def _split_name(display: str) -> tuple[str, str]:
-    display = (display or "").strip()
-    if not display:
-        return "", ""
-    if " " in display:
-        first, last = display.split(" ", 1)
-        return first.strip(), last.strip()
-    return display, ""
-
-
-def _build_insert_payload(lead: Lead, note: Optional[str]) -> Dict[str, str]:
-    """Build the form-encoded payload for /supplier/insert/{link_id}/{slug}."""
-    settings = get_settings()
-    md: Dict[str, Any] = dict(lead.lead_metadata or {})
-
-    display = (lead.name or "").strip()
-    first, last = _split_name(display)
-
-    note_parts: list[str] = []
-    if note:
-        note_parts.append(note)
-    if lead.familiarity_level:
-        note_parts.append(f"רמת היכרות: {lead.familiarity_level.value}")
-    if lead.funnel_stage:
-        note_parts.append(f"שלב משפך: {lead.funnel_stage.value}")
-    if md.get("intent"):
-        note_parts.append(f"מטרה: {md['intent']}")
-    if md.get("industry"):
-        note_parts.append(f"תחום: {md['industry']}")
-    if md.get("preferred_call_slot"):
-        note_parts.append(f"חלון שיחה מועדף: {md['preferred_call_slot']}")
-    if md.get("has_experience") is not None:
-        note_parts.append(f"ניסיון קיים: {md['has_experience']}")
-    if lead.videos_sent:
-        note_parts.append(f"סרטונים שנשלחו: {', '.join(lead.videos_sent)}")
-
-    tag_parts: list[str] = []
-    if settings.leadme_source_label:
-        tag_parts.append(settings.leadme_source_label)
-    slot = (md.get("preferred_call_slot") or "").strip()
-    if slot and slot.lower() != "none":
-        tag_parts.append(f"חלון: {slot}")
-
-    payload: Dict[str, str] = {
-        "action": "new_lead",
-        "fullname": display or lead.phone or "",
-        "firstname": first,
-        "lastname": last,
-        "phone": lead.phone or "",
-        "email": md.get("email") or "",
-        "comment": " | ".join(note_parts),
-        "tags": ",".join(tag_parts),
-        "businesscategory": md.get("industry") or "",
-        "company": md.get("company") or "",
-    }
-
-    # Custom Propeller fields -- push whatever we've collected.
-    clf_map = {
-        "intent":              md.get("intent"),
-        "residence_area":      md.get("residence_area"),
-        "experience_level":    md.get("experience_level")
-                               or ("יש" if md.get("has_experience") else
-                                   "אין" if md.get("has_experience") is False
-                                   else None),
-        "license_type":        md.get("license_type"),
-        "familiarity_1_to_5":  md.get("familiarity_1_to_5")
-                               or (lead.familiarity_level.value
-                                   if lead.familiarity_level else None),
-        "course_of_interest":  md.get("course_of_interest"),
-        "fields_of_interest":  md.get("fields_of_interest"),
-        "age_bucket":          md.get("age_bucket"),
-        "has_drone_background": md.get("has_experience"),
-        "wants":               md.get("wants"),
-        "prior_experience":    md.get("prior_experience")
-                               or md.get("has_experience"),
-        "interested_in":       md.get("interested_in") or md.get("intent"),
-    }
-    for logical, clf_id in PROPELLER_CLF.items():
-        val = clf_map.get(logical)
-        if val is None or val == "":
-            continue
-        payload[clf_id] = str(val)
-
-    # Drop empties so we don't overwrite existing LeadMe data with blanks.
-    return {k: v for k, v in payload.items() if v not in ("", None)}
-
-
-def _post(url: str, data: Dict[str, str]) -> tuple[bool, str]:
-    try:
-        resp = httpx.post(url, data=data, timeout=15.0, follow_redirects=False)
-    except httpx.HTTPError as e:
-        return False, f"httpx error: {e}"
-    body = (resp.text or "").strip()
-    ok = resp.status_code == 200 and ("success" in body.lower() or body == "")
-    # LeadMe's public API always returns 200. Content differentiates:
-    #   {"type":"success","data":""}  -> lead created / accepted
-    #   {"type":"error","data":""}    -> rejected (usually campaign not linked)
-    #   ""                            -> update endpoint success
-    return ok, f"{resp.status_code} {body[:200]}"
 
 
 def _is_test_phone(phone: Optional[str]) -> bool:
@@ -184,6 +56,12 @@ LEVEL_TAGS = {
     2: "רמה 2 · הגיב ולא קבע",
     3: "רמה 3 · לא הגיב",
 }
+
+
+# LeadMe campaign id for the "trash" bucket the bot must never leak into.
+# We assert on lead rows and log loudly if a bot push ever ends up here.
+BANNED_LEAKY_CAMPAIGN_ID = "12277"
+BANNED_LEAKY_CAMPAIGN_NAME = "הוסרו מ-Whatsapp"
 
 
 def _status_id_for_level(level: int) -> str:
@@ -228,9 +106,8 @@ def push_lead(
     """
     # Local import: leadme_delete imports config which imports us at
     # module load in some paths, so keep it lazy.
-    from app.crm.leadme_delete import (
-        _build_client, find_leadme_id_by_phone,
-    )
+    import re as _re
+    from app.crm.leadme_delete import _build_client, get_row_by_phone
 
     settings = get_settings()
 
@@ -273,38 +150,58 @@ def push_lead(
         return False
 
     try:
-        leadme_id = find_leadme_id_by_phone(lead.phone, client)
-        if not leadme_id:
+        row = get_row_by_phone(lead.phone, client)
+        if row is None:
             logger.warning(
                 "[LeadMe] phone {} not found in LeadMe -- NOT creating "
                 "(would leak into supplier campaign). Level={}. "
                 "The lead must first be inserted via the customer's own "
                 "LeadMe form flow.", lead.phone, level,
             )
-            # This is the whole point of the refactor: we NEVER create a
-            # new LeadMe row from the bot side. Return True so callers
-            # don't retry aggressively; log warning so operators notice.
             return True
+
+        # row layout (see leadme_delete.py):
+        #   [checkbox_html, id, name, phone, campaign, status_html, ...]
+        leadme_id = str(row[1]).strip() if len(row) > 1 else ""
+        campaign = ""
+        if len(row) > 4 and isinstance(row[4], str):
+            campaign = _re.sub(r"<[^>]+>", " ", row[4])
+            campaign = _re.sub(r"\s+", " ", campaign).strip()
+
+        # HARD GUARD: if the ONLY visible row for this phone lives in the
+        # banned "trash" campaign 12277, do NOT push. Touching it would
+        # only reinforce a bad state. Bark loudly so operators can move
+        # the lead into a real campaign.
+        if (BANNED_LEAKY_CAMPAIGN_ID in (row[0] or "")
+                or campaign == BANNED_LEAKY_CAMPAIGN_NAME):
+            logger.error(
+                "[LeadMe SAFETY] REFUSED to push status/tag for {} "
+                "leadme_id={} because it lives in the banned campaign "
+                "{!r}. This lead should be moved manually.",
+                lead.phone, leadme_id, campaign or BANNED_LEAKY_CAMPAIGN_NAME,
+            )
+            return False
+
+        if not leadme_id or not leadme_id.isdigit():
+            logger.warning(
+                "[LeadMe] no numeric id in row for {} (row[1]={!r})",
+                lead.phone, row[1] if len(row) > 1 else None,
+            )
+            return False
 
         ok_status = True
         if status_val:
             ok_status = _admin_change_status(client, leadme_id, status_val)
-            if not ok_status:
-                logger.warning(
-                    "[LeadMe admin] status change failed for {} "
-                    "leadme_id={} status={}",
-                    lead.phone, leadme_id, status_val,
-                )
 
         ok_tag = True
         if level_tag:
             ok_tag = _admin_add_tag(client, leadme_id, level_tag)
 
         logger.info(
-            "[LeadMe admin] pushed lead {} leadme_id={} level={} "
-            "status={} tag={!r} (status_ok={}, tag_ok={})",
-            lead.phone, leadme_id, level, status_val or "-", level_tag,
-            ok_status, ok_tag,
+            "[LeadMe admin] pushed lead {} leadme_id={} campaign={!r} "
+            "level={} status={} tag={!r} (status_ok={}, tag_ok={})",
+            lead.phone, leadme_id, campaign, level, status_val or "-",
+            level_tag, ok_status, ok_tag,
         )
         return ok_status
     finally:
