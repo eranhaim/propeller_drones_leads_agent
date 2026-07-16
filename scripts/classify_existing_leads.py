@@ -39,6 +39,7 @@ from sqlalchemy import select
 from app.crm.leadme_client import (
     _is_test_phone,
     push_engagement_level,
+    push_lead,
 )
 from app.db.models import FunnelStage, Lead, Message, MessageRole
 from app.db.session import session_scope
@@ -129,14 +130,25 @@ def main(argv: Optional[list[str]] = None) -> int:
 
             if args.commit:
                 try:
-                    ok = push_engagement_level(
-                        lead, level=level,
-                        note=f"bulk-classified from {user_count} msgs history",
-                    )
+                    if args.force:
+                        # Bypass push_engagement_level's idempotency guard
+                        # so we can re-push after fixing an underlying
+                        # config bug (e.g., wrong status IDs).
+                        ok = push_lead(
+                            lead, note=f"bulk-reclassify (force)", level=level,
+                        )
+                        if ok:
+                            md_new = dict(lead.lead_metadata or {})
+                            md_new["leadme_last_level"] = int(level)
+                            lead.lead_metadata = md_new
+                    else:
+                        ok = push_engagement_level(
+                            lead, level=level,
+                            note=f"bulk-classified from {user_count} msgs",
+                        )
                 except Exception:
                     logger.exception(
-                        "[classify] push_engagement_level raised for lead {}",
-                        lead.id,
+                        "[classify] push failed for lead {}", lead.id,
                     )
                     pushed_fail += 1
                     continue
