@@ -125,9 +125,14 @@ def _render_nudge(name: Optional[str], nudge_number: int) -> Optional[str]:
 
 
 def _is_within_quiet_hours() -> bool:
-    """Return True if we're OUTSIDE the polite window (i.e. do NOT send)."""
+    """Return True if we should NOT send right now (either quiet hours or
+    Israel weekend Fri-Sat). The customer specifically flagged "watch out
+    for Friday and Saturday" -- nudges hitting a lead during shabbat is
+    a bad look. Israel weekend = Friday (weekday=4) and Saturday (5)."""
     settings = get_settings()
     now = datetime.now(ISRAEL_TZ)
+    if now.weekday() in (4, 5):
+        return True
     if now.hour < settings.followup_quiet_start_hour:
         return True
     if now.hour >= settings.followup_quiet_end_hour:
@@ -350,6 +355,7 @@ def run_once() -> None:
             return
 
         logger.info("[followup] {} lead(s) eligible for nudging", len(leads))
+        settings = get_settings()
         for lead in leads:
             md = dict(lead.lead_metadata or {})
             nudge_number = int(md.get("nudge_count", 0) or 0) + 1
@@ -372,6 +378,28 @@ def run_once() -> None:
                 "[followup] nudged lead {} (nudge#{}, msg={})",
                 lead.id, nudge_number, msg.id,
             )
+
+            # On the FINAL nudge, if the lead still hasn't sent a single
+            # inbound message, they're the "never replied" cohort -> push
+            # engagement Level 3 to LeadMe so the sales dashboard shows
+            # the true status. Skipped if they already have any user msgs
+            # in history (they'd already be Level 2 or better).
+            if nudge_number >= settings.followup_max_nudges:
+                user_msg_count = sum(
+                    1 for m in (lead.messages or [])
+                    if m.role == MessageRole.user
+                )
+                if user_msg_count == 0:
+                    try:
+                        from app.crm.client import mark_no_reply
+                        mark_no_reply(
+                            lead,
+                            note=f"no reply after {nudge_number} nudges",
+                        )
+                    except Exception:
+                        logger.exception(
+                            "[level-3] push failed for lead {}", lead.id,
+                        )
 
 
 # --- scheduler wiring ---------------------------------------------------

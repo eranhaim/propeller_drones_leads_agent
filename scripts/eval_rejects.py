@@ -650,6 +650,103 @@ SCENARIOS: List[Scenario] = [
             ),
         ],
     ),
+    Scenario(
+        name="four_professions_defers_to_advisor",
+        description=(
+            "Lead from the '4 professions' campaign asks what the 4 "
+            "professions are. Bot must NOT list a made-up 4 professions "
+            "and must NOT reply with a generic industry list; it must "
+            "defer to the advisor via a scheduled call."
+        ),
+        sender_name="Rami",
+        turns=[
+            Turn(user_msg="היי, ראיתי שיש קורס עם 4 מקצועות"),
+            Turn(
+                user_msg="מה 4 המקצועות?",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion(
+                        "does NOT reply with a made-up numbered list of 4",
+                        # A guessed answer would contain terms like '1.'/'2.'
+                        # followed by industry names in a compact list.
+                        lambda r, _l: not re.search(
+                            r"1\.\s*\S+.*2\.\s*\S+.*3\.\s*\S+.*4\.",
+                            r or "",
+                            re.DOTALL,
+                        ),
+                    ),
+                    Assertion(
+                        "refers to the advisor for exact details",
+                        contains("יועץ"),
+                    ),
+                    Assertion(
+                        "does NOT reply purely with an industry list",
+                        # A truly bad reply names 4 industries WITHOUT
+                        # mentioning the advisor or 'מקצועות'. A GOOD reply
+                        # can mention industries as context but MUST use
+                        # 'מקצועות' or 'יועץ' too.
+                        lambda r, _l: (
+                            "יועץ" in (r or "")
+                            or "מקצועות" in (r or "")
+                        ),
+                    ),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
+        name="level_2_pushed_on_first_reply",
+        description=(
+            "Lead's first inbound message triggers engagement Level 2 "
+            "(replied to bot). We check the metadata not LeadMe (test "
+            "mode is on)."
+        ),
+        sender_name="Elad",
+        turns=[
+            Turn(
+                user_msg="היי, מתעניין בקורס",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion(
+                        "lead metadata records leadme_last_level=2",
+                        lambda _r, lead: (
+                            (lead.lead_metadata or {}).get(
+                                "leadme_last_level"
+                            ) == 2
+                        ),
+                    ),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
+        name="level_1_on_book_supersedes_level_2",
+        description=(
+            "When a lead books a call, the engagement level should "
+            "become 1 (booked) regardless of the previous 2."
+        ),
+        sender_name="Nadav",
+        turns=[
+            Turn(user_msg="היי, כן אני רוצה שיחה עם יועץ"),
+            Turn(
+                user_msg="12-15",
+                assertions=[
+                    Assertion(
+                        "leadme_last_level advanced to 1",
+                        lambda _r, lead: (
+                            (lead.lead_metadata or {}).get(
+                                "leadme_last_level"
+                            ) == 1
+                        ),
+                    ),
+                    Assertion(
+                        "funnel handed_off",
+                        stage_equals(FunnelStage.handed_off),
+                    ),
+                ],
+            ),
+        ],
+    ),
 ]
 
 

@@ -35,6 +35,9 @@ def search_knowledge(query: str, topic: Optional[str] = None) -> str:
       industries, "95% first-try pass" stat, full FAQ). Prefer this for
       convincing/positioning conversations.
     - ``course_license`` -- commercial license focus (25kg vs 2000kg, CAAI exam).
+    - ``course_4_professions`` -- specific to the "4 professions" campaign.
+      Use when lead asks "מה 4 המקצועות" / "אילו מקצועות בקורס" so we get
+      the correct dedicated answer instead of a generic industry list.
     - ``courses`` -- general academy overview.
     - ``service_flight`` / ``service_washing`` -- commercial services offered.
     - ``shop`` -- e-commerce store (drone models, pricing policy, DJI/Enterprise).

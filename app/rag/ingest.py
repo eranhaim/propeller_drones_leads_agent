@@ -265,6 +265,8 @@ def load_local_documents(directory: Path = KNOWLEDGE_DIR) -> List[Document]:
             doc.metadata["topic"] = "course_license"
         elif "hr_contact" in src or "hr" in src:
             doc.metadata["topic"] = "hr"
+        elif "course_4_professions" in src or "4_professions" in src:
+            doc.metadata["topic"] = "course_4_professions"
         else:
             doc.metadata.setdefault("topic", "documents")
         docs.append(doc)

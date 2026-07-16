@@ -88,6 +88,32 @@ class Settings(BaseSettings):
     # harness so fake 999xxx phones don't pollute LeadMe.
     leadme_test_mode: bool = Field(False, alias="LEADME_TEST_MODE")
 
+    # How to talk to LeadMe when we have new info about a lead:
+    #   - "update-only": call /supplier/update/p/{slug} to modify the
+    #     existing LeadMe lead's status/tags. Do NOT call /supplier/insert.
+    #     This is the default because ~all our leads originate from
+    #     LeadMe's own webhook (customer's website form -> LeadMe -> us),
+    #     so a supplier-insert creates a DUPLICATE that lands in whatever
+    #     campaign the supplier slug is currently mapped to -- which the
+    #     customer says has been the "removed from WhatsApp" trash
+    #     campaign. Update-only avoids duplicates entirely.
+    #   - "insert-then-update": legacy behavior. Kept for edge cases where
+    #     a lead never came through the webhook.
+    #   - "never": no LeadMe writes at all (useful for read-only staging).
+    leadme_insert_mode: str = Field(
+        "update-only", alias="LEADME_INSERT_MODE",
+    )
+
+    # Status IDs for the 3 engagement levels the customer asked for.
+    # Level 1: booked a call with the bot.
+    # Level 2: replied to the bot but never booked.
+    # Level 3: never replied to the bot (opener only).
+    # Empty string => skip the status update for that level, but still
+    # push the engagement TAG so the sales team can filter in LeadMe.
+    leadme_status_level_1: str = Field("", alias="LEADME_STATUS_LEVEL_1")
+    leadme_status_level_2: str = Field("", alias="LEADME_STATUS_LEVEL_2")
+    leadme_status_level_3: str = Field("", alias="LEADME_STATUS_LEVEL_3")
+
     # Admin UI (HTTP Basic auth for /admin routes)
     admin_user: str = Field("", alias="ADMIN_USER")
     admin_password: str = Field("", alias="ADMIN_PASSWORD")

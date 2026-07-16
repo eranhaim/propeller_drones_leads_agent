@@ -175,18 +175,48 @@ def _is_test_phone(phone: Optional[str]) -> bool:
     return p.startswith("999")
 
 
-def push_lead(lead: Lead, note: Optional[str] = None) -> bool:
-    """Push the lead into LeadMe.
+# Human-readable Hebrew engagement tag applied to every LeadMe update. The
+# sales team can filter by these tags in LeadMe's UI even when the numeric
+# status ids aren't yet configured. Level 1 == booked a call, Level 2 ==
+# replied but didn't book, Level 3 == never replied to the opener.
+LEVEL_TAGS = {
+    1: "רמה 1 · קבע שיחה",
+    2: "רמה 2 · הגיב ולא קבע",
+    3: "רמה 3 · לא הגיב",
+}
 
-    Creates or upserts via `LEADME_INSERT_URL` (dedupe on phone within the
-    campaign). If `LEADME_UPDATE_URL` is also set and a status id is
-    provided, follow up with a status update so the sales team sees the
-    lead in the correct pipeline column.
 
-    Two hard guards:
-    - if the settings flag `leadme_test_mode` is on -> full no-op (log only).
-    - if the phone starts with the eval-harness `999` prefix -> full no-op
-      (log a WARNING so we notice if this ever fires against a real lead).
+def _status_id_for_level(level: int) -> str:
+    settings = get_settings()
+    return {
+        1: (settings.leadme_status_level_1 or settings.leadme_status_id or "").strip(),
+        2: (settings.leadme_status_level_2 or "").strip(),
+        3: (settings.leadme_status_level_3 or "").strip(),
+    }.get(level, "")
+
+
+def push_lead(
+    lead: Lead,
+    note: Optional[str] = None,
+    level: int = 1,
+) -> bool:
+    """Sync an engagement change to LeadMe.
+
+    By default we call the UPDATE endpoint only. LeadMe leads originate
+    from their own webhook (customer's website form -> LeadMe -> us), so
+    a supplier INSERT creates a duplicate. Update-by-phone modifies the
+    existing lead in whatever campaign it lives in.
+
+    ``level`` picks the engagement status / tag (see ``LEVEL_TAGS``):
+        1 = booked, 2 = replied but no booking, 3 = never replied.
+
+    Set ``LEADME_INSERT_MODE=insert-then-update`` to fall back to the old
+    "insert then update" behavior (needed if the lead genuinely did not
+    come through LeadMe first).
+
+    Two hard guards remain from before:
+    - ``leadme_test_mode`` on -> full no-op (log only).
+    - phone starting with the eval-harness ``999`` prefix -> full no-op.
     """
     settings = get_settings()
 
@@ -204,46 +234,108 @@ def push_lead(lead: Lead, note: Optional[str] = None) -> bool:
         )
         return True
 
+    mode = (settings.leadme_insert_mode or "update-only").strip().lower()
+    if mode == "never":
+        logger.info("[LeadMe] insert_mode=never, skipping push for {}", lead.phone)
+        return True
+
     insert_url = (settings.leadme_insert_url or "").strip()
     update_url = (settings.leadme_update_url or "").strip()
-    status_val = (settings.leadme_status_id or "").strip()
+    status_val = _status_id_for_level(level)
 
     payload = _build_insert_payload(lead, note)
 
-    if not insert_url:
+    # Ensure the engagement-level tag is applied even when the customer
+    # hasn't configured status IDs yet. Tags is a comma-separated field.
+    existing_tags = [
+        t.strip() for t in (payload.get("tags") or "").split(",") if t.strip()
+    ]
+    level_tag = LEVEL_TAGS.get(level)
+    if level_tag and level_tag not in existing_tags:
+        existing_tags.append(level_tag)
+    if existing_tags:
+        payload["tags"] = ",".join(existing_tags)
+
+    if mode == "insert-then-update":
+        if not insert_url:
+            logger.info(
+                "[LeadMe STUB] LEADME_INSERT_URL not set. Would POST "
+                "payload={} for {}", payload, lead.phone,
+            )
+        else:
+            ok, detail = _post(insert_url, payload)
+            if not ok:
+                logger.error("[LeadMe insert] failed for {}: {}",
+                             lead.phone, detail)
+                return False
+            logger.info("[LeadMe insert] pushed lead {} -> {}",
+                        lead.phone, detail)
+    else:
         logger.info(
-            "[LeadMe STUB] LEADME_INSERT_URL not set. Would POST payload={} for {}",
-            payload, lead.phone,
+            "[LeadMe] insert_mode={}, skipping insert for {} (avoiding "
+            "duplicate creation)", mode, lead.phone,
+        )
+
+    if not update_url or not lead.phone:
+        logger.info(
+            "[LeadMe update STUB] no update_url or phone for lead {} "
+            "(level={})", lead.phone, level,
         )
         return True
 
-    ok, detail = _post(insert_url, payload)
-    if not ok:
-        logger.error("[LeadMe insert] failed for {}: {}", lead.phone, detail)
+    upd_payload = {
+        "phone": lead.phone,
+        "comment": payload.get("comment", ""),
+    }
+    if status_val:
+        upd_payload["status"] = status_val
+    if payload.get("tags"):
+        upd_payload["tags"] = payload["tags"]
+
+    ok2, detail2 = _post(update_url, upd_payload)
+    if not ok2:
+        logger.warning(
+            "[LeadMe update] status={} tags={!r} for {} FAILED: {}",
+            status_val, payload.get("tags"), lead.phone, detail2,
+        )
         return False
-    logger.info("[LeadMe insert] pushed lead {} -> {}", lead.phone, detail)
-
-    if update_url and status_val and lead.phone:
-        upd_payload = {
-            "phone": lead.phone,
-            "status": status_val,
-            "comment": payload.get("comment", ""),
-        }
-        if payload.get("tags"):
-            upd_payload["tags"] = payload["tags"]
-        ok2, detail2 = _post(update_url, upd_payload)
-        if not ok2:
-            logger.warning(
-                "[LeadMe update] status update failed for {} (insert still ok): {}",
-                lead.phone, detail2,
-            )
-        else:
-            logger.info(
-                "[LeadMe update] status={} for {} -> {}",
-                status_val, lead.phone, detail2,
-            )
-
+    logger.info(
+        "[LeadMe update] level={} status={} tag={!r} for {} -> {}",
+        level, status_val or "-", level_tag, lead.phone, detail2,
+    )
     return True
+
+
+def push_engagement_level(
+    lead: Lead,
+    level: int,
+    note: Optional[str] = None,
+) -> bool:
+    """Convenience wrapper: push an engagement level (1/2/3) to LeadMe.
+
+    Idempotent per (lead, level): if the lead's ``lead_metadata`` already
+    records this exact level as pushed, returns True without hitting
+    LeadMe. Prevents thrashing when e.g. a lead sends two messages in a
+    row and both would try to push level 2.
+    """
+    if level not in (1, 2, 3):
+        logger.warning("[LeadMe] ignoring invalid engagement level {}", level)
+        return False
+    md = dict(lead.lead_metadata or {})
+    already = md.get("leadme_last_level")
+    if already is not None and int(already) >= int(level) and level != 1:
+        logger.info(
+            "[LeadMe] lead {} already at level {} (>= requested {}), "
+            "skipping", lead.phone, already, level,
+        )
+        return True
+    ok = push_lead(lead, note=note, level=level)
+    if ok:
+        # Persist last-pushed level on the ORM object; the caller is
+        # expected to commit the surrounding session.
+        md["leadme_last_level"] = int(level)
+        lead.lead_metadata = md
+    return ok
 
 
 def push_lead_cancellation(lead: Lead, reason: Optional[str] = None) -> bool:

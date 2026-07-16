@@ -162,10 +162,41 @@ def handle_message(
     # If the agent invocation crashes below, we still have a durable record
     # of the user's message in the DB. Losing the message means the sales
     # team has no idea the lead reached out.
+    push_level_2 = False
     with session_scope() as session:
         lead = repository.get_or_create_lead(session, phone=phone, name=sender_name)
+        # If this is the lead's very first inbound reply and we haven't
+        # tagged them as booked yet, they qualify for engagement Level 2
+        # (replied to the bot). We do the actual LeadMe push AFTER the
+        # transaction commits so a slow CRM call can't roll back the
+        # user's message on failure.
+        md_before = dict(lead.lead_metadata or {})
+        already_level = md_before.get("leadme_last_level")
+        # count existing USER messages BEFORE we add this one:
+        prior_user_msgs = sum(
+            1 for m in (lead.messages or []) if m.role == MessageRole.user
+        )
+        if (
+            prior_user_msgs == 0
+            and lead.funnel_stage != FunnelStage.handed_off
+            and (already_level is None or int(already_level) < 2)
+        ):
+            push_level_2 = True
+
         repository.add_message(session, lead, MessageRole.user, text)
         lead_id = lead.id
+
+    # Fire-and-forget level-2 push. Uses its own transaction so a CRM
+    # failure never blocks the user-facing reply.
+    if push_level_2:
+        try:
+            from app.crm.client import mark_engaged_no_book
+            with session_scope() as s2:
+                l2 = s2.get(Lead, lead_id)
+                if l2 is not None:
+                    mark_engaged_no_book(l2, note="first user reply")
+        except Exception:
+            logger.exception("[level-2] push failed for lead {}", lead_id)
     # ---- Transaction 2: run the agent and persist the reply. ---------------
     with session_scope() as session:
         lead = session.get(Lead, lead_id)
