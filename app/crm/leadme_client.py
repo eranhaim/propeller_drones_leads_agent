@@ -298,12 +298,131 @@ def push_lead(
             "[LeadMe update] status={} tags={!r} for {} FAILED: {}",
             status_val, payload.get("tags"), lead.phone, detail2,
         )
-        return False
+        # fall through -- try the admin-side status change as a fallback
+    else:
+        logger.info(
+            "[LeadMe update-supplier] tags={!r} comment sent for {} -> {}",
+            payload.get("tags"), lead.phone, detail2,
+        )
+
+    # The /supplier/update endpoint silently drops the `status` field on
+    # our account, so we must ALSO drive the status through the internal
+    # admin endpoint (/app/leads/changeLeadsStatus). See
+    # ``push_status_via_admin`` for details.
+    if status_val:
+        ok_admin = push_status_via_admin(lead, status_val)
+        if not ok_admin:
+            logger.warning(
+                "[LeadMe update] admin status push failed for {} "
+                "(status={}, level={})", lead.phone, status_val, level,
+            )
+            return False
+
     logger.info(
-        "[LeadMe update] level={} status={} tag={!r} for {} -> {}",
-        level, status_val or "-", level_tag, lead.phone, detail2,
+        "[LeadMe update] level={} status={} tag={!r} for {} -> ok",
+        level, status_val or "-", level_tag, lead.phone,
     )
     return True
+
+
+def push_status_via_admin(lead: Lead, status_id: str) -> bool:
+    """Change a lead's status through LeadMe's internal admin endpoint.
+
+    The public ``/supplier/update`` API silently ignores the ``status``
+    field on our account -- it accepts tags and comments, but the actual
+    status pill on the lead row does not budge. LeadMe's own UI drives
+    status changes via a different endpoint::
+
+        POST /app/leads/changeLeadsStatus
+            data[status]  = <numeric rel id>
+            data[leadId]  = "<leadme_id>[,<leadme_id>...]"   (comma-joined!)
+            csrf_lmcms    = <session csrf token>
+
+    Response:
+        {"result": true, "msg": "עודכן סטטוס ל-<n> רשומות ..."}
+
+    This is a "belt-and-suspenders" path used ALONGSIDE the supplier
+    update (which we keep for tags/comments). It requires admin cookies
+    (see :mod:`app.crm.leadme_delete`); if the cookies are missing/expired,
+    we log a warning and fail gracefully so the caller can decide whether
+    to retry.
+    """
+    # Local import to avoid a circular dependency at module load time.
+    from app.crm.leadme_delete import (
+        _build_client, find_leadme_id_by_phone,
+    )
+
+    if not (status_id or "").strip():
+        return True  # nothing to change
+
+    client = _build_client()
+    if client is None:
+        logger.warning(
+            "[LeadMe admin] no cookies configured; cannot change status "
+            "for {} (status={})", lead.phone, status_id,
+        )
+        return False
+
+    try:
+        leadme_id = find_leadme_id_by_phone(lead.phone or "", client)
+        if not leadme_id:
+            logger.warning(
+                "[LeadMe admin] no LeadMe row found for phone={} -- "
+                "cannot change status", lead.phone,
+            )
+            return False
+
+        base = get_settings().leadme_admin_base
+        csrf = client.cookies.get("csrf_cookie_name") \
+            or client.__dict__.get("_csrf_token") or ""
+        payload = {
+            "data[status]": str(status_id),
+            "data[leadId]":  str(leadme_id),
+            "csrf_lmcms":    csrf,
+        }
+        try:
+            resp = client.post(base + "/app/leads/changeLeadsStatus",
+                               data=payload)
+        except httpx.HTTPError as e:
+            logger.error("[LeadMe admin] request failed for {}: {}",
+                         lead.phone, e)
+            return False
+
+        if resp.status_code != 200:
+            logger.warning(
+                "[LeadMe admin] HTTP {} for phone={} leadme_id={} "
+                "status={} body={!r}",
+                resp.status_code, lead.phone, leadme_id, status_id,
+                resp.text[:200],
+            )
+            return False
+
+        try:
+            body = resp.json()
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[LeadMe admin] non-JSON response for {}: {!r}",
+                lead.phone, resp.text[:200],
+            )
+            return False
+
+        if not body.get("result"):
+            logger.warning(
+                "[LeadMe admin] rejected for {} leadme_id={} status={}: "
+                "{!r}", lead.phone, leadme_id, status_id, body,
+            )
+            return False
+
+        logger.info(
+            "[LeadMe admin] status changed for {} leadme_id={} -> {}: {}",
+            lead.phone, leadme_id, status_id, body.get("msg"),
+        )
+        return True
+    finally:
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def push_engagement_level(
