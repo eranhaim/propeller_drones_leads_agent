@@ -651,12 +651,13 @@ SCENARIOS: List[Scenario] = [
         ],
     ),
     Scenario(
-        name="four_professions_defers_to_advisor",
+        name="four_professions_lists_master_track",
         description=(
             "Lead from the '4 professions' campaign asks what the 4 "
-            "professions are. Bot must NOT list a made-up 4 professions "
-            "and must NOT reply with a generic industry list; it must "
-            "defer to the advisor via a scheduled call."
+            "professions are. Since we now have the real list from "
+            "propeller-drones.com/training-center/master, bot must name "
+            "them: mapping / photography / security / FPV. Must NOT "
+            "include 'agriculture' (that's in a different course)."
         ),
         sender_name="Rami",
         turns=[
@@ -666,29 +667,15 @@ SCENARIOS: List[Scenario] = [
                 assertions=[
                     Assertion("reply is Hebrew", is_hebrew(0.6)),
                     Assertion(
-                        "does NOT reply with a made-up numbered list of 4",
-                        # A guessed answer would contain terms like '1.'/'2.'
-                        # followed by industry names in a compact list.
-                        lambda r, _l: not re.search(
-                            r"1\.\s*\S+.*2\.\s*\S+.*3\.\s*\S+.*4\.",
-                            r or "",
-                            re.DOTALL,
-                        ),
+                        "names at least 3 of the 4 master-track fields",
+                        lambda r, _l: sum(
+                            1 for kw in ("מיפוי", "צילום", "אבטחה", "FPV")
+                            if kw in (r or "")
+                        ) >= 3,
                     ),
                     Assertion(
-                        "refers to the advisor for exact details",
-                        contains("יועץ"),
-                    ),
-                    Assertion(
-                        "does NOT reply purely with an industry list",
-                        # A truly bad reply names 4 industries WITHOUT
-                        # mentioning the advisor or 'מקצועות'. A GOOD reply
-                        # can mention industries as context but MUST use
-                        # 'מקצועות' or 'יועץ' too.
-                        lambda r, _l: (
-                            "יועץ" in (r or "")
-                            or "מקצועות" in (r or "")
-                        ),
+                        "does NOT list agriculture (wrong course)",
+                        not_contains("חקלאות"),
                     ),
                 ],
             ),
