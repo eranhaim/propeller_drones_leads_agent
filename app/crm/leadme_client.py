@@ -200,24 +200,38 @@ def push_lead(
     note: Optional[str] = None,
     level: int = 1,
 ) -> bool:
-    """Sync an engagement change to LeadMe.
+    """Sync an engagement change to LeadMe -- admin-only path.
 
-    By default we call the UPDATE endpoint only. LeadMe leads originate
-    from their own webhook (customer's website form -> LeadMe -> us), so
-    a supplier INSERT creates a duplicate. Update-by-phone modifies the
-    existing lead in whatever campaign it lives in.
+    IMPORTANT: this function does NOT call the public ``/supplier/*``
+    endpoints. Both ``/supplier/insert`` and ``/supplier/update`` act as
+    upserts on our account -- when the phone isn't visible inside the
+    supplier's linked campaign, LeadMe silently creates a duplicate row
+    in the supplier's default campaign (id 12277 = "הוסרו מ-Whatsapp").
+    That's the "leads keep leaking into the removed campaign" bug the
+    customer keeps reporting.
+
+    Instead, everything now flows through the internal admin API using
+    the session cookies we already carry (see
+    :mod:`app.crm.leadme_delete`):
+
+    - Resolve the lead's numeric LeadMe id via getDataForTable search.
+    - Change status via ``POST /app/leads/changeLeadsStatus``.
+    - Add engagement tag via ``POST /app/ajax/addLeadTag``.
+
+    Guards kept from before:
+    - ``leadme_test_mode`` on -> full no-op (log only).
+    - Phone starting with the eval-harness ``999`` prefix -> full no-op.
+    - ``LEADME_INSERT_MODE=never`` -> full no-op (kept for kill-switch).
 
     ``level`` picks the engagement status / tag (see ``LEVEL_TAGS``):
         1 = booked, 2 = replied but no booking, 3 = never replied.
-
-    Set ``LEADME_INSERT_MODE=insert-then-update`` to fall back to the old
-    "insert then update" behavior (needed if the lead genuinely did not
-    come through LeadMe first).
-
-    Two hard guards remain from before:
-    - ``leadme_test_mode`` on -> full no-op (log only).
-    - phone starting with the eval-harness ``999`` prefix -> full no-op.
     """
+    # Local import: leadme_delete imports config which imports us at
+    # module load in some paths, so keep it lazy.
+    from app.crm.leadme_delete import (
+        _build_client, find_leadme_id_by_phone,
+    )
+
     settings = get_settings()
 
     if settings.leadme_test_mode:
@@ -236,188 +250,165 @@ def push_lead(
 
     mode = (settings.leadme_insert_mode or "update-only").strip().lower()
     if mode == "never":
-        logger.info("[LeadMe] insert_mode=never, skipping push for {}", lead.phone)
+        logger.info("[LeadMe] insert_mode=never, skipping push for {}",
+                    lead.phone)
         return True
 
-    insert_url = (settings.leadme_insert_url or "").strip()
-    update_url = (settings.leadme_update_url or "").strip()
+    if not (lead.phone or "").strip():
+        logger.info(
+            "[LeadMe] skipping push for lead {} -- no phone number", lead.id,
+        )
+        return True
+
     status_val = _status_id_for_level(level)
-
-    payload = _build_insert_payload(lead, note)
-
-    # Ensure the engagement-level tag is applied even when the customer
-    # hasn't configured status IDs yet. Tags is a comma-separated field.
-    existing_tags = [
-        t.strip() for t in (payload.get("tags") or "").split(",") if t.strip()
-    ]
     level_tag = LEVEL_TAGS.get(level)
-    if level_tag and level_tag not in existing_tags:
-        existing_tags.append(level_tag)
-    if existing_tags:
-        payload["tags"] = ",".join(existing_tags)
-
-    if mode == "insert-then-update":
-        if not insert_url:
-            logger.info(
-                "[LeadMe STUB] LEADME_INSERT_URL not set. Would POST "
-                "payload={} for {}", payload, lead.phone,
-            )
-        else:
-            ok, detail = _post(insert_url, payload)
-            if not ok:
-                logger.error("[LeadMe insert] failed for {}: {}",
-                             lead.phone, detail)
-                return False
-            logger.info("[LeadMe insert] pushed lead {} -> {}",
-                        lead.phone, detail)
-    else:
-        logger.info(
-            "[LeadMe] insert_mode={}, skipping insert for {} (avoiding "
-            "duplicate creation)", mode, lead.phone,
-        )
-
-    if not update_url or not lead.phone:
-        logger.info(
-            "[LeadMe update STUB] no update_url or phone for lead {} "
-            "(level={})", lead.phone, level,
-        )
-        return True
-
-    upd_payload = {
-        "phone": lead.phone,
-        "comment": payload.get("comment", ""),
-    }
-    if status_val:
-        upd_payload["status"] = status_val
-    if payload.get("tags"):
-        upd_payload["tags"] = payload["tags"]
-
-    ok2, detail2 = _post(update_url, upd_payload)
-    if not ok2:
-        logger.warning(
-            "[LeadMe update] status={} tags={!r} for {} FAILED: {}",
-            status_val, payload.get("tags"), lead.phone, detail2,
-        )
-        # fall through -- try the admin-side status change as a fallback
-    else:
-        logger.info(
-            "[LeadMe update-supplier] tags={!r} comment sent for {} -> {}",
-            payload.get("tags"), lead.phone, detail2,
-        )
-
-    # The /supplier/update endpoint silently drops the `status` field on
-    # our account, so we must ALSO drive the status through the internal
-    # admin endpoint (/app/leads/changeLeadsStatus). See
-    # ``push_status_via_admin`` for details.
-    if status_val:
-        ok_admin = push_status_via_admin(lead, status_val)
-        if not ok_admin:
-            logger.warning(
-                "[LeadMe update] admin status push failed for {} "
-                "(status={}, level={})", lead.phone, status_val, level,
-            )
-            return False
-
-    logger.info(
-        "[LeadMe update] level={} status={} tag={!r} for {} -> ok",
-        level, status_val or "-", level_tag, lead.phone,
-    )
-    return True
-
-
-def push_status_via_admin(lead: Lead, status_id: str) -> bool:
-    """Change a lead's status through LeadMe's internal admin endpoint.
-
-    The public ``/supplier/update`` API silently ignores the ``status``
-    field on our account -- it accepts tags and comments, but the actual
-    status pill on the lead row does not budge. LeadMe's own UI drives
-    status changes via a different endpoint::
-
-        POST /app/leads/changeLeadsStatus
-            data[status]  = <numeric rel id>
-            data[leadId]  = "<leadme_id>[,<leadme_id>...]"   (comma-joined!)
-            csrf_lmcms    = <session csrf token>
-
-    Response:
-        {"result": true, "msg": "עודכן סטטוס ל-<n> רשומות ..."}
-
-    This is a "belt-and-suspenders" path used ALONGSIDE the supplier
-    update (which we keep for tags/comments). It requires admin cookies
-    (see :mod:`app.crm.leadme_delete`); if the cookies are missing/expired,
-    we log a warning and fail gracefully so the caller can decide whether
-    to retry.
-    """
-    # Local import to avoid a circular dependency at module load time.
-    from app.crm.leadme_delete import (
-        _build_client, find_leadme_id_by_phone,
-    )
-
-    if not (status_id or "").strip():
-        return True  # nothing to change
 
     client = _build_client()
     if client is None:
         logger.warning(
-            "[LeadMe admin] no cookies configured; cannot change status "
-            "for {} (status={})", lead.phone, status_id,
+            "[LeadMe] no admin cookies configured; cannot push lead {} "
+            "(status={}, level={}). Refresh cookies via the /admin panel.",
+            lead.phone, status_val, level,
         )
         return False
 
     try:
-        leadme_id = find_leadme_id_by_phone(lead.phone or "", client)
+        leadme_id = find_leadme_id_by_phone(lead.phone, client)
         if not leadme_id:
             logger.warning(
-                "[LeadMe admin] no LeadMe row found for phone={} -- "
-                "cannot change status", lead.phone,
+                "[LeadMe] phone {} not found in LeadMe -- NOT creating "
+                "(would leak into supplier campaign). Level={}. "
+                "The lead must first be inserted via the customer's own "
+                "LeadMe form flow.", lead.phone, level,
             )
-            return False
+            # This is the whole point of the refactor: we NEVER create a
+            # new LeadMe row from the bot side. Return True so callers
+            # don't retry aggressively; log warning so operators notice.
+            return True
 
-        base = get_settings().leadme_admin_base
-        csrf = client.cookies.get("csrf_cookie_name") \
-            or client.__dict__.get("_csrf_token") or ""
-        payload = {
-            "data[status]": str(status_id),
-            "data[leadId]":  str(leadme_id),
-            "csrf_lmcms":    csrf,
-        }
-        try:
-            resp = client.post(base + "/app/leads/changeLeadsStatus",
-                               data=payload)
-        except httpx.HTTPError as e:
-            logger.error("[LeadMe admin] request failed for {}: {}",
-                         lead.phone, e)
-            return False
+        ok_status = True
+        if status_val:
+            ok_status = _admin_change_status(client, leadme_id, status_val)
+            if not ok_status:
+                logger.warning(
+                    "[LeadMe admin] status change failed for {} "
+                    "leadme_id={} status={}",
+                    lead.phone, leadme_id, status_val,
+                )
 
-        if resp.status_code != 200:
-            logger.warning(
-                "[LeadMe admin] HTTP {} for phone={} leadme_id={} "
-                "status={} body={!r}",
-                resp.status_code, lead.phone, leadme_id, status_id,
-                resp.text[:200],
-            )
-            return False
-
-        try:
-            body = resp.json()
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "[LeadMe admin] non-JSON response for {}: {!r}",
-                lead.phone, resp.text[:200],
-            )
-            return False
-
-        if not body.get("result"):
-            logger.warning(
-                "[LeadMe admin] rejected for {} leadme_id={} status={}: "
-                "{!r}", lead.phone, leadme_id, status_id, body,
-            )
-            return False
+        ok_tag = True
+        if level_tag:
+            ok_tag = _admin_add_tag(client, leadme_id, level_tag)
 
         logger.info(
-            "[LeadMe admin] status changed for {} leadme_id={} -> {}: {}",
-            lead.phone, leadme_id, status_id, body.get("msg"),
+            "[LeadMe admin] pushed lead {} leadme_id={} level={} "
+            "status={} tag={!r} (status_ok={}, tag_ok={})",
+            lead.phone, leadme_id, level, status_val or "-", level_tag,
+            ok_status, ok_tag,
         )
+        return ok_status
+    finally:
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _admin_change_status(client, leadme_id: str, status_id: str) -> bool:
+    """POST /app/leads/changeLeadsStatus. Returns True on ``result:true``."""
+    if not (status_id or "").strip():
         return True
+    base = get_settings().leadme_admin_base
+    csrf = client.cookies.get("csrf_cookie_name") \
+        or client.__dict__.get("_csrf_token") or ""
+    payload = {
+        "data[status]": str(status_id),
+        "data[leadId]":  str(leadme_id),
+        "csrf_lmcms":    csrf,
+    }
+    try:
+        resp = client.post(base + "/app/leads/changeLeadsStatus", data=payload)
+    except httpx.HTTPError as e:
+        logger.error("[LeadMe admin status] HTTP error: {}", e)
+        return False
+    if resp.status_code != 200:
+        logger.warning(
+            "[LeadMe admin status] HTTP {} leadme_id={} status={} body={!r}",
+            resp.status_code, leadme_id, status_id, resp.text[:200],
+        )
+        return False
+    try:
+        body = resp.json()
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[LeadMe admin status] non-JSON for leadme_id={}: {!r}",
+            leadme_id, resp.text[:200],
+        )
+        return False
+    if not body.get("result"):
+        logger.warning(
+            "[LeadMe admin status] rejected leadme_id={} status={}: {!r}",
+            leadme_id, status_id, body,
+        )
+        return False
+    logger.info(
+        "[LeadMe admin status] leadme_id={} -> {}: {}",
+        leadme_id, status_id, body.get("msg"),
+    )
+    return True
+
+
+def _admin_add_tag(client, leadme_id: str, tag: str) -> bool:
+    """POST /app/ajax/addLeadTag. Returns True on ``result:true``."""
+    if not (tag or "").strip():
+        return True
+    base = get_settings().leadme_admin_base
+    csrf = client.cookies.get("csrf_cookie_name") \
+        or client.__dict__.get("_csrf_token") or ""
+    payload = {
+        "text":       tag,
+        "leadId":     str(leadme_id),
+        "csrf_lmcms": csrf,
+    }
+    try:
+        resp = client.post(base + "/app/ajax/addLeadTag", data=payload)
+    except httpx.HTTPError as e:
+        logger.error("[LeadMe admin tag] HTTP error: {}", e)
+        return False
+    if resp.status_code != 200:
+        return False
+    try:
+        body = resp.json()
+    except Exception:  # noqa: BLE001
+        return False
+    ok = bool(body.get("result"))
+    if not ok:
+        logger.warning(
+            "[LeadMe admin tag] rejected leadme_id={} tag={!r}: {!r}",
+            leadme_id, tag, body,
+        )
+    return ok
+
+
+def push_status_via_admin(lead: Lead, status_id: str) -> bool:
+    """Backwards-compat wrapper -- prefer :func:`push_lead`.
+
+    Kept so any external caller referencing the old symbol still works.
+    Prefer :func:`push_lead` in new code.
+    """
+    from app.crm.leadme_delete import (
+        _build_client, find_leadme_id_by_phone,
+    )
+    if not (status_id or "").strip():
+        return True
+    client = _build_client()
+    if client is None:
+        return False
+    try:
+        leadme_id = find_leadme_id_by_phone(lead.phone or "", client)
+        if not leadme_id:
+            return False
+        return _admin_change_status(client, leadme_id, status_id)
     finally:
         try:
             client.close()
@@ -492,13 +483,15 @@ def push_engagement_level(
 def push_lead_cancellation(lead: Lead, reason: Optional[str] = None) -> bool:
     """Mark a previously handed-off lead as cancelled/re-open in LeadMe.
 
-    Used when the user says "actually no, cancel that call" after the bot
-    already pushed them as ready_for_call. We do NOT delete the LeadMe lead
-    (it still needs to be visible to sales) -- we just append a comment
-    explaining the cancellation so a human can follow up cleanly. If
-    ``LEADME_UPDATE_URL`` is set we also POST a status update carrying the
-    "cancelled" note.
+    Uses the admin-only path (no ``/supplier/*`` calls -- those upsert and
+    leak duplicates into the supplier's default campaign 12277). Attaches
+    a ``ביטול שיחה`` tag to make it visible to sales; the reason is
+    captured in the tag suffix so Roy can see it at a glance.
     """
+    from app.crm.leadme_delete import (
+        _build_client, find_leadme_id_by_phone,
+    )
+
     settings = get_settings()
 
     if settings.leadme_test_mode:
@@ -513,26 +506,39 @@ def push_lead_cancellation(lead: Lead, reason: Optional[str] = None) -> bool:
         )
         return True
 
-    update_url = (settings.leadme_update_url or "").strip()
-    if not update_url or not lead.phone:
-        logger.info(
-            "[LeadMe cancel STUB] no LEADME_UPDATE_URL or phone; would "
-            "cancel lead {} (reason={!r})", lead.phone, reason,
-        )
+    if not (lead.phone or "").strip():
         return True
 
-    comment = "SLOT CANCELLED BY LEAD"
-    if reason:
-        comment += f": {reason}"
-    upd_payload = {
-        "phone": lead.phone,
-        "status": (settings.leadme_status_id or "").strip() or "1",
-        "comment": comment,
-    }
-    ok, detail = _post(update_url, upd_payload)
-    if ok:
-        logger.info("[LeadMe cancel] pushed cancellation for {} -> {}",
-                    lead.phone, detail)
-    else:
-        logger.error("[LeadMe cancel] failed for {}: {}", lead.phone, detail)
-    return ok
+    client = _build_client()
+    if client is None:
+        logger.warning(
+            "[LeadMe cancel] no admin cookies; cannot mark cancel for {}",
+            lead.phone,
+        )
+        return False
+    try:
+        leadme_id = find_leadme_id_by_phone(lead.phone, client)
+        if not leadme_id:
+            logger.warning(
+                "[LeadMe cancel] phone {} not found in LeadMe (no-op)",
+                lead.phone,
+            )
+            return True
+        tag = "ביטול שיחה"
+        if reason:
+            tag += f" · {reason[:40]}"
+        ok_tag = _admin_add_tag(client, leadme_id, tag)
+        # Move status back to plain "חדש" (rel=1) so the sales team can
+        # rebook without confusion. We deliberately don't set a "cancelled"
+        # status because LeadMe doesn't have one; the tag is enough.
+        ok_status = _admin_change_status(client, leadme_id, "1")
+        logger.info(
+            "[LeadMe cancel] leadme_id={} phone={} tag_ok={} status_ok={}",
+            leadme_id, lead.phone, ok_tag, ok_status,
+        )
+        return ok_tag or ok_status
+    finally:
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001
+            pass
