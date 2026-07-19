@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 from loguru import logger
@@ -19,7 +20,7 @@ from app.agent.tools import ALL_TOOLS
 from app.config import get_settings
 from app.crm.client import mark_ready_for_call
 from app.db import repository
-from app.db.models import FunnelStage, Lead, MessageRole
+from app.db.models import FunnelStage, FamiliarityLevel, Lead, MessageRole
 from app.db.session import session_scope
 from app.videos.catalog import Video
 
@@ -357,3 +358,203 @@ def _enforce_booking_promise(session, lead: Lead, reply: str) -> None:
             "-- lead was promised a call but LeadMe push failed",
             lead.id,
         )
+
+
+# ---------------------------------------------------------------------------
+# Simulator — runs the agent in-memory, no CRM/WhatsApp side-effects
+# ---------------------------------------------------------------------------
+
+from contextvars import ContextVar as _ContextVar
+
+# In-memory store: session_id -> {"history": [...], "state": {...}}
+_sim_sessions: Dict[str, dict] = {}
+
+# Per-invocation mutable state dict, written to by stub tools.
+_sim_state_var: _ContextVar[Optional[dict]] = _ContextVar("_sim_state", default=None)
+
+_INITIAL_STATE = {
+    "familiarity": "unknown",
+    "stage": "new",
+    "intent": None,
+    "industry": None,
+    "preferred_call_slot": None,
+    "has_experience": None,
+    "videos_sent": [],
+    "call_scheduled": False,
+}
+
+
+def _sim_session(session_id: str) -> dict:
+    if session_id not in _sim_sessions:
+        import copy
+        _sim_sessions[session_id] = {
+            "history": [],
+            "state": copy.deepcopy(_INITIAL_STATE),
+        }
+    return _sim_sessions[session_id]
+
+
+# Stub tools — write to the shared state dict via context var.
+@tool
+def _sim_classify_lead(
+    familiarity: Optional[str] = None,
+    stage: Optional[str] = None,
+    intent: Optional[str] = None,
+    industry: Optional[str] = None,
+    preferred_call_slot: Optional[str] = None,
+    has_experience: Optional[bool] = None,
+) -> str:
+    """Update lead classification (simulator — no DB write)."""
+    state = _sim_state_var.get()
+    parts = []
+    if familiarity:
+        state["familiarity"] = familiarity
+        parts.append(f"היכרות={familiarity}")
+    if stage:
+        state["stage"] = stage
+        parts.append(f"שלב={stage}")
+    if intent:
+        state["intent"] = intent
+        parts.append(f"כוונה={intent}")
+    if industry:
+        state["industry"] = industry
+        parts.append(f"תעשייה={industry}")
+    if preferred_call_slot:
+        state["preferred_call_slot"] = preferred_call_slot
+        parts.append(f"חלון={preferred_call_slot}")
+    if has_experience is not None:
+        state["has_experience"] = has_experience
+        parts.append(f"ניסיון={'כן' if has_experience else 'לא'}")
+    return "[סימולטור] עודכן: " + (", ".join(parts) or "אין שינויים")
+
+
+@tool
+def _sim_send_video(video_id: str, caption: Optional[str] = None) -> str:
+    """Send a video to the lead (simulator — no WhatsApp send)."""
+    from app.videos.catalog import get_video
+    state = _sim_state_var.get()
+    v = get_video(video_id)
+    if v is None:
+        return f"[סימולטור] שגיאה: אין סרטון {video_id}"
+    if video_id not in state["videos_sent"]:
+        state["videos_sent"].append(video_id)
+    return f"[סימולטור] הסרטון '{v.title}' היה נשלח"
+
+
+@tool
+def _sim_recommend_video(topics_context: Optional[str] = None) -> str:
+    """Recommend a video (simulator)."""
+    from app.videos.catalog import recommend
+    state = _sim_state_var.get()
+    v = recommend(
+        familiarity=state.get("familiarity", "unknown"),
+        topics_context=[topics_context] if topics_context else [],
+        exclude_ids=state.get("videos_sent", []),
+    )
+    if v is None:
+        return "[סימולטור] אין המלצת סרטון."
+    return f"[סימולטור] מומלץ: {v.id} - {v.title}"
+
+
+@tool
+def _sim_schedule_call(
+    summary: Optional[str] = None,
+    preferred_call_slot: Optional[str] = None,
+) -> str:
+    """Schedule a call (simulator — no CRM push)."""
+    state = _sim_state_var.get()
+    if preferred_call_slot:
+        state["preferred_call_slot"] = preferred_call_slot
+    slot = state.get("preferred_call_slot") or "לא צוין"
+    if not state.get("preferred_call_slot"):
+        return (
+            "NOT_AN_ERROR: אין עדיין חלון שעות מועדף. "
+            "שאל את המשתמש: '9-12, 12-15, או 15-18?'"
+        )
+    state["call_scheduled"] = True
+    state["stage"] = "handed_off"
+    return f"[סימולטור] שיחה הייתה מתואמת (חלון: {slot}). אין push ל-CRM בסימולטור."
+
+
+@tool
+def _sim_cancel_call(reason: Optional[str] = None) -> str:
+    """Cancel a call (simulator — no CRM push)."""
+    state = _sim_state_var.get()
+    state["call_scheduled"] = False
+    state["preferred_call_slot"] = None
+    state["stage"] = "warm"
+    return "[סימולטור] תיאום השיחה בוטל."
+
+
+_SIM_TOOLS = [
+    next(t for t in ALL_TOOLS if t.name == "search_knowledge"),
+    _sim_classify_lead,
+    _sim_send_video,
+    _sim_recommend_video,
+    _sim_schedule_call,
+    _sim_cancel_call,
+]
+
+
+@lru_cache(maxsize=1)
+def _sim_agent():
+    return create_react_agent(model=_model(), tools=_SIM_TOOLS)
+
+
+def simulate_message(session_id: str, text: str) -> dict:
+    """Run the agent on *text* in a sandboxed in-memory session.
+
+    Returns {"reply": str, "state": dict}.
+    """
+    import copy
+    sess = _sim_session(session_id)
+    history: List[BaseMessage] = sess["history"]
+    state: dict = sess["state"]
+
+    # Rebuild a fake lead from the current sim state so the system prompt
+    # reflects what the bot has learned so far.
+    fake_lead = Lead()
+    fake_lead.id = 0
+    fake_lead.phone = f"sim_{session_id}"
+    fake_lead.name = "סימולטור"
+    fake_lead.familiarity_level = FamiliarityLevel(state.get("familiarity", "unknown"))
+    fake_lead.funnel_stage = FunnelStage(state.get("stage", "new"))
+    fake_lead.lead_metadata = {
+        k: state[k]
+        for k in ("intent", "industry", "preferred_call_slot", "has_experience")
+        if state.get(k) is not None
+    }
+    fake_lead.videos_sent = list(state.get("videos_sent", []))
+    fake_lead.messages = []
+
+    system_prompt = render_system_prompt(describe_state(fake_lead))
+    input_messages: List[BaseMessage] = [SystemMessage(content=system_prompt)]
+    input_messages.extend(history)
+    input_messages.append(HumanMessage(content=text))
+
+    # Give the stub tools access to the live state dict via context var.
+    token = _sim_state_var.set(state)
+    ctx = AgentContext(session=None, lead=fake_lead, send_video=None)  # type: ignore[arg-type]
+    try:
+        with use_context(ctx):
+            result = _sim_agent().invoke({"messages": input_messages})
+    except Exception:
+        logger.exception("[simulator] Agent invocation failed session={}", session_id)
+        _sim_state_var.reset(token)
+        return {"reply": "שגיאה פנימית בסימולטור — בדוק את הלוגים.", "state": copy.deepcopy(state)}
+    finally:
+        _sim_state_var.reset(token)
+
+    reply = _extract_reply(result) or "..."
+    reply = _strip_filler(reply)
+    reply = _strip_markdown_links(reply)
+
+    history.append(HumanMessage(content=text))
+    history.append(AIMessage(content=reply))
+
+    return {"reply": reply, "state": copy.deepcopy(state)}
+
+
+def clear_simulation(session_id: str) -> None:
+    """Wipe the in-memory session (history + state)."""
+    _sim_sessions.pop(session_id, None)

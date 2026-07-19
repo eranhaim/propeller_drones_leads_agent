@@ -30,7 +30,7 @@ from zoneinfo import ZoneInfo
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, HTTPException, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from sqlalchemy import func, select
@@ -325,6 +325,7 @@ def _page(title: str, body: str, *, back_href: Optional[str] = None) -> str:
   <div class="hdr-actions">
     <span class="meta">{_escape(title)}</span>
     {back_btn}
+    <a class="hdr-btn" href="/admin/simulator">סימולטור</a>
     <a class="hdr-btn" href="/admin/leadme-cookies">עוגיות LeadMe</a>
     <a class="hdr-btn danger" href="/admin/logout">יציאה</a>
   </div>
@@ -895,3 +896,413 @@ def leadme_cookies_save(
         "PHPSESSID present)", len(parsed),
     )
     return RedirectResponse(url="/admin/leadme-cookies?saved=1", status_code=303)
+
+
+# --- Simulator -------------------------------------------------------------
+
+def _build_simulator_page() -> str:
+    sim_css = """
+.sim-layout {
+    display: flex;
+    gap: 20px;
+    max-width: 900px;
+    margin: 30px auto;
+    height: calc(100vh - 110px);
+    padding: 0 16px;
+}
+.sim-chat {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+.sim-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+}
+.sim-header h2 { margin: 0; font-size: 16px; }
+.sim-messages {
+    flex: 1;
+    overflow-y: auto;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.bubble {
+    max-width: 80%;
+    padding: 8px 12px;
+    border-radius: 10px;
+    font-size: 14px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.bubble.user {
+    background: var(--user-bubble);
+    color: var(--user-bubble-text);
+    align-self: flex-end;
+    border-bottom-left-radius: 3px;
+}
+.bubble.bot {
+    background: var(--bot-bubble);
+    color: var(--bot-bubble-text);
+    align-self: flex-start;
+    border-bottom-right-radius: 3px;
+}
+.bubble-time {
+    font-size: 10px;
+    color: var(--text-dim);
+    margin-top: 3px;
+    text-align: left;
+    direction: ltr;
+}
+.sim-input-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+}
+.sim-input-row textarea {
+    flex: 1;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 10px 12px;
+    font-size: 14px;
+    font-family: inherit;
+    resize: none;
+    height: 48px;
+    line-height: 1.4;
+}
+.sim-input-row textarea:focus { outline: none; border-color: var(--accent); }
+.sim-send-btn {
+    background: var(--accent);
+    color: #0f172a;
+    border: none;
+    border-radius: 8px;
+    padding: 0 18px;
+    font-size: 16px;
+    cursor: pointer;
+    font-weight: 700;
+}
+.sim-send-btn:disabled { opacity: 0.4; cursor: default; }
+.sim-reset-btn {
+    background: transparent;
+    color: #f87171;
+    border: 1px solid #7f1d1d;
+    border-radius: 6px;
+    padding: 4px 12px;
+    font-size: 12px;
+    cursor: pointer;
+}
+.sim-reset-btn:hover { background: #7f1d1d; color: white; }
+.typing-indicator {
+    display: none;
+    align-self: flex-start;
+    background: var(--bot-bubble);
+    border-radius: 10px;
+    border-bottom-right-radius: 3px;
+    padding: 10px 16px;
+    color: var(--text-dim);
+    font-size: 13px;
+}
+.typing-indicator.visible { display: block; }
+
+/* State panel */
+.sim-panel {
+    width: 240px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.sim-panel h3 {
+    margin: 0 0 8px 0;
+    font-size: 13px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.state-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+}
+.state-card h4 {
+    margin: 0 0 10px 0;
+    font-size: 12px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.state-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 5px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+}
+.state-row:last-child { border-bottom: none; }
+.state-label { color: var(--text-dim); }
+.state-val {
+    font-weight: 600;
+    color: var(--text);
+    text-align: left;
+    direction: ltr;
+}
+.state-val.empty { color: var(--text-dim); font-weight: 400; font-style: italic; }
+.badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 99px;
+    font-size: 11px;
+    font-weight: 700;
+}
+.badge-new       { background: #334155; color: #94a3b8; }
+.badge-engaged   { background: #1d4ed8; color: #bfdbfe; }
+.badge-warm      { background: #92400e; color: #fde68a; }
+.badge-ready_for_call { background: #065f46; color: #6ee7b7; }
+.badge-handed_off { background: #4c1d95; color: #c4b5fd; }
+.badge-unknown   { background: #1e293b; color: #64748b; }
+.badge-beginner  { background: #1e3a5f; color: #93c5fd; }
+.badge-aware     { background: #1c3d2e; color: #6ee7b7; }
+.badge-experienced { background: #3b1f5e; color: #d8b4fe; }
+.videos-list {
+    font-size: 12px;
+    color: var(--accent);
+    margin-top: 4px;
+    line-height: 1.6;
+}
+"""
+    js = r"""
+const SESSION_KEY = 'sim_session_id';
+
+function getOrCreateSession() {
+  let sid = sessionStorage.getItem(SESSION_KEY);
+  if (!sid) { sid = crypto.randomUUID(); sessionStorage.setItem(SESSION_KEY, sid); }
+  return sid;
+}
+
+function nowTime() {
+  return new Date().toLocaleTimeString('he-IL', {hour: '2-digit', minute: '2-digit'});
+}
+
+function addBubble(role, text) {
+  const wrap = document.getElementById('messages');
+  const div = document.createElement('div');
+  div.className = 'bubble ' + role;
+  div.textContent = text;
+  const ts = document.createElement('div');
+  ts.className = 'bubble-time';
+  ts.textContent = nowTime();
+  div.appendChild(ts);
+  wrap.appendChild(div);
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+const STAGE_HE = {new:'חדש', engaged:'מעורב', warm:'חם', ready_for_call:'בשל לשיחה', handed_off:'הועבר'};
+const FAM_HE   = {unknown:'לא ידוע', beginner:'מתחיל', aware:'מודע', experienced:'מנוסה'};
+const INTENT_HE = {course:'קורס', shop:'חנות', service:'שירות', hobby:'תחביב', job:'עבודה', unknown:'לא ידוע'};
+
+function val(v, map) {
+  if (v === null || v === undefined) return null;
+  return map ? (map[v] || v) : v;
+}
+
+function renderState(state) {
+  function row(label, v, map, badgeClass) {
+    const display = val(v, map);
+    const empty = display === null || display === undefined || display === '';
+    const cls = empty ? 'state-val empty' : 'state-val';
+    const text = empty ? '—' : display;
+    const inner = badgeClass && !empty
+      ? `<span class="badge ${badgeClass}">${text}</span>`
+      : `<span class="${cls}">${text}</span>`;
+    return `<div class="state-row"><span class="state-label">${label}</span>${inner}</div>`;
+  }
+
+  const stage = state.stage || 'new';
+  const fam = state.familiarity || 'unknown';
+  const videos = (state.videos_sent || []);
+  const callIcon = state.call_scheduled ? '✅ תואם' : (state.stage === 'handed_off' ? '✅ תואם' : '—');
+
+  document.getElementById('panel-funnel').innerHTML =
+    row('שלב', stage, STAGE_HE, 'badge badge-' + stage) +
+    row('היכרות', fam, FAM_HE, 'badge badge-' + fam);
+
+  document.getElementById('panel-intent').innerHTML =
+    row('כוונה', state.intent, INTENT_HE) +
+    row('תעשייה', state.industry) +
+    row('ניסיון', state.has_experience === null || state.has_experience === undefined ? null : (state.has_experience ? 'כן' : 'לא'));
+
+  document.getElementById('panel-call').innerHTML =
+    row('חלון', state.preferred_call_slot) +
+    row('שיחה', state.call_scheduled ? 'תואמה' : null);
+
+  const vEl = document.getElementById('panel-videos');
+  vEl.innerHTML = videos.length
+    ? videos.map(v => `<div class="videos-list">▶ ${v}</div>`).join('')
+    : '<span class="state-val empty">—</span>';
+}
+
+async function sendMsg() {
+  const inp = document.getElementById('inp');
+  const btn = document.getElementById('sendBtn');
+  const typing = document.getElementById('typing');
+  const text = inp.value.trim();
+  if (!text) return;
+
+  inp.value = '';
+  btn.disabled = true;
+  addBubble('user', text);
+  typing.classList.add('visible');
+  document.getElementById('messages').scrollTop = 9999;
+
+  try {
+    const res = await fetch('/admin/simulator/chat', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({session_id: getOrCreateSession(), message: text})
+    });
+    const data = await res.json();
+    typing.classList.remove('visible');
+    addBubble('bot', data.reply || '(אין תשובה)');
+    if (data.state) renderState(data.state);
+  } catch(e) {
+    typing.classList.remove('visible');
+    addBubble('bot', 'שגיאת רשת — נסה שוב.');
+  }
+  btn.disabled = false;
+  inp.focus();
+}
+
+function resetChat() {
+  const sid = getOrCreateSession();
+  fetch('/admin/simulator/reset', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({session_id: sid})
+  });
+  sessionStorage.removeItem(SESSION_KEY);
+  document.getElementById('messages').innerHTML =
+    '<div class="bubble bot">שיחה חדשה התחילה \u{1F44B} איך אוכל לעזור?</div>';
+  renderState({familiarity:'unknown',stage:'new',intent:null,industry:null,
+    preferred_call_slot:null,has_experience:null,videos_sent:[],call_scheduled:false});
+}
+
+document.getElementById('inp').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
+});
+"""
+    html = (
+        "<!DOCTYPE html>\n"
+        '<html lang="he" dir="rtl">\n'
+        "<head>\n"
+        '<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">\n'
+        "<title>סימולטור בוט | Propeller Admin</title>\n"
+        "<style>\n" + _CSS + sim_css + "</style>\n"
+        "</head>\n<body>\n"
+        "<header>\n"
+        '  <h1><span class="dot"></span>Propeller Admin</h1>\n'
+        '  <div class="hdr-actions">\n'
+        '    <a href="/admin" class="hdr-btn">רשימת לידים</a>\n'
+        "  </div>\n</header>\n"
+        '<div class="sim-layout">\n'
+        # Chat column
+        '  <div class="sim-chat">\n'
+        '    <div class="sim-header">\n'
+        '      <h2>&#x1F916; סימולטור בוט</h2>\n'
+        '      <button class="sim-reset-btn" onclick="resetChat()">אתחול שיחה</button>\n'
+        "    </div>\n"
+        '    <div class="sim-messages" id="messages">\n'
+        '      <div class="bubble bot">שלום! אני אלעד מאקדמיית פרופלור דרונס &#x1F44B; איך אוכל לעזור?</div>\n'
+        "    </div>\n"
+        '    <div class="typing-indicator" id="typing">הבוט מקליד...</div>\n'
+        '    <div class="sim-input-row">\n'
+        '      <textarea id="inp" placeholder="כתוב הודעה..." rows="1"></textarea>\n'
+        '      <button class="sim-send-btn" id="sendBtn" onclick="sendMsg()">&#x27A4;</button>\n'
+        "    </div>\n"
+        "  </div>\n"
+        # State panel column
+        '  <div class="sim-panel">\n'
+        '    <h3>מצב הליד</h3>\n'
+        '    <div class="state-card">\n'
+        '      <h4>משפך</h4>\n'
+        '      <div id="panel-funnel">'
+        '<div class="state-row"><span class="state-label">שלב</span>'
+        '<span class="badge badge-new">חדש</span></div>'
+        '<div class="state-row"><span class="state-label">היכרות</span>'
+        '<span class="badge badge-unknown">לא ידוע</span></div>'
+        "</div>\n"
+        "    </div>\n"
+        '    <div class="state-card">\n'
+        '      <h4>פרופיל</h4>\n'
+        '      <div id="panel-intent">'
+        '<div class="state-row"><span class="state-label">כוונה</span><span class="state-val empty">—</span></div>'
+        '<div class="state-row"><span class="state-label">תעשייה</span><span class="state-val empty">—</span></div>'
+        '<div class="state-row"><span class="state-label">ניסיון</span><span class="state-val empty">—</span></div>'
+        "</div>\n"
+        "    </div>\n"
+        '    <div class="state-card">\n'
+        '      <h4>תיאום שיחה</h4>\n'
+        '      <div id="panel-call">'
+        '<div class="state-row"><span class="state-label">חלון</span><span class="state-val empty">—</span></div>'
+        '<div class="state-row"><span class="state-label">שיחה</span><span class="state-val empty">—</span></div>'
+        "</div>\n"
+        "    </div>\n"
+        '    <div class="state-card">\n'
+        '      <h4>סרטונים שנשלחו</h4>\n'
+        '      <div id="panel-videos"><span class="state-val empty">—</span></div>\n'
+        "    </div>\n"
+        "  </div>\n"
+        "</div>\n"
+        "<script>\n" + js + "\n</script>\n"
+        "</body>\n</html>\n"
+    )
+    return html
+
+
+@router.get("/simulator", response_class=HTMLResponse)
+async def simulator_page(
+    _: str = Depends(_require_admin),
+) -> HTMLResponse:
+    return HTMLResponse(_build_simulator_page())
+
+
+@router.post("/simulator/chat")
+async def simulator_chat(
+    req: Request,
+    _: str = Depends(_require_admin),
+) -> dict:
+    from app.agent.graph import simulate_message
+
+    body = await req.json()
+    session_id = str(body.get("session_id", "default"))
+    message = str(body.get("message", "")).strip()
+    if not message:
+        return {"reply": ""}
+
+    result = simulate_message(session_id, message)
+    return {"reply": result["reply"], "state": result["state"]}
+
+
+@router.post("/simulator/reset")
+async def simulator_reset(
+    req: Request,
+    _: str = Depends(_require_admin),
+) -> dict:
+    from app.agent.graph import clear_simulation
+
+    body = await req.json()
+    session_id = str(body.get("session_id", "default"))
+    clear_simulation(session_id)
+    return {"ok": True}

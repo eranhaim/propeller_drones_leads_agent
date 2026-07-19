@@ -82,7 +82,19 @@ def main() -> None:
     from app.followup.scheduler import run_in_background_thread as _run_followup
     _run_followup()
 
-    bot = _build_bot()
+    try:
+        bot = _build_bot()
+    except Exception as exc:
+        logger.warning(
+            "GreenAPI bot failed to start ({}). "
+            "Webhook/admin UI still available -- WhatsApp polling disabled.",
+            exc,
+        )
+        # Block forever so the webhook server (admin UI, simulator) stays up.
+        import threading
+        threading.Event().wait()
+        return
+
     logger.info("Bot ready -- entering polling loop")
     bot.run_forever()
 
