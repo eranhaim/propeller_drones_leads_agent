@@ -33,6 +33,7 @@ from zoneinfo import ZoneInfo
 
 from loguru import logger
 from sqlalchemy import select
+from sqlalchemy.orm import aliased
 from whatsapp_api_client_python.API import GreenAPI
 
 from app.config import get_settings
@@ -288,16 +289,21 @@ def _log_unanswered_user_messages(session) -> None:
     now = datetime.now(timezone.utc)
     stale_cutoff = now - timedelta(seconds=90)
 
+    _m = aliased(Message)
+    latest_msg_id = (
+        select(_m.id)
+        .where(_m.lead_id == Lead.id)
+        .order_by(_m.created_at.desc())
+        .limit(1)
+        .correlate_except(_m)
+        .scalar_subquery()
+    )
     stale = session.execute(
         select(Lead, Message)
         .join(Message, Message.lead_id == Lead.id)
         .where(
             Message.created_at < stale_cutoff,
-            Message.id == select(Message.id)
-                .where(Message.lead_id == Lead.id)
-                .order_by(Message.created_at.desc())
-                .limit(1)
-                .scalar_subquery(),
+            Message.id == latest_msg_id,
             Message.role == MessageRole.user,
         )
     ).all()

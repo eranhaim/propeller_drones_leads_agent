@@ -23,7 +23,7 @@ from whatsapp_api_client_python.API import GreenAPI
 
 from app.config import get_settings
 from app.db import repository
-from app.db.models import MessageRole
+from app.db.models import Lead, MessageRole
 from app.db.session import session_scope
 
 
@@ -134,5 +134,18 @@ def handle_new_lead(
             )
             logger.info("[opener] sent to {} (campaign={}, topic={!r})",
                         phone, campaign_id, topic)
+
+        # Push Level 3 immediately after opener -- lead hasn't replied yet.
+        # graph.py will upgrade to Level 2 on first reply, tools.py to Level 1
+        # on booking. We do this outside the session_scope above so a CRM
+        # failure never blocks the opener flow.
+        try:
+            from app.crm.leadme_client import push_engagement_level
+            with session_scope() as s3:
+                l3 = s3.query(Lead).filter_by(phone=phone).first()
+                if l3 is not None:
+                    push_engagement_level(l3, level=3, note="opener sent, awaiting reply")
+        except Exception:
+            logger.exception("[opener] level-3 push failed for {}", phone)
     except Exception:
         logger.exception("[opener] unexpected error handling {}", phone)

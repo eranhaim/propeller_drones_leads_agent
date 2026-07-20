@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>Propeller Drones Bot — מדריך קוד</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #f5f5f5; color: #1a1a1a; font-size: 14px; line-height: 1.6; }
+  .page { max-width: 960px; margin: 0 auto; padding: 32px 24px; }
+
+  h1 { font-size: 28px; color: #1a1a1a; border-bottom: 3px solid #2563eb; padding-bottom: 12px; margin-bottom: 8px; }
+  h2 { font-size: 20px; color: #2563eb; margin: 36px 0 12px; border-right: 4px solid #2563eb; padding-right: 10px; }
+  h3 { font-size: 15px; color: #1e40af; margin: 20px 0 8px; }
+  h4 { font-size: 13px; color: #374151; margin: 14px 0 6px; font-weight: 600; }
+
+  p { margin-bottom: 10px; }
+  ul, ol { padding-right: 22px; margin-bottom: 10px; }
+  li { margin-bottom: 4px; }
+
+  .subtitle { color: #6b7280; font-size: 13px; margin-bottom: 32px; }
+
+  /* SECTION CARD */
+  .card { background: #fff; border-radius: 8px; border: 1px solid #e5e7eb; padding: 20px 24px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+
+  /* FLOW DIAGRAM */
+  .flow { display: flex; flex-direction: column; gap: 0; align-items: flex-start; margin: 16px 0; }
+  .flow-step { display: flex; align-items: flex-start; gap: 12px; position: relative; }
+  .flow-step:not(:last-child)::after {
+    content: ''; position: absolute; right: 16px; top: 36px;
+    width: 2px; height: 28px; background: #93c5fd;
+  }
+  .flow-icon { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 15px; flex-shrink: 0; }
+  .flow-body { padding: 4px 0 28px; }
+  .flow-title { font-weight: 600; font-size: 13px; }
+  .flow-desc { font-size: 12px; color: #6b7280; }
+  .flow-file { font-size: 11px; color: #9ca3af; font-family: monospace; }
+
+  .step-blue { background: #dbeafe; }
+  .step-green { background: #d1fae5; }
+  .step-purple { background: #ede9fe; }
+  .step-orange { background: #fed7aa; }
+  .step-red { background: #fee2e2; }
+  .step-gray { background: #f3f4f6; }
+  .step-yellow { background: #fef9c3; }
+
+  /* FILE TABLE */
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+  thead tr { background: #1e40af; color: #fff; }
+  thead th { padding: 8px 12px; text-align: right; font-weight: 600; }
+  tbody tr:nth-child(even) { background: #f0f4ff; }
+  tbody tr:hover { background: #dbeafe; }
+  td { padding: 7px 12px; border-bottom: 1px solid #e5e7eb; vertical-align: top; }
+  td:first-child { font-family: monospace; font-size: 12px; color: #1e40af; white-space: nowrap; }
+  td code { font-family: monospace; background: #f3f4f6; padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+
+  /* FUNCTION TABLE */
+  .fn-table td:first-child { color: #7c3aed; }
+
+  /* TOOLS GRID */
+  .tools-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 12px 0; }
+  .tool-card { border: 1px solid #c7d2fe; border-radius: 6px; padding: 12px 14px; background: #eef2ff; }
+  .tool-name { font-family: monospace; font-weight: 700; color: #3730a3; font-size: 13px; margin-bottom: 4px; }
+  .tool-desc { font-size: 12px; color: #374151; }
+  .tool-when { font-size: 11px; color: #6b7280; margin-top: 6px; border-top: 1px solid #c7d2fe; padding-top: 6px; }
+
+  /* SAFETY NET */
+  .safety-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 12px 0; }
+  .safety-card { border-right: 4px solid; border-radius: 6px; padding: 10px 12px; font-size: 12px; }
+  .safety-card.blue { border-color: #3b82f6; background: #eff6ff; }
+  .safety-card.orange { border-color: #f97316; background: #fff7ed; }
+  .safety-card.green { border-color: #22c55e; background: #f0fdf4; }
+  .safety-card.purple { border-color: #a855f7; background: #faf5ff; }
+  .safety-card b { display: block; margin-bottom: 4px; }
+
+  /* ENGAGEMENT LEVELS */
+  .levels { display: flex; gap: 12px; margin: 12px 0; }
+  .level { flex: 1; border-radius: 8px; padding: 12px; text-align: center; }
+  .level-1 { background: #d1fae5; border: 2px solid #059669; }
+  .level-2 { background: #dbeafe; border: 2px solid #2563eb; }
+  .level-3 { background: #fee2e2; border: 2px solid #dc2626; }
+  .level-num { font-size: 24px; font-weight: 800; }
+  .level-name { font-size: 12px; font-weight: 600; margin: 4px 0; }
+  .level-desc { font-size: 11px; color: #374151; }
+
+  /* ENV VARS */
+  .env-group { margin-bottom: 14px; }
+  .env-group-title { font-weight: 700; color: #374151; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px; padding: 4px 8px; background: #f3f4f6; border-radius: 4px; }
+  .env-row { display: flex; gap: 8px; font-size: 12px; padding: 3px 0; border-bottom: 1px solid #f3f4f6; }
+  .env-key { font-family: monospace; color: #7c3aed; flex: 0 0 260px; }
+  .env-val { color: #6b7280; }
+
+  /* DB SCHEMA */
+  .schema-table td:first-child { color: #0f766e; }
+
+  /* FUNNEL */
+  .funnel { display: flex; gap: 0; margin: 12px 0; }
+  .funnel-stage { flex: 1; padding: 10px 8px; text-align: center; font-size: 11px; font-weight: 600; position: relative; }
+  .funnel-stage:not(:last-child)::after { content: '›'; position: absolute; left: -7px; top: 50%; transform: translateY(-50%); font-size: 18px; color: #6b7280; }
+  .f1 { background: #dbeafe; color: #1e40af; border-radius: 6px 0 0 6px; }
+  .f2 { background: #e0e7ff; color: #3730a3; }
+  .f3 { background: #fef9c3; color: #854d0e; }
+  .f4 { background: #fed7aa; color: #9a3412; }
+  .f5 { background: #d1fae5; color: #065f46; border-radius: 0 6px 6px 0; }
+
+  /* LEARN TABLE */
+  .learn-row { display: flex; gap: 12px; margin-bottom: 10px; align-items: flex-start; }
+  .learn-num { width: 28px; height: 28px; border-radius: 50%; background: #2563eb; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; flex-shrink: 0; }
+  .learn-body { flex: 1; }
+  .learn-topic { font-weight: 700; font-size: 13px; }
+  .learn-sub { font-size: 12px; color: #6b7280; }
+  .learn-js { font-size: 11px; color: #059669; font-style: italic; }
+
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+  .tag-blue { background: #dbeafe; color: #1e40af; }
+  .tag-green { background: #d1fae5; color: #065f46; }
+  .tag-orange { background: #fed7aa; color: #9a3412; }
+
+  .note { background: #fef9c3; border-right: 4px solid #eab308; padding: 10px 14px; border-radius: 0 6px 6px 0; font-size: 12px; margin: 12px 0; }
+  .warn { background: #fee2e2; border-right: 4px solid #dc2626; padding: 10px 14px; border-radius: 0 6px 6px 0; font-size: 12px; margin: 12px 0; }
+
+  .toc { background: #eef2ff; border-radius: 8px; padding: 16px 20px; margin-bottom: 28px; }
+  .toc li { font-size: 13px; margin-bottom: 3px; }
+  .toc a { color: #2563eb; text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+
+  @media print {
+    body { background: white; font-size: 11px; }
+    .card { box-shadow: none; border: 1px solid #d1d5db; }
+    h2 { page-break-before: auto; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <h1>Propeller Drones Bot — מדריך קוד מלא</h1>
+  <p class="subtitle">מסמך טכני לפיתוח ותחזוקה · שפה: Python · תאריך: יולי 2026</p>
+
+  <div class="toc card">
+    <h3 style="margin-top:0">תוכן עניינים</h3>
+    <ol>
+      <li><a href="#what">מה הבוט עושה — בשפה פשוטה</a></li>
+      <li><a href="#flow-whatsapp">זרימה: הודעה נכנסת מ-WhatsApp</a></li>
+      <li><a href="#flow-webhook">זרימה: ליד חדש מ-LeadMe</a></li>
+      <li><a href="#flow-followup">זרימה: Follow-up אוטומטי</a></li>
+      <li><a href="#files">מפת הקבצים</a></li>
+      <li><a href="#functions">פונקציות מרכזיות</a></li>
+      <li><a href="#tools">הכלים של ה-AI</a></li>
+      <li><a href="#safety">Safety Nets (רשתות ביטחון)</a></li>
+      <li><a href="#db">בסיס הנתונים</a></li>
+      <li><a href="#funnel">שלבי המשפך (Funnel)</a></li>
+      <li><a href="#engagement">רמות Engagement</a></li>
+      <li><a href="#env">משתני הסביבה (.env)</a></li>
+      <li><a href="#learn">מה ללמוד — לפי סדר עדיפויות</a></li>
+    </ol>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <h2 id="what">1. מה הבוט עושה — בשפה פשוטה</h2>
+  <div class="card">
+    <p>בוט WhatsApp שמנהל שיחות בעברית עם לידים של <strong>Propeller Drones</strong> — חברה שמוכרת רחפנים ומפעילה אקדמיה לטייסים.</p>
+    <p>הליד ממלא טופס בפרסומת ב-Facebook → הבוט מקבל אותו ב-WhatsApp → מנהל איתו שיחה → מנסה לסגור שיחה עם נציג מכירות.</p>
+    <div style="margin-top:16px">
+      <table>
+        <thead><tr><th>שלב</th><th>מה קורה</th><th>מי עושה את זה</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>ליד ממלא טופס בפרסומת</td><td>Facebook Ads</td></tr>
+          <tr><td>2</td><td>LeadMe (CRM) שולח webhook לבוט</td><td>LeadMe CRM</td></tr>
+          <tr><td>3</td><td>הבוט שולח הודעת פתיחה ב-WhatsApp</td><td>opener.py</td></tr>
+          <tr><td>4</td><td>הליד עונה → GPT-4o מנהל שיחה</td><td>agent/graph.py</td></tr>
+          <tr><td>5</td><td>הבוט מנסה לקבוע שיחה עם יועץ</td><td>כלי schedule_call</td></tr>
+          <tr><td>6</td><td>פרטי הליד עוברים ל-LeadMe → נציג מתקשר</td><td>crm/leadme_client.py</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <h2 id="flow-whatsapp">2. זרימה: הודעה נכנסת מ-WhatsApp</h2>
+  <div class="card">
+    <p>כאשר ליד שולח הודעה, זה בדיוק מה שקורה בקוד:</p>
+    <div class="flow">
+
+      <div class="flow-step">
+        <div class="flow-icon step-blue">📡</div>
+        <div class="flow-body">
+          <div class="flow-title">GreenAPI מקבל הודעה</div>
+          <div class="flow-desc">ספריית <code>whatsapp-chatbot-python</code> מבצעת polling ל-GreenAPI בלולאה אינסופית. כשמגיעה הודעה — היא מגיעה כ-JSON.</div>
+          <div class="flow-file">app/main.py → bot.run_forever()</div>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-icon step-blue">🔎</div>
+        <div class="flow-body">
+          <div class="flow-title">חילוץ פרטי השולח</div>
+          <div class="flow-desc">מוציאים מהנוטיפיקציה: מספר טלפון, שם, תוכן ההודעה. בודקים שזו לא הודעת קבוצה. בודקים שהמספר ב-allow-list (אם מוגדר).</div>
+          <div class="flow-file">app/whatsapp/handler.py → _extract_text(), _extract_sender_info(), _phone_from_chat_id()</div>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-icon step-orange">🔇</div>
+        <div class="flow-body">
+          <div class="flow-title">בדיקת Mute</div>
+          <div class="flow-desc">אם ה-admin השתיק את הבוט לליד הזה (<code>bot_muted=True</code>) — ההודעה נשמרת ב-DB אבל הבוט לא עונה.</div>
+          <div class="flow-file">app/whatsapp/handler.py → lead.bot_muted</div>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-icon step-green">💾</div>
+        <div class="flow-body">
+          <div class="flow-title">טרנזקציה 1: שמירת ההודעה ל-DB</div>
+          <div class="flow-desc">לפני שמריצים AI — שומרים את ההודעה ב-DB. כך אם ה-AI יתרסק, ההודעה לא תאבד. גם בודקים: האם זו ההודעה הראשונה של הליד? אם כן — מסמנים לדחוף "Level 2" ל-LeadMe.</div>
+          <div class="flow-file">app/agent/graph.py → handle_message() → Transaction 1</div>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-icon step-purple">🤖</div>
+        <div class="flow-body">
+          <div class="flow-title">טרנזקציה 2: הרצת ה-AI Agent</div>
+          <div class="flow-desc">בונים את ה-System Prompt (כולל מצב הליד הנוכחי + קטלוג הסרטונים). טוענים 30 ההודעות האחרונות כהיסטוריה. מריצים את LangGraph ReAct Agent שיכול להפעיל כלים.</div>
+          <div class="flow-file">app/agent/graph.py → Transaction 2 → _agent().invoke()</div>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-icon step-yellow">🔒</div>
+        <div class="flow-body">
+          <div class="flow-title">Safety Nets (רשתות ביטחון)</div>
+          <div class="flow-desc">אחרי שה-AI ענה, מריצים בדיקות:<br>
+            • אם התשובה באנגלית — מריצים את ה-AI שוב עם תזכורת לענות בעברית<br>
+            • מנקים markdown links (WhatsApp לא מציג אותם)<br>
+            • מנקים משפטי מילוי ("אני כאן לעזור") — הלקוח ביקש להסיר אותם<br>
+            • אם ה-AI אמר "קבעתי שיחה" אבל לא קרא לכלי — קוראים לכלי אוטומטית
+          </div>
+          <div class="flow-file">app/agent/graph.py → _strip_filler(), _strip_markdown_links(), _enforce_booking_promise()</div>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-icon step-green">📤</div>
+        <div class="flow-body">
+          <div class="flow-title">שליחת תשובה</div>
+          <div class="flow-desc">מציגים "מקליד..." ← ממתינים כמה שניות (אנושי יותר) ← שולחים את התשובה דרך GreenAPI.</div>
+          <div class="flow-file">app/whatsapp/sender.py → ChatSender.send_text(humanize=True)</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <h2 id="flow-webhook">3. זרימה: ליד חדש מ-LeadMe</h2>
+  <div class="card">
+    <div class="flow">
+
+      <div class="flow-step">
+        <div class="flow-icon step-blue">📨</div>
+        <div class="flow-body">
+          <div class="flow-title">LeadMe שולח Webhook</div>
+          <div class="flow-desc">כשמישהו ממלא טופס בפרסומת — LeadMe שולח HTTP POST לכתובת <code>/webhook/leadme/{secret}</code> עם פרטי הליד.</div>
+          <div class="flow-file">app/webhook/server.py → leadme_webhook()</div>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-icon step-blue">🔬</div>
+        <div class="flow-body">
+          <div class="flow-title">פרישת הנתונים</div>
+          <div class="flow-desc">חולצים מהבקשה: טלפון (ומנרמלים לפורמט ישראלי), שם, שדות מותאמים אישית (<code>clf_XXXXX</code>), מזהה קמפיין.</div>
+          <div class="flow-file">app/webhook/server.py → _normalize_phone(), _extract_custom_fields()</div>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-icon step-green">⚡</div>
+        <div class="flow-body">
+          <div class="flow-title">תגובה מיידית 200 OK</div>
+          <div class="flow-desc">הבוט מחזיר 200 מיד ← LeadMe לא מחכה. הטיפול בליד קורה ב-thread נפרד ברקע כדי לא לגרום timeout.</div>
+          <div class="flow-file">app/webhook/server.py → Thread(daemon=True).start()</div>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-icon step-purple">🔍</div>
+        <div class="flow-body">
+          <div class="flow-title">בדיקה: כבר פנינו לליד?</div>
+          <div class="flow-desc">מחפשים בDB אם הליד קיים ואם כבר נשלחה הודעת פתיחה (<code>opener_sent_at</code>). אם כן — לא שולחים שוב.</div>
+          <div class="flow-file">app/webhook/opener.py → handle_new_lead()</div>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-icon step-green">👋</div>
+        <div class="flow-body">
+          <div class="flow-title">שליחת הודעת פתיחה</div>
+          <div class="flow-desc">בוחרים תבנית פתיחה (לפי שם הליד ולפי מזהה הקמפיין) → שולחים דרך GreenAPI → שומרים ב-DB עם timestamp.</div>
+          <div class="flow-file">app/webhook/opener.py → _render_opener(), _pick_topic()</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <h2 id="flow-followup">4. זרימה: Follow-up אוטומטי</h2>
+  <div class="card">
+    <p>כל 30 דקות רץ job שמחפש לידים שלא ענו — ושולח להם הודעות תזכורת.</p>
+    <div class="flow">
+
+      <div class="flow-step">
+        <div class="flow-icon step-blue">⏰</div>
+        <div class="flow-body">
+          <div class="flow-title">APScheduler מפעיל Tick</div>
+          <div class="flow-desc">כל <code>FOLLOWUP_INTERVAL_MINUTES</code> (ברירת מחדל: 30 דקות) קורה <code>run_once()</code>.</div>
+          <div class="flow-file">app/followup/scheduler.py → run_once()</div>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-icon step-orange">🌙</div>
+        <div class="flow-body">
+          <div class="flow-title">בדיקת "שעות שקט"</div>
+          <div class="flow-desc">אם השעה בישראל היא לפני 9:00 או אחרי 20:00 — לא שולחים כלום. גם שישי-שבת לא שולחים.</div>
+          <div class="flow-file">app/followup/scheduler.py → _is_within_quiet_hours()</div>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-icon step-purple">🎥</div>
+        <div class="flow-body">
+          <div class="flow-title">Follow-up לוובינר</div>
+          <div class="flow-desc">מחפש לידים שקיבלו את הוובינר לפני X שעות ועדיין לא ענו — שולח "ראית את הוובינר?"</div>
+          <div class="flow-file">app/followup/scheduler.py → _pick_webinar_followups()</div>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-icon step-yellow">🔕</div>
+        <div class="flow-body">
+          <div class="flow-title">מציאת לידים שקטים</div>
+          <div class="flow-desc">מחפש לידים שעומדים בכל התנאים: לא handed_off, לא muted, לא קבעו שיחה, ההודעה האחרונה היא שלנו (הם לא ענו), עברו 24+ שעות.</div>
+          <div class="flow-file">app/followup/scheduler.py → _pick_leads_to_nudge()</div>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-icon step-green">📤</div>
+        <div class="flow-body">
+          <div class="flow-title">שליחת Nudge (דחיפה)</div>
+          <div class="flow-desc">שולח הודעת תזכורת קבועה (לא AI — זול ומדויק). Nudge 1 = אחרי 24ש, Nudge 2 = אחרי 72ש. מקסימום 2 nudges.</div>
+          <div class="flow-file">app/followup/scheduler.py → _send_and_record(), _render_nudge()</div>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-icon step-red">📊</div>
+        <div class="flow-body">
+          <div class="flow-title">דיווח Level 3 ל-LeadMe</div>
+          <div class="flow-desc">אם הליד לא ענה אפילו פעם אחת אחרי שני nudges — דוחפים "Level 3" ל-LeadMe ("לא הגיב").</div>
+          <div class="flow-file">app/crm/client.py → mark_no_reply()</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <h2 id="files">5. מפת הקבצים</h2>
+  <div class="card">
+    <table>
+      <thead><tr><th>קובץ</th><th>תפקיד</th><th>חשיבות</th></tr></thead>
+      <tbody>
+        <tr><td>app/main.py</td><td>נקודת הכניסה — מפעיל הכל</td><td><span class="tag tag-orange">גבוהה</span></td></tr>
+        <tr><td>app/config.py</td><td>כל הגדרות ה-.env</td><td><span class="tag tag-orange">גבוהה</span></td></tr>
+        <tr><td>app/agent/graph.py</td><td>הלב — pipeline מלא לכל הודעה</td><td><span class="tag tag-orange">גבוהה</span></td></tr>
+        <tr><td>app/agent/tools.py</td><td>6 כלים שה-AI יכול להפעיל</td><td><span class="tag tag-orange">גבוהה</span></td></tr>
+        <tr><td>app/agent/prompts.py</td><td>System Prompt בעברית + כל החוקים</td><td><span class="tag tag-orange">גבוהה</span></td></tr>
+        <tr><td>app/whatsapp/handler.py</td><td>מסנן הודעות נכנסות מ-WhatsApp</td><td><span class="tag tag-blue">בינונית</span></td></tr>
+        <tr><td>app/whatsapp/sender.py</td><td>שולח הודעות + וידאואים ל-WhatsApp</td><td><span class="tag tag-blue">בינונית</span></td></tr>
+        <tr><td>app/webhook/server.py</td><td>FastAPI — מקבל לידים חדשים מ-LeadMe</td><td><span class="tag tag-blue">בינונית</span></td></tr>
+        <tr><td>app/webhook/opener.py</td><td>שולח הודעת פתיחה לליד חדש</td><td><span class="tag tag-blue">בינונית</span></td></tr>
+        <tr><td>app/followup/scheduler.py</td><td>Follow-up אוטומטי כל 30 דקות</td><td><span class="tag tag-blue">בינונית</span></td></tr>
+        <tr><td>app/crm/leadme_client.py</td><td>כל קריאות ה-API ל-LeadMe CRM</td><td><span class="tag tag-blue">בינונית</span></td></tr>
+        <tr><td>app/agent/classifier.py</td><td>סיווג הליד (familiarity/stage)</td><td><span class="tag tag-green">נמוכה</span></td></tr>
+        <tr><td>app/agent/context.py</td><td>Context per-request לכלים</td><td><span class="tag tag-green">נמוכה</span></td></tr>
+        <tr><td>app/db/models.py</td><td>הגדרת הטבלאות (ORM)</td><td><span class="tag tag-blue">בינונית</span></td></tr>
+        <tr><td>app/db/repository.py</td><td>כל פעולות ה-DB (שמירה/שליפה)</td><td><span class="tag tag-blue">בינונית</span></td></tr>
+        <tr><td>app/db/session.py</td><td>חיבור ל-DB + session_scope</td><td><span class="tag tag-green">נמוכה</span></td></tr>
+        <tr><td>app/rag/ingest.py</td><td>גריידת האתר → ChromaDB (חד-פעמי)</td><td><span class="tag tag-green">נמוכה</span></td></tr>
+        <tr><td>app/rag/retriever.py</td><td>חיפוש סמנטי ב-ChromaDB</td><td><span class="tag tag-green">נמוכה</span></td></tr>
+        <tr><td>app/videos/catalog.py</td><td>קטלוג הסרטונים + המלצות</td><td><span class="tag tag-green">נמוכה</span></td></tr>
+        <tr><td>app/admin/routes.py</td><td>ממשק ניהול ל-admin</td><td><span class="tag tag-green">נמוכה</span></td></tr>
+        <tr><td>data/videos.json</td><td>רשימת הסרטונים</td><td><span class="tag tag-green">נמוכה</span></td></tr>
+        <tr><td>data/knowledge/*.md</td><td>מסמכי ידע (נכנסים ל-RAG)</td><td><span class="tag tag-green">נמוכה</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <h2 id="functions">6. פונקציות מרכזיות</h2>
+  <div class="card">
+    <h3>app/agent/graph.py — הלב של הבוט</h3>
+    <table class="fn-table">
+      <thead><tr><th>פונקציה</th><th>מה היא עושה</th></tr></thead>
+      <tbody>
+        <tr><td>handle_message(phone, text, ...)</td><td>הפונקציה הראשית. מקבלת הודעה → מריצה AI → מחזירה תשובה. כל שאר הפונקציות מופעלות מפה.</td></tr>
+        <tr><td>_looks_like_english(reply)</td><td>בודקת: האם התשובה באנגלית? (פחות מ-15% תווים עבריים = כן). אם כן — מריצים את ה-AI שוב.</td></tr>
+        <tr><td>_strip_filler(reply)</td><td>מוחקת שורות בסיום כמו "אני כאן לעזור" — הלקוח ביקש להסיר אותן.</td></tr>
+        <tr><td>_strip_markdown_links(reply)</td><td>מסירה [text](url) ומשאירה רק את ה-URL. WhatsApp לא מציג markdown.</td></tr>
+        <tr><td>_enforce_booking_promise(session, lead, reply)</td><td>Safety net: אם ה-AI אמר "קבעתי שיחה" אבל לא קרא לכלי — קוראת לכלי אוטומטית.</td></tr>
+        <tr><td>_history_as_messages(lead, session)</td><td>טוענת 30 הודעות אחרונות מה-DB ומחזירה אותן פורמט LangChain.</td></tr>
+        <tr><td>_extract_reply(result)</td><td>שולפת את הטקסט הסופי מתוצאת ה-AI (שהיא dict מורכבת).</td></tr>
+      </tbody>
+    </table>
+
+    <h3 style="margin-top:20px">app/whatsapp/handler.py — סינון הודעות</h3>
+    <table class="fn-table">
+      <thead><tr><th>פונקציה</th><th>מה היא עושה</th></tr></thead>
+      <tbody>
+        <tr><td>register_handlers(bot)</td><td>רושמת את ה-handler הראשי. כל הודעה נכנסת עוברת דרך פה.</td></tr>
+        <tr><td>_extract_text(notification)</td><td>שולפת את הטקסט מסוגי הודעות שונים (טקסט, caption, כפתור, רשימה).</td></tr>
+        <tr><td>_phone_from_chat_id(chat_id)</td><td>הופכת "972501234567@c.us" → "972501234567".</td></tr>
+        <tr><td>_is_allowed(phone)</td><td>בודקת allow-list. אם ALLOWED_TEST_PHONES ריק — כולם מורשים.</td></tr>
+      </tbody>
+    </table>
+
+    <h3 style="margin-top:20px">app/db/repository.py — פעולות DB</h3>
+    <table class="fn-table">
+      <thead><tr><th>פונקציה</th><th>מה היא עושה</th></tr></thead>
+      <tbody>
+        <tr><td>get_or_create_lead(session, phone, name)</td><td>מחפש ליד לפי מספר. אם לא קיים — יוצר חדש. מחזיר תמיד Lead.</td></tr>
+        <tr><td>add_message(session, lead, role, content, metadata)</td><td>מוסיף הודעה להיסטוריה + מעדכן last_message_at.</td></tr>
+        <tr><td>recent_messages(session, lead, limit)</td><td>מחזיר N ההודעות האחרונות מישנה לחדש.</td></tr>
+        <tr><td>update_lead_metadata(session, lead, **fields)</td><td>מאחד שדות חדשים ל-JSON של lead_metadata.</td></tr>
+        <tr><td>mark_video_sent(session, lead, video_id)</td><td>מוסיף video_id למערך videos_sent כדי לא לשלוח שוב.</td></tr>
+        <tr><td>update_funnel_stage(session, lead, stage)</td><td>מזיז את הליד לשלב הבא במשפך.</td></tr>
+      </tbody>
+    </table>
+
+    <h3 style="margin-top:20px">app/followup/scheduler.py — Follow-up</h3>
+    <table class="fn-table">
+      <thead><tr><th>פונקציה</th><th>מה היא עושה</th></tr></thead>
+      <tbody>
+        <tr><td>run_once()</td><td>Tick אחד של ה-scheduler. מפעילה את כל שאר הפונקציות.</td></tr>
+        <tr><td>_is_within_quiet_hours()</td><td>מחזירה True אם עכשיו שעות שקט בישראל (לפני 9 / אחרי 20 / סוף שבוע).</td></tr>
+        <tr><td>_pick_leads_to_nudge(session, now)</td><td>שאילתת DB שמוצאת לידים שקטים שמחכים ל-nudge.</td></tr>
+        <tr><td>_render_nudge(name, nudge_number)</td><td>בוחרת תבנית הודעה לפי מספר ה-nudge ושם הליד.</td></tr>
+        <tr><td>_send_and_record(lead, nudge_number)</td><td>שולחת הודעת nudge + שומרת ב-DB + מעדכנת nudge_count.</td></tr>
+        <tr><td>_lead_already_booked(md)</td><td>בודקת אם preferred_call_slot כבר מוגדר (לא לשלוח nudge למי שכבר קבע).</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <h2 id="tools">7. הכלים של ה-AI</h2>
+  <div class="card">
+    <p>ה-AI (GPT-4o) יכול להפעיל 6 כלים בזמן שיחה. כל כלי הוא פונקציית Python שה-AI קורא לה:</p>
+    <div class="tools-grid">
+
+      <div class="tool-card">
+        <div class="tool-name">🔍 search_knowledge(query, topic?)</div>
+        <div class="tool-desc">חיפוש סמנטי ב-ChromaDB — מאגר הידע שנבנה מגריידת האתר ומסמכים מקומיים. מחזיר קטעי טקסט רלוונטיים.</div>
+        <div class="tool-when">מתי: בכל שאלה עובדתית (מחיר, רישיון, מסלולים, מיקומים)</div>
+      </div>
+
+      <div class="tool-card">
+        <div class="tool-name">🏷️ classify_lead(familiarity?, stage?, intent?, ...)</div>
+        <div class="tool-desc">עדכון מצב הליד ב-DB. כל הפרמטרים אופציונליים — רק מה שהתחדש. שומר: familiarity, funnel stage, כוונה, תעשייה, חלון שעות.</div>
+        <div class="tool-when">מתי: בכל פעם שמתגלה מידע חדש על הליד</div>
+      </div>
+
+      <div class="tool-card">
+        <div class="tool-name">🎬 send_video(video_id, caption?)</div>
+        <div class="tool-desc">שולח וידאו ל-WhatsApp. מונע שליחה כפולה (בודק videos_sent + in-turn dedup). אם הוובינר נשלח — שומר webinar_sent_at לצורך follow-up.</div>
+        <div class="tool-when">מתי: כשמנסים לחמם ליד עם תוכן חזותי</div>
+      </div>
+
+      <div class="tool-card">
+        <div class="tool-name">💡 recommend_video(topics_context?)</div>
+        <div class="tool-desc">מקבל המלצה לוידאו הבא לפי familiarity של הליד, נושאים שדובר עליהם, וסרטונים שכבר נשלחו. מחזיר רק את ה-id לשימוש ב-send_video.</div>
+        <div class="tool-when">מתי: לפני send_video כשלא בטוחים איזה וידאו</div>
+      </div>
+
+      <div class="tool-card">
+        <div class="tool-name">📅 schedule_call(summary?, preferred_call_slot?)</div>
+        <div class="tool-desc">מסמן את הליד כ-"handed_off", שולח ל-LeadMe, מעדכן funnel_stage. דורש חלון שעות חוקי (9-12 / 12-15 / 15-18 / any). אם אין — מחזיר הנחיה לשאול.</div>
+        <div class="tool-when">מתי: רק אחרי שהליד אמר מפורשות שרוצה שיחה ונתן חלון</div>
+      </div>
+
+      <div class="tool-card">
+        <div class="tool-name">❌ cancel_call(reason?)</div>
+        <div class="tool-desc">מבטל שיחה שכבר תואמה. מנקה preferred_call_slot ומחזיר funnel_stage ל-"warm". שולח ביטול ל-LeadMe.</div>
+        <div class="tool-when">מתי: רק אם הליד ביקש לבטל/לשנות שיחה שתואמה</div>
+      </div>
+
+    </div>
+    <div class="note">
+      <strong>חשוב להבין:</strong> ה-AI לא "שולח" הודעות ישירות — הוא קורא לכלים, והכלים עושים את העבודה. הכלי send_video הוא זה שמתקשר ל-GreenAPI, לא ה-AI עצמו.
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <h2 id="safety">8. Safety Nets — רשתות ביטחון</h2>
+  <div class="card">
+    <p>הבוט סובל מבעיות ידועות של LLM — כל אחת קיבלה "safety net" שמתקן אותה אחרי שה-AI עונה:</p>
+    <div class="safety-grid">
+      <div class="safety-card blue">
+        <b>🌐 Hebrew Safety Net</b>
+        אם התשובה מכילה פחות מ-15% תווים עבריים — מריצים שוב עם הנחיה לענות בעברית. אם גם זה לא עוזר — שולחים תשובת ברירת מחדל קבועה.
+        <br><br><em>קובץ: graph.py → _looks_like_english()</em>
+      </div>
+      <div class="safety-card orange">
+        <b>✂️ Filler Stripper</b>
+        מנקה שורות מסוג "אני כאן לעזור", "מוזמן לפנות", "מקווה שעזרתי" — הלקוח ביקש להסיר אותן מפורשות. פועל על כל שורה אחרונה בנפרד.
+        <br><br><em>קובץ: graph.py → _strip_filler()</em>
+      </div>
+      <div class="safety-card green">
+        <b>🔗 Markdown Link Cleaner</b>
+        הופך <code>[טקסט](url)</code> ל-URL בלבד, ומסיר <code>**url**</code>. WhatsApp לא מציג markdown — הליד היה רואה סוגריים גלויים.
+        <br><br><em>קובץ: graph.py → _strip_markdown_links()</em>
+      </div>
+      <div class="safety-card purple">
+        <b>📋 Booking Promise Enforcer</b>
+        אם ה-AI אמר "קבעתי לך שיחה" אבל schedule_call לא רץ — קורא ל-mark_ready_for_call() אוטומטית. מונע הבטחה ריקה.
+        <br><br><em>קובץ: graph.py → _enforce_booking_promise()</em>
+      </div>
+    </div>
+    <div class="warn" style="margin-top:14px">
+      <strong>שים לב לבאגים נפוצים:</strong> אם הבוט שולח תשובות באנגלית → בדוק את _looks_like_english(). אם הבוט שולח "אני כאן לעזור" → בדוק שה-filler patterns ב-graph.py מכסים את הוריאציה. אם הבוט קבע שיחה בלי שהליד ביקש → בדוק את slot validation ב-classify_lead.
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <h2 id="db">9. בסיס הנתונים (PostgreSQL)</h2>
+  <div class="card">
+    <h3>טבלה: leads</h3>
+    <table class="schema-table">
+      <thead><tr><th>עמודה</th><th>סוג</th><th>מה זה</th></tr></thead>
+      <tbody>
+        <tr><td>id</td><td>Integer (PK)</td><td>מזהה ייחודי</td></tr>
+        <tr><td>phone</td><td>String(32) UNIQUE</td><td>מספר טלפון פורמט E.164 (972501234567)</td></tr>
+        <tr><td>name</td><td>String(255)</td><td>שם הליד (מ-LeadMe, יכול להיות null)</td></tr>
+        <tr><td>familiarity_level</td><td>Enum</td><td>unknown / beginner / aware / experienced</td></tr>
+        <tr><td>funnel_stage</td><td>Enum</td><td>new / engaged / warm / ready_for_call / handed_off</td></tr>
+        <tr><td>videos_sent</td><td>JSON (array)</td><td>רשימת video_id שנשלחו, למניעת כפילות</td></tr>
+        <tr><td>lead_metadata</td><td>JSON (object)</td><td>כל שאר הנתונים: intent, industry, slot, nudge_count, opener_sent_at, וכו'</td></tr>
+        <tr><td>bot_muted</td><td>Boolean</td><td>True = הבוט שותק, אדמין נכנס ידנית</td></tr>
+        <tr><td>created_at</td><td>Timestamp</td><td>מתי נוצר הליד</td></tr>
+        <tr><td>last_message_at</td><td>Timestamp</td><td>מתי ההודעה האחרונה (user או assistant)</td></tr>
+      </tbody>
+    </table>
+
+    <h3 style="margin-top:20px">טבלה: messages</h3>
+    <table class="schema-table">
+      <thead><tr><th>עמודה</th><th>סוג</th><th>מה זה</th></tr></thead>
+      <tbody>
+        <tr><td>id</td><td>Integer (PK)</td><td>מזהה ייחודי</td></tr>
+        <tr><td>lead_id</td><td>FK → leads.id</td><td>לאיזה ליד שייכת ההודעה</td></tr>
+        <tr><td>role</td><td>Enum</td><td>user / assistant / system / tool</td></tr>
+        <tr><td>content</td><td>Text</td><td>תוכן ההודעה</td></tr>
+        <tr><td>msg_metadata</td><td>JSON</td><td>מטאדטא על ההודעה (למשל: {"nudge": 1})</td></tr>
+        <tr><td>created_at</td><td>Timestamp</td><td>מתי נשלחה</td></tr>
+      </tbody>
+    </table>
+
+    <h3 style="margin-top:20px">שדות חשובים ב-lead_metadata (JSON)</h3>
+    <table class="schema-table">
+      <thead><tr><th>שדה</th><th>ערכים אפשריים</th><th>מי שם אותו</th></tr></thead>
+      <tbody>
+        <tr><td>intent</td><td>course / shop / service / hobby / job / unknown</td><td>ה-AI דרך classify_lead</td></tr>
+        <tr><td>industry</td><td>security, solar, agriculture, mapping, cinema, וכו'</td><td>ה-AI דרך classify_lead</td></tr>
+        <tr><td>preferred_call_slot</td><td>9-12 / 12-15 / 15-18 / any</td><td>ה-AI דרך classify_lead / schedule_call</td></tr>
+        <tr><td>has_experience</td><td>true / false / null</td><td>ה-AI דרך classify_lead</td></tr>
+        <tr><td>nudge_count</td><td>0, 1, 2</td><td>scheduler.py</td></tr>
+        <tr><td>opener_sent_at</td><td>ISO timestamp</td><td>opener.py</td></tr>
+        <tr><td>webinar_sent_at</td><td>ISO timestamp</td><td>כלי send_video</td></tr>
+        <tr><td>leadme_lead_id</td><td>מזהה LeadMe</td><td>webhook/server.py</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <h2 id="funnel">10. שלבי המשפך (Funnel)</h2>
+  <div class="card">
+    <div class="funnel">
+      <div class="funnel-stage f1">new<br><span style="font-weight:400">ליד חדש</span></div>
+      <div class="funnel-stage f2">engaged<br><span style="font-weight:400">ענה, מתעניין</span></div>
+      <div class="funnel-stage f3">warm<br><span style="font-weight:400">שאל מחיר/מסלול</span></div>
+      <div class="funnel-stage f4">ready_for_call<br><span style="font-weight:400">רוצה שיחה</span></div>
+      <div class="funnel-stage f5">handed_off<br><span style="font-weight:400">הועבר לנציג</span></div>
+    </div>
+    <table style="margin-top:14px">
+      <thead><tr><th>שלב</th><th>מה קורה</th><th>מי מזיז לשלב</th></tr></thead>
+      <tbody>
+        <tr><td><code>new</code></td><td>ליד נוצר, אולי קיבל פתיחה, עדיין לא ענה</td><td>אוטומטי בעת יצירה</td></tr>
+        <tr><td><code>engaged</code></td><td>הליד ענה ומגלה עניין</td><td>AI → classify_lead(stage="engaged")</td></tr>
+        <tr><td><code>warm</code></td><td>הליד שאל על מחיר / מסלול / תאריך</td><td>AI → classify_lead(stage="warm")</td></tr>
+        <tr><td><code>ready_for_call</code></td><td>הליד אמר שרוצה שיחה (שלב ביניים)</td><td>AI → classify_lead(stage="ready_for_call")</td></tr>
+        <tr><td><code>handed_off</code></td><td>schedule_call רץ בהצלחה, הועבר ל-LeadMe</td><td>כלי schedule_call</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <h2 id="engagement">11. רמות Engagement (ל-LeadMe)</h2>
+  <div class="card">
+    <p>במקביל למשפך הפנימי, דוחפים ל-LeadMe סטטוס engagement:</p>
+    <div class="levels">
+      <div class="level level-1">
+        <div class="level-num">1</div>
+        <div class="level-name">קבע שיחה</div>
+        <div class="level-desc">schedule_call רץ בהצלחה. הנציג צריך להתקשר.</div>
+      </div>
+      <div class="level level-2">
+        <div class="level-num">2</div>
+        <div class="level-name">ענה לבוט</div>
+        <div class="level-desc">ההודעה הראשונה של הליד התקבלה. הוא פעיל אבל לא קבע עדיין.</div>
+      </div>
+      <div class="level level-3">
+        <div class="level-num">3</div>
+        <div class="level-name">לא הגיב</div>
+        <div class="level-desc">2 nudges נשלחו ואין תגובה. הלקוח לא ענה אפילו פעם אחת.</div>
+      </div>
+    </div>
+    <div class="note">Level 3 נדחף רק אם הליד לא שלח אפילו הודעה אחת. מי שענה פעם אחת ואז שתק — לא מקבל Level 3 (כי יש לו כבר Level 2).</div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <h2 id="env">12. משתני הסביבה (.env)</h2>
+  <div class="card">
+
+    <div class="env-group">
+      <div class="env-group-title">OpenAI</div>
+      <div class="env-row"><span class="env-key">OPENAI_API_KEY</span><span class="env-val">חובה. המפתח שמאפשר לקרוא ל-GPT-4o</span></div>
+      <div class="env-row"><span class="env-key">OPENAI_CHAT_MODEL</span><span class="env-val">ברירת מחדל: gpt-4o</span></div>
+      <div class="env-row"><span class="env-key">OPENAI_EMBEDDING_MODEL</span><span class="env-val">ברירת מחדל: text-embedding-3-small (לRAG)</span></div>
+    </div>
+
+    <div class="env-group">
+      <div class="env-group-title">GreenAPI (WhatsApp)</div>
+      <div class="env-row"><span class="env-key">GREEN_API_INSTANCE_ID</span><span class="env-val">חובה. מזהה המופע ב-GreenAPI</span></div>
+      <div class="env-row"><span class="env-key">GREEN_API_TOKEN</span><span class="env-val">חובה. מפתח ה-API</span></div>
+    </div>
+
+    <div class="env-group">
+      <div class="env-group-title">Database</div>
+      <div class="env-row"><span class="env-key">DATABASE_URL</span><span class="env-val">ברירת מחדל: postgresql+psycopg2://propeller:propeller@postgres:5432/propeller_bot</span></div>
+    </div>
+
+    <div class="env-group">
+      <div class="env-group-title">ChromaDB (Vector DB)</div>
+      <div class="env-row"><span class="env-key">CHROMA_HOST</span><span class="env-val">ברירת מחדל: chroma</span></div>
+      <div class="env-row"><span class="env-key">CHROMA_PORT</span><span class="env-val">ברירת מחדל: 8000</span></div>
+    </div>
+
+    <div class="env-group">
+      <div class="env-group-title">LeadMe CRM</div>
+      <div class="env-row"><span class="env-key">LEADME_INSERT_URL</span><span class="env-val">URL לכתיבת ליד חדש. ריק = לא שולח</span></div>
+      <div class="env-row"><span class="env-key">LEADME_UPDATE_URL</span><span class="env-val">URL לעדכון ליד קיים</span></div>
+      <div class="env-row"><span class="env-key">LEADME_STATUS_LEVEL_1/2/3</span><span class="env-val">מזהי סטטוס ב-LeadMe לכל רמת engagement</span></div>
+      <div class="env-row"><span class="env-key">LEADME_TEST_MODE</span><span class="env-val">True = כל הכתיבות ל-LeadMe הן no-op (לבדיקות)</span></div>
+    </div>
+
+    <div class="env-group">
+      <div class="env-group-title">Webhook</div>
+      <div class="env-row"><span class="env-key">WEBHOOK_PORT</span><span class="env-val">ברירת מחדל: 8080</span></div>
+      <div class="env-row"><span class="env-key">WEBHOOK_SECRET</span><span class="env-val">סיסמה ב-URL. ריק = כל בקשה מתקבלת</span></div>
+    </div>
+
+    <div class="env-group">
+      <div class="env-group-title">Follow-up Scheduler</div>
+      <div class="env-row"><span class="env-key">FOLLOWUP_ENABLED</span><span class="env-val">ברירת מחדל: True</span></div>
+      <div class="env-row"><span class="env-key">FOLLOWUP_INTERVAL_MINUTES</span><span class="env-val">כמה דקות בין כל tick. ברירת מחדל: 30</span></div>
+      <div class="env-row"><span class="env-key">FOLLOWUP_FIRST_HOURS</span><span class="env-val">כמה שעות שקט עד nudge ראשון. ברירת מחדל: 24</span></div>
+      <div class="env-row"><span class="env-key">FOLLOWUP_SECOND_HOURS</span><span class="env-val">כמה שעות שקט עד nudge שני. ברירת מחדל: 72</span></div>
+      <div class="env-row"><span class="env-key">FOLLOWUP_MAX_NUDGES</span><span class="env-val">כמה nudges מקסימום. ברירת מחדל: 2</span></div>
+    </div>
+
+    <div class="env-group">
+      <div class="env-group-title">Admin Panel</div>
+      <div class="env-row"><span class="env-key">ADMIN_USER</span><span class="env-val">שם משתמש לממשק הניהול</span></div>
+      <div class="env-row"><span class="env-key">ADMIN_PASSWORD</span><span class="env-val">סיסמה לממשק הניהול</span></div>
+    </div>
+
+    <div class="env-group">
+      <div class="env-group-title">גבלות גישה</div>
+      <div class="env-row"><span class="env-key">ALLOWED_TEST_PHONES</span><span class="env-val">רשימת טלפונים מורשים (CSV). ריק = כולם מורשים</span></div>
+    </div>
+
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <h2 id="learn">13. מה ללמוד — לפי סדר עדיפויות</h2>
+  <div class="card">
+
+    <div class="learn-row">
+      <div class="learn-num">1</div>
+      <div class="learn-body">
+        <div class="learn-topic">Python בסיסי</div>
+        <div class="learn-sub">משתנים, פונקציות (def), if/else, לולאות, קלאסים בסיסיים, import. זמן: 3-5 ימים.</div>
+        <div class="learn-js">אם יש לך JS: Python זה JS בלי סוגריים. במקום function → def. במקום var/const → אין כלום. Indentation חשוב!</div>
+      </div>
+    </div>
+
+    <div class="learn-row">
+      <div class="learn-num">2</div>
+      <div class="learn-body">
+        <div class="learn-topic">HTTP ו-REST API</div>
+        <div class="learn-sub">מה זה GET/POST, headers, JSON body, status codes. כנראה יש לך את זה מ-React (fetch/axios). כאן משתמשים ב-httpx ו-requests.</div>
+        <div class="learn-js">זהה ל-fetch() ב-JS. requests.post(url, json={...}) = fetch(url, {method:'POST', body:...})</div>
+      </div>
+    </div>
+
+    <div class="learn-row">
+      <div class="learn-num">3</div>
+      <div class="learn-body">
+        <div class="learn-topic">FastAPI</div>
+        <div class="learn-sub">הספרייה שמגדירה HTTP endpoints (routes). ב-app/webhook/server.py ו-app/admin/routes.py. מאוד דומה ל-Express.js.</div>
+        <div class="learn-js">@app.post("/webhook") = app.post('/webhook', (req,res) => {}). Pydantic = Zod/TypeScript types</div>
+      </div>
+    </div>
+
+    <div class="learn-row">
+      <div class="learn-num">4</div>
+      <div class="learn-body">
+        <div class="learn-topic">SQLAlchemy (ORM)</div>
+        <div class="learn-sub">איך להגדיר טבלאות (models.py) ואיך לשלוף/להכניס נתונים (repository.py). משתמשים ב-session_scope() לניהול transactions.</div>
+        <div class="learn-js">SQLAlchemy ≈ Prisma/Drizzle. session.get(Lead, id) = prisma.lead.findUnique({where:{id}})</div>
+      </div>
+    </div>
+
+    <div class="learn-row">
+      <div class="learn-num">5</div>
+      <div class="learn-body">
+        <div class="learn-topic">LangChain + LangGraph</div>
+        <div class="learn-sub">הספרייה שמחברת GPT לכלים. create_react_agent() יוצר agent שיכול לקרוא לפונקציות. כל @tool הוא פונקציה שה-AI יכול "לבחור" להפעיל.</div>
+        <div class="learn-js">אין אנלוגיה ב-JS נפוצה, אבל הלוגיקה: AI מקבל רשימת כלים → מחליט מה לקרוא → מריץ → מחזיר תוצאה</div>
+      </div>
+    </div>
+
+    <div class="learn-row">
+      <div class="learn-num">6</div>
+      <div class="learn-body">
+        <div class="learn-topic">Docker ו-Docker Compose</div>
+        <div class="learn-sub">הפרויקט רץ ב-3 containers: postgres, chroma, bot. docker-compose up מפעיל הכל. docker logs -f bot לראות לוגים.</div>
+        <div class="learn-js">אין אנלוגיה. Docker = "קופסה" שבתוכה רץ הקוד עם כל התלויות, בלי להתקין כלום על המחשב ישירות.</div>
+      </div>
+    </div>
+
+    <div class="learn-row">
+      <div class="learn-num">7</div>
+      <div class="learn-body">
+        <div class="learn-topic">Context Managers (with)</div>
+        <div class="learn-sub">Python feature שמשמשת הרבה כאן: with session_scope() as session: — פותח transaction, מבצע קוד, סוגר אוטומטית (כמו try/finally).</div>
+        <div class="learn-js">דומה ל-try { db.begin(); ... await db.commit() } catch { await db.rollback() } finally { db.close() }</div>
+      </div>
+    </div>
+
+    <div class="note" style="margin-top:16px">
+      <strong>טיפ:</strong> לטפל בבאגים לא צריך לדעת הכל. בדרך כלל: קרא את שגיאת הLOG, מצא את שם הקובץ והשורה, פתח את הקובץ, הבן את הפונקציה הספציפית. 90% מהבאגים ניתנים לתיקון גם בלי להבין את כל הקוד.
+    </div>
+
+  </div>
+
+  <div style="text-align:center; color:#9ca3af; font-size:11px; margin-top:32px; padding-top:16px; border-top:1px solid #e5e7eb;">
+    Propeller Drones WhatsApp Bot · מסמך טכני · יולי 2026<br>
+    <strong>להדפסה כ-PDF:</strong> Ctrl+P ← More settings ← Scale: 80% ← Save as PDF
+  </div>
+
+</div>
+</body>
+</html>
