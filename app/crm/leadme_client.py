@@ -197,6 +197,10 @@ def push_lead(
         if level_tag:
             ok_tag = _admin_add_tag(client, leadme_id, level_tag)
 
+        slot = (lead.lead_metadata or {}).get("preferred_call_slot")
+        if slot:
+            _admin_add_tag(client, leadme_id, f"חלון · {slot}")
+
         logger.info(
             "[LeadMe admin] pushed lead {} leadme_id={} campaign={!r} "
             "level={} status={} tag={!r} (status_ok={}, tag_ok={})",
