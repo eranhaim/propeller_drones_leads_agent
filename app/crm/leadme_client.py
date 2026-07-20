@@ -77,6 +77,7 @@ def push_lead(
     lead: Lead,
     note: Optional[str] = None,
     level: int = 1,
+    slot: Optional[str] = None,
 ) -> bool:
     """Sync an engagement change to LeadMe -- admin-only path.
 
@@ -197,7 +198,7 @@ def push_lead(
         if level_tag:
             ok_tag = _admin_add_tag(client, leadme_id, level_tag)
 
-        slot = (lead.lead_metadata or {}).get("preferred_call_slot")
+        slot = slot or (lead.lead_metadata or {}).get("preferred_call_slot")
         if slot:
             _admin_add_tag(client, leadme_id, f"חלון · {slot}")
 
@@ -321,6 +322,7 @@ def push_engagement_level(
     lead: Lead,
     level: int,
     note: Optional[str] = None,
+    slot: Optional[str] = None,
 ) -> bool:
     """Convenience wrapper: push an engagement level (1/2/3) to LeadMe.
 
@@ -374,7 +376,7 @@ def push_engagement_level(
         return True
 
     # 3 -> 2, 3 -> 1, 2 -> 1, None -> any: proceed.
-    ok = push_lead(lead, note=note, level=level)
+    ok = push_lead(lead, note=note, level=level, slot=slot)
     if ok:
         md["leadme_last_level"] = int(level)
         lead.lead_metadata = md

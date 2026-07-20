@@ -16,12 +16,12 @@ from app.crm.leadme_client import (
 from app.db.models import Lead
 
 
-def mark_ready_for_call(lead: Lead, note: Optional[str] = None) -> bool:
+def mark_ready_for_call(lead: Lead, note: Optional[str] = None, slot: Optional[str] = None) -> bool:
     """Push the ``ready_for_call`` status to the external CRM (LeadMe).
 
     This is engagement Level 1 (booked a call). Idempotent per lead.
     """
-    return push_engagement_level(lead, level=1, note=note)
+    return push_engagement_level(lead, level=1, note=note, slot=slot)
 
 
 def mark_engaged_no_book(lead: Lead, note: Optional[str] = None) -> bool:
