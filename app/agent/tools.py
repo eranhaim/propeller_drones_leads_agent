@@ -256,12 +256,14 @@ def schedule_call(
     # replied "12-15"). This closes the "schedule_call was called without
     # classify_lead first" bug that made the bot say "technical error"
     # even though nothing was broken.
+    inline_slot = None
     if preferred_call_slot is not None:
         normalized = str(preferred_call_slot).strip().lower()
         if normalized in _VALID_SLOTS and normalized != "none":
             repository.update_lead_metadata(
                 ctx.session, ctx.lead, preferred_call_slot=normalized,
             )
+            inline_slot = normalized
             logger.info(
                 "[schedule_call] inline slot={!r} persisted for lead {}",
                 normalized, ctx.lead.id,
@@ -273,7 +275,7 @@ def schedule_call(
             )
 
     md = ctx.lead.lead_metadata or {}
-    slot = md.get("preferred_call_slot")
+    slot = inline_slot or md.get("preferred_call_slot")
     logger.info(
         "Tool schedule_call lead={} phone={} slot={} summary={!r}",
         ctx.lead.id, ctx.lead.phone, slot, summary,
