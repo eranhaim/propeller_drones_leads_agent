@@ -308,6 +308,7 @@ def schedule_call(
     # Wrap the CRM push -- we do NOT want to break the user-facing handoff
     # message if LeadMe is momentarily down, but we DO want the failure to
     # be loud in the logs so we can retry manually.
+    logger.info("[schedule_call] calling mark_ready_for_call with slot={!r}", slot)
     try:
         ok = mark_ready_for_call(ctx.lead, note=" | ".join(note_parts), slot=slot)
         if ok:
