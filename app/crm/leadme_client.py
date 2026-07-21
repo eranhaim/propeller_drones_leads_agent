@@ -284,6 +284,25 @@ def _admin_change_status(client, leadme_id: str, status_id: str) -> bool:
     return True
 
 
+def _resolve_tag_lead_id(client, lc_id: str) -> str:
+    """Fetch viewLead page and extract the internal leadId for addLeadTag.
+
+    LeadMe uses two different numeric IDs:
+    - lc_id (22xxxxxx): returned by getDataForTable, used for status changes.
+    - leadId (13xxxxxx): embedded in viewLead HTML, required by addLeadTag.
+    """
+    import re as _re2
+    base = get_settings().leadme_admin_base
+    try:
+        resp = client.get(base + f"/app/leads/viewLead/{lc_id}")
+        match = _re2.search(r"uploadLeadProfileImage\((\d+)\)", resp.text)
+        if match:
+            return match.group(1)
+    except Exception:  # noqa: BLE001
+        pass
+    return lc_id  # fallback to lc_id if not found
+
+
 def _admin_add_tag(client, leadme_id: str, tag: str) -> bool:
     """POST /app/ajax/addLeadTag. Returns True on ``result:true``."""
     if not (tag or "").strip():
@@ -291,9 +310,10 @@ def _admin_add_tag(client, leadme_id: str, tag: str) -> bool:
     base = get_settings().leadme_admin_base
     csrf = client.cookies.get("csrf_cookie_name") \
         or client.__dict__.get("_csrf_token") or ""
+    tag_lead_id = _resolve_tag_lead_id(client, leadme_id)
     payload = {
         "text":       tag,
-        "leadId":     str(leadme_id),
+        "leadId":     tag_lead_id,
         "csrf_lmcms": csrf,
     }
     try:
