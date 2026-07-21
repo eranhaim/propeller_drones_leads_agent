@@ -27,37 +27,37 @@ def main() -> None:
         sys.exit(1)
 
     with session_scope() as s:
-        leads = (
-            s.query(Lead)
+        rows = (
+            s.query(Lead.phone, Lead.lead_metadata)
             .filter(Lead.funnel_stage == FunnelStage.handed_off)
             .all()
         )
 
     ok = skipped = failed = 0
-    for lead in leads:
-        slot = (lead.lead_metadata or {}).get("preferred_call_slot")
+    for phone, lead_metadata in rows:
+        slot = (lead_metadata or {}).get("preferred_call_slot")
         if not slot:
             skipped += 1
             continue
 
         tag = f"חלון: {slot}"
-        leadme_id = find_leadme_id_by_phone(lead.phone, client)
+        leadme_id = find_leadme_id_by_phone(phone, client)
         if not leadme_id:
-            logger.warning("phone={} — not found in LeadMe, skipping", lead.phone)
+            logger.warning("phone={} — not found in LeadMe, skipping", phone)
             skipped += 1
             continue
 
         if DRY_RUN:
-            logger.info("[DRY-RUN] would add tag={!r} to leadme_id={} phone={}", tag, leadme_id, lead.phone)
+            logger.info("[DRY-RUN] would add tag={!r} to leadme_id={} phone={}", tag, leadme_id, phone)
             ok += 1
             continue
 
         result = _admin_add_tag(client, leadme_id, tag)
         if result:
-            logger.info("OK  leadme_id={} phone={} tag={!r}", leadme_id, lead.phone, tag)
+            logger.info("OK  leadme_id={} phone={} tag={!r}", leadme_id, phone, tag)
             ok += 1
         else:
-            logger.warning("FAIL leadme_id={} phone={} tag={!r}", leadme_id, lead.phone, tag)
+            logger.warning("FAIL leadme_id={} phone={} tag={!r}", leadme_id, phone, tag)
             failed += 1
 
     client.close()
