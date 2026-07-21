@@ -309,11 +309,7 @@ def _admin_add_tag(client, leadme_id: str, tag: str) -> bool:
     except Exception:  # noqa: BLE001
         return False
     ok = bool(body.get("result"))
-    if not ok:
-        logger.warning(
-            "[LeadMe admin tag] rejected leadme_id={} tag={!r}: {!r}",
-            leadme_id, tag, body,
-        )
+    logger.info("[LeadMe admin tag] leadme_id={} tag={!r} ok={} body={!r}", leadme_id, tag, ok, body)
     return ok
 
 
