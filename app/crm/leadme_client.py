@@ -222,16 +222,15 @@ def push_lead(
         if level_tag:
             ok_tag = _admin_add_tag(client, leadme_id, level_tag)
 
-        slot = slot or (lead.lead_metadata or {}).get("preferred_call_slot")
-        logger.info("[LeadMe admin] slot tag: slot={!r} bool={} leadme_id={}", slot, bool(slot), leadme_id)
-        ok_slot = _admin_add_tag(client, leadme_id, f"חלון · {slot}") if slot else None
-        logger.info("[LeadMe admin] slot tag result: ok={} slot={!r} leadme_id={}", ok_slot, slot, leadme_id)
+        slot = (lead.lead_metadata or {}).get("preferred_call_slot")
+        if slot:
+            _admin_add_tag(client, leadme_id, f"חלון: {slot}")
 
         logger.info(
             "[LeadMe admin] pushed lead {} leadme_id={} campaign={!r} "
-            "level={} status={} tag={!r} (status_ok={}, tag_ok={})",
+            "level={} status={} tag={!r} slot={!r} (status_ok={}, tag_ok={})",
             lead.phone, leadme_id, campaign, level, status_val or "-",
-            level_tag, ok_status, ok_tag,
+            level_tag, slot, ok_status, ok_tag,
         )
         return ok_status
     finally:
