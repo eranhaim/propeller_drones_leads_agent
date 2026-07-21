@@ -224,7 +224,7 @@ def push_lead(
 
         slot = slot or (lead.lead_metadata or {}).get("preferred_call_slot")
         logger.info("[LeadMe admin] slot tag: slot={!r} bool={} leadme_id={}", slot, bool(slot), leadme_id)
-        ok_slot = _admin_add_tag(client, leadme_id, f"חלון: {slot}") if slot else None
+        ok_slot = _admin_add_tag(client, leadme_id, f"חלון · {slot}") if slot else None
         logger.info("[LeadMe admin] slot tag result: ok={} slot={!r} leadme_id={}", ok_slot, slot, leadme_id)
 
         logger.info(
