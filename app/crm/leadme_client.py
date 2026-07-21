@@ -64,6 +64,30 @@ BANNED_LEAKY_CAMPAIGN_ID = "12277"
 BANNED_LEAKY_CAMPAIGN_NAME = "הוסרו מ-Whatsapp"
 
 
+def _push_slot_tag_via_api(phone: str, tag: str) -> bool:
+    """Add a slot tag via the public supplier/insert API (no cookies needed)."""
+    settings = get_settings()
+    url = (settings.leadme_insert_url or "").strip()
+    if not url:
+        logger.warning("[LeadMe API] LEADME_INSERT_URL not set, cannot push slot tag")
+        return False
+    try:
+        resp = httpx.post(url, data={
+            "action": "new_lead",
+            "phone": phone,
+            "tags": tag,
+        }, timeout=10.0)
+        ok = resp.status_code == 200 and "success" in resp.text
+        if ok:
+            logger.info("[LeadMe API] slot tag sent phone={} tag={!r}", phone, tag)
+        else:
+            logger.warning("[LeadMe API] slot tag failed phone={} tag={!r} status={}", phone, tag, resp.status_code)
+        return ok
+    except Exception:
+        logger.exception("[LeadMe API] slot tag raised for phone={}", phone)
+        return False
+
+
 def _status_id_for_level(level: int) -> str:
     settings = get_settings()
     return {
@@ -201,7 +225,7 @@ def push_lead(
         slot = slot or (lead.lead_metadata or {}).get("preferred_call_slot")
         logger.info("[LeadMe admin] slot tag: slot={!r} leadme_id={}", slot, leadme_id)
         if slot:
-            _admin_add_tag(client, leadme_id, f"חלון: {slot}")
+            _push_slot_tag_via_api(lead.phone, f"חלון: {slot}")
 
         logger.info(
             "[LeadMe admin] pushed lead {} leadme_id={} campaign={!r} "
