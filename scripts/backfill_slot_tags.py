@@ -40,7 +40,7 @@ def main() -> None:
             skipped += 1
             continue
 
-        tag = f"חלון: {slot}"
+        tag = f"חלון · {slot}"
         leadme_id = find_leadme_id_by_phone(phone, client)
         if not leadme_id:
             logger.warning("phone={} — not found in LeadMe, skipping", phone)

@@ -224,7 +224,7 @@ def push_lead(
 
         slot = (lead.lead_metadata or {}).get("preferred_call_slot")
         if slot:
-            _admin_add_tag(client, leadme_id, f"חלון: {slot}")
+            _admin_add_tag(client, leadme_id, f"חלון · {slot}")
 
         logger.info(
             "[LeadMe admin] pushed lead {} leadme_id={} campaign={!r} "

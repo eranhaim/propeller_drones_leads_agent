@@ -329,7 +329,7 @@ The bot uses three canonical engagement tags (see
 - `רמה 3 · לא הגיב` – applied when the follow-up scheduler exhausts
   its nudges.
 
-And an ad-hoc slot tag: `חלון: 9-12` (or `12-15`, `15-18`, `any`) –
+And an ad-hoc slot tag: `חלון · 9-12` (or `12-15`, `15-18`, `any`) –
 added the moment a `preferred_call_slot` is set on the lead.
 
 ### 7.2. How to add a tag from Python
