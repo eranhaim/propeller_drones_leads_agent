@@ -571,6 +571,9 @@ def lead_conversation(lead_id: int, _: str = Depends(_require_admin)) -> str:
         f"למחוק את הליד {ls['phone']} ואת כל {len(msg_snapshots)} ההודעות? "
         "פעולה זו אינה הפיכה."
     ).replace("'", "\\'")
+    toggle_confirm_msg = (
+        f"{toggle_label} עבור {ls['phone']}?"
+    ).replace("'", "\\'")
 
     body = f"""
     <div class="conv-wrap">
@@ -582,7 +585,7 @@ def lead_conversation(lead_id: int, _: str = Depends(_require_admin)) -> str:
         <h3>{_escape(ls['name']) or '(ללא שם)'}</h3>
         <dl>
           <dt>בוט</dt><dd>{bot_pill}
-            <form method="post" action="{toggle_action}" style="display:inline;margin-inline-start:8px">
+            <form method="post" action="{toggle_action}" style="display:inline;margin-inline-start:8px" onsubmit="return confirm('{toggle_confirm_msg}')">
               <button type="submit" style="background:{toggle_bg};color:white;border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">{_escape(toggle_label)}</button>
             </form>
           </dd>
