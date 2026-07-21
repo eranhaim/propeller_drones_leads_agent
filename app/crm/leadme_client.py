@@ -224,7 +224,8 @@ def push_lead(
 
         slot = (lead.lead_metadata or {}).get("preferred_call_slot")
         if slot:
-            _admin_add_tag(client, leadme_id, f"חלון · {slot}")
+            tag_lead_id = _resolve_tag_lead_id(client, leadme_id)
+            _admin_add_tag(client, tag_lead_id, f"חלון · {slot}")
 
         logger.info(
             "[LeadMe admin] pushed lead {} leadme_id={} campaign={!r} "
@@ -310,10 +311,9 @@ def _admin_add_tag(client, leadme_id: str, tag: str) -> bool:
     base = get_settings().leadme_admin_base
     csrf = client.cookies.get("csrf_cookie_name") \
         or client.__dict__.get("_csrf_token") or ""
-    tag_lead_id = _resolve_tag_lead_id(client, leadme_id)
     payload = {
         "text":       tag,
-        "leadId":     tag_lead_id,
+        "leadId":     str(leadme_id),
         "csrf_lmcms": csrf,
     }
     try:
