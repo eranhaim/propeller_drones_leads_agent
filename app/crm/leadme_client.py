@@ -51,11 +51,7 @@ def _is_test_phone(phone: Optional[str]) -> bool:
 # sales team can filter by these tags in LeadMe's UI even when the numeric
 # status ids aren't yet configured. Level 1 == booked a call, Level 2 ==
 # replied but didn't book, Level 3 == never replied to the opener.
-LEVEL_TAGS = {
-    1: "רמה 1 · קבע שיחה",
-    2: "רמה 2 · הגיב ולא קבע",
-    3: "רמה 3 · לא הגיב",
-}
+LEVEL_TAGS = {}
 
 
 # LeadMe campaign id for the "trash" bucket the bot must never leak into.
@@ -467,13 +463,9 @@ def push_lead_cancellation(lead: Lead, reason: Optional[str] = None) -> bool:
                 lead.phone,
             )
             return True
-        tag = "ביטול שיחה"
-        if reason:
-            tag += f" · {reason[:40]}"
-        ok_tag = _admin_add_tag(client, leadme_id, tag)
+        ok_tag = True
         # Move status back to plain "חדש" (rel=1) so the sales team can
-        # rebook without confusion. We deliberately don't set a "cancelled"
-        # status because LeadMe doesn't have one; the tag is enough.
+        # rebook without confusion.
         ok_status = _admin_change_status(client, leadme_id, "1")
         logger.info(
             "[LeadMe cancel] leadme_id={} phone={} tag_ok={} status_ok={}",
