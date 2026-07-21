@@ -13,7 +13,7 @@ import sys
 from loguru import logger
 
 from app.db.models import Lead, FunnelStage
-from app.db.repository import session_scope
+from app.db.session import session_scope
 from app.crm.leadme_delete import _build_client, find_leadme_id_by_phone
 from app.crm.leadme_client import _admin_add_tag
 
