@@ -105,12 +105,32 @@ _WEBINAR_FOLLOWUP_ANON = (
     "אשמח לשמוע מה חשבת."
 )
 
+# Video-specific follow-up templates. Sent once, ~6h after a video was sent,
+# ONLY if the lead never replied since.
+_VIDEO_FOLLOWUP_KNOWN = (
+    "היי {name} 👋\n"
+    "שלחתי לך קודם סרטון. הספקת לראות? יש שאלות שעלו? "
+    "אשמח לשמוע מה חשבת."
+)
+_VIDEO_FOLLOWUP_ANON = (
+    "היי 👋\n"
+    "שלחתי לך קודם סרטון. הספקת לראות? יש שאלות שעלו? "
+    "אשמח לשמוע מה חשבת."
+)
+
 
 def _render_webinar_followup(name: Optional[str]) -> str:
     first = ((name or "").strip().split(" ", 1)[0] or "").strip()
     if first and not first.isdigit():
         return _WEBINAR_FOLLOWUP_KNOWN.format(name=first)
     return _WEBINAR_FOLLOWUP_ANON
+
+
+def _render_video_followup(name: Optional[str]) -> str:
+    first = ((name or "").strip().split(" ", 1)[0] or "").strip()
+    if first and not first.isdigit():
+        return _VIDEO_FOLLOWUP_KNOWN.format(name=first)
+    return _VIDEO_FOLLOWUP_ANON
 
 
 def _render_nudge(name: Optional[str], nudge_number: int) -> Optional[str]:
@@ -194,6 +214,63 @@ def _send_webinar_followup(lead: Lead) -> bool:
         api.sending.sendMessage(chat_id, text)
     except Exception:
         logger.exception("[webinar-followup] send failed for lead {}", lead.id)
+        return False
+    return True
+
+
+def _pick_video_followups(session, now: datetime) -> list[Lead]:
+    """Leads that got a (non-webinar) video, went silent, and haven't gotten
+    the video-specific "did you watch?" ping yet."""
+    settings = get_settings()
+    hours_since = timedelta(hours=settings.webinar_followup_hours)
+
+    candidates = list(session.execute(
+        select(Lead).where(
+            Lead.funnel_stage != FunnelStage.handed_off,
+            Lead.bot_muted == False,  # noqa: E712
+        )
+    ).scalars().all())
+
+    picks: list[Lead] = []
+    for lead in candidates:
+        md = dict(lead.lead_metadata or {})
+        if _lead_already_booked(md):
+            continue
+        video_iso = md.get("video_sent_at")
+        if not video_iso:
+            continue
+        if md.get("video_followup_sent"):
+            continue
+        try:
+            video_at = datetime.fromisoformat(video_iso)
+        except ValueError:
+            continue
+        if video_at.tzinfo is None:
+            video_at = video_at.replace(tzinfo=timezone.utc)
+        if now - video_at < hours_since:
+            continue
+
+        # Only send if the lead has been silent since (last message is ours).
+        last_msg = session.execute(
+            select(Message)
+            .where(Message.lead_id == lead.id)
+            .order_by(Message.created_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if last_msg is None or last_msg.role != MessageRole.assistant:
+            continue
+        picks.append(lead)
+    return picks
+
+
+def _send_video_followup(lead: Lead) -> bool:
+    text = _render_video_followup(lead.name)
+    api = _greenapi_client()
+    chat_id = f"{lead.phone}@c.us"
+    try:
+        api.sending.sendMessage(chat_id, text)
+    except Exception:
+        logger.exception("[video-followup] send failed for lead {}", lead.id)
         return False
     return True
 
@@ -352,6 +429,26 @@ def run_once() -> None:
             )
             logger.info(
                 "[webinar-followup] pinged lead {} (msg={})",
+                lead.id, msg.id,
+            )
+
+        video_leads = _pick_video_followups(session, now)
+        for lead in video_leads:
+            ok = _send_video_followup(lead)
+            if not ok:
+                continue
+            text = _render_video_followup(lead.name)
+            msg = repository.add_message(
+                session, lead, MessageRole.assistant, text,
+                metadata={"nudge": "video"},
+            )
+            repository.update_lead_metadata(
+                session, lead,
+                video_followup_sent=True,
+                video_followup_at=now.isoformat(),
+            )
+            logger.info(
+                "[video-followup] pinged lead {} (msg={})",
                 lead.id, msg.id,
             )
 

@@ -191,17 +191,25 @@ def send_video(video_id: str, caption: Optional[str] = None) -> str:
 
     repository.mark_video_sent(ctx.session, ctx.lead, video.id)
 
-    # Track webinar-specific send time so the follow-up scheduler can send
-    # a "did you watch?" nudge tailored to the webinar rather than the
-    # generic silence nudge.
+    # Track send time so the follow-up scheduler can send a "did you watch?"
+    # nudge. Webinar gets its own key; all other videos share video_sent_at
+    # (last-sent wins, which is fine -- we only nudge once per lead anyway).
+    from datetime import datetime, timezone as _tz
+    _now_iso = datetime.now(_tz.utc).isoformat()
     if video.id == "course_webinar_full":
-        from datetime import datetime, timezone as _tz
         repository.update_lead_metadata(
             ctx.session, ctx.lead,
-            webinar_sent_at=datetime.now(_tz.utc).isoformat(),
+            webinar_sent_at=_now_iso,
         )
         logger.info("[send_video] webinar sent -> tracking for follow-up (lead {})",
                     ctx.lead.id)
+    else:
+        repository.update_lead_metadata(
+            ctx.session, ctx.lead,
+            video_sent_at=_now_iso,
+        )
+        logger.info("[send_video] video '{}' sent -> tracking for follow-up (lead {})",
+                    video.id, ctx.lead.id)
 
     return f"הסרטון '{video.title}' נשלח בהצלחה."
 
