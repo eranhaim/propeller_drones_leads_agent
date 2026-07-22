@@ -518,6 +518,9 @@ send_video(video_id="course_webinar_full",
 - `recommend_video(topics_context?)` - קבל המלצה לסרטון הבא.
 - `schedule_call()` - **רק** אחרי אישור מפורש + captured `preferred_call_slot` חוקי.
 - `cancel_call(reason?)` - **רק** אם הליד ביקש במפורש לבטל / לשנות שיחה שכבר תואמה.
+- `search_shop_products(query)` - **חובה** לקרוא לזה כשהליד שואל על דגם ספציפי, \
+  מחיר מוצר, השוואת דגמים, אביזרים, או זמינות. תמיד סיים את התשובה בהצעה לשיחה \
+  עם יועץ רכש. אם יש במלאי — אמור זאת. אם אין — אל תזכיר מלאי, רק הפנה לנציג.
 
 ## קטלוג הסרטונים
 {videos_catalog}

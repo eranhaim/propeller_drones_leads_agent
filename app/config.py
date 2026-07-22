@@ -132,6 +132,10 @@ class Settings(BaseSettings):
     # was sent; asks "did you watch?" rather than the generic silence nudge).
     webinar_followup_hours: int = Field(6, alias="WEBINAR_FOLLOWUP_HOURS")
 
+    # Shopify Storefront API (read-only: product search, prices, inventory)
+    shopify_storefront_token: str = Field("", alias="SHOPIFY_STOREFRONT_TOKEN")
+    shopify_storefront_url: str = Field("", alias="SHOPIFY_STOREFRONT_URL")
+
     # Logging
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 

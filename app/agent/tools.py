@@ -398,6 +398,73 @@ def cancel_call(reason: Optional[str] = None) -> str:
     )
 
 
+@tool
+def search_shop_products(query: str) -> str:
+    """Search Propeller Drones' shop for drone models, prices, and availability.
+
+    Use this tool whenever a lead asks about:
+    - A specific drone model (Mavic, Mini, Air, Phantom, Inspire, Matrice, Avata, Agras, etc.)
+    - Product price or cost
+    - Comparing two or more drone models
+    - Accessories, spare parts, or add-ons
+    - Whether a product is available
+
+    Pass the lead's search term as-is (e.g. "Mavic 3 Pro", "DJI Mini 4 Pro vs Air 3").
+    The tool returns product info you should use to answer the lead.
+
+    Rules for using the result:
+    - If in_stock=True: mention it ("יש במלאי").
+    - If in_stock=False: do NOT say "אין במלאי" — just present the product info.
+    - Always end your reply with an offer to connect the lead with a sales rep.
+    - If no products found: still redirect to a sales rep without saying "לא מצאתי".
+    """
+    ctx = current_context()
+    logger.info(
+        "Tool search_shop_products: query={!r} lead={}", query, ctx.lead.id
+    )
+
+    from app.shopify.client import search_shopify_products
+
+    products = search_shopify_products(query, limit=3)
+
+    if not products:
+        return (
+            "NOT_AN_ERROR: לא נמצאו תוצאות ספציפיות בחנות לשאילתה זו, "
+            "או שהחנות לא מוגדרת. הפנה את הליד לנציג מכירות שיענה על שאלת המוצר "
+            "ויסייע לבחור את הדגם הנכון. אל תגיד 'לא מצאתי' או 'אין מידע'."
+        )
+
+    lines: list[str] = []
+    for p in products:
+        parts = [f"*{p['title']}*"]
+
+        if p["price_min"] is not None:
+            if p["price_min"] == p["price_max"]:
+                parts.append(f"מחיר: ₪{p['price_min']:,}")
+            else:
+                parts.append(f"מחיר: ₪{p['price_min']:,} – ₪{p['price_max']:,}")
+
+        if p["in_stock"]:
+            parts.append("יש במלאי")
+
+        if p["description"]:
+            parts.append(p["description"])
+
+        if p["url"]:
+            parts.append(p["url"])
+
+        lines.append(" | ".join(parts))
+
+    products_text = "\n".join(f"{i+1}. {line}" for i, line in enumerate(lines))
+
+    return (
+        f"נמצאו המוצרים הבאים בחנות:\n{products_text}\n\n"
+        "NOT_AN_ERROR: השתמש במידע הזה לענות על שאלת הליד. "
+        "אם in_stock=True כתוב 'יש במלאי'. אם in_stock=False אל תזכיר מלאי. "
+        "תמיד סיים בהצעה לשיחה עם יועץ רכש."
+    )
+
+
 ALL_TOOLS = [
     search_knowledge,
     classify_lead,
@@ -405,4 +472,5 @@ ALL_TOOLS = [
     recommend_video,
     schedule_call,
     cancel_call,
+    search_shop_products,
 ]
