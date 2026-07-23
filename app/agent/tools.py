@@ -399,6 +399,27 @@ def cancel_call(reason: Optional[str] = None) -> str:
 
 
 @tool
+def mark_not_relevant() -> str:
+    """Mark the lead as no longer interested and reset their session.
+
+    Call this ONLY when the lead explicitly says the inquiry is no longer
+    relevant (e.g. "לא רלוונטי", "לא מעניין אותי", "עזוב", "לא צריך").
+
+    This resets the lead's session so that if they reach out again in the
+    future they will be treated as a new lead and receive a fresh opener.
+    All message history is preserved in the DB for reference.
+
+    After calling this, send a short friendly closing message, e.g.:
+    "מובן, אין בעיה. אם בעתיד זה יהיה רלוונטי, אנחנו כאן 🙂"
+    Do NOT ask any follow-up questions.
+    """
+    ctx = current_context()
+    repository.reset_lead_session(ctx.session, ctx.lead)
+    logger.info("[mark_not_relevant] session reset for lead {}", ctx.lead.id)
+    return "השיחה אופסה. שלח ללקוח הודעת סיום קצרה וידידותית בלבד."
+
+
+@tool
 def search_shop_products(query: str) -> str:
     """Search Propeller Drones' shop for drone models, prices, and availability.
 
@@ -472,5 +493,6 @@ ALL_TOOLS = [
     recommend_video,
     schedule_call,
     cancel_call,
+    mark_not_relevant,
     search_shop_products,
 ]
