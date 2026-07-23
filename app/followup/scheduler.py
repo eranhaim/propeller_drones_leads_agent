@@ -222,7 +222,7 @@ def _pick_video_followups(session, now: datetime) -> list[Lead]:
     """Leads that got a (non-webinar) video, went silent, and haven't gotten
     the video-specific "did you watch?" ping yet."""
     settings = get_settings()
-    hours_since = timedelta(hours=settings.webinar_followup_hours)
+    hours_since = timedelta(hours=settings.video_followup_hours)
 
     candidates = list(session.execute(
         select(Lead).where(

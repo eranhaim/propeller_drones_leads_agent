@@ -131,6 +131,8 @@ class Settings(BaseSettings):
     # Webinar-specific follow-up (a separate nudge after the 55-min webinar
     # was sent; asks "did you watch?" rather than the generic silence nudge).
     webinar_followup_hours: int = Field(6, alias="WEBINAR_FOLLOWUP_HOURS")
+    # Video-specific follow-up (after a non-webinar video is sent).
+    video_followup_hours: int = Field(2, alias="VIDEO_FOLLOWUP_HOURS")
 
     # Shopify Storefront API (read-only: product search, prices, inventory)
     shopify_storefront_token: str = Field("", alias="SHOPIFY_STOREFRONT_TOKEN")
