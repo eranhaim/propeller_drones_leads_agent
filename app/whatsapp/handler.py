@@ -19,6 +19,16 @@ from app.db.session import session_scope
 from app.whatsapp.sender import ChatSender
 
 
+def _log_ctwa_referral(notification: Notification) -> None:
+    """Temporary debug log — prints the full referral object if present."""
+    event = notification.event
+    referral = event.get("messageData", {}).get("referral") or event.get("referral")
+    if referral:
+        logger.info("[CTWA DEBUG] referral found: {}", referral)
+    else:
+        logger.debug("[CTWA DEBUG] no referral in event keys: {}", list(event.keys()))
+
+
 def _extract_text(notification: Notification) -> Optional[str]:
     """Pull user-visible text out of any supported message type."""
     md = notification.event.get("messageData", {})
@@ -64,6 +74,7 @@ def _is_allowed(phone: str) -> bool:
 def register_handlers(bot: GreenAPIBot) -> None:
     @bot.router.message()
     def _on_message(notification: Notification) -> None:
+        _log_ctwa_referral(notification)
         chat_id, sender_name = _extract_sender_info(notification)
         if not chat_id:
             logger.debug("Notification without chatId, skipping")
