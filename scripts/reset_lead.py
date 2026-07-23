@@ -9,12 +9,16 @@ Usage (inside the bot container):
     docker exec -it propeller_bot python scripts/reset_lead.py 0548897443
     docker exec -it propeller_bot python scripts/reset_lead.py 972548897443
     docker exec -it propeller_bot python scripts/reset_lead.py --all-test  # only phones starting with 999 (eval fixtures)
+
+    # Fake that the lead's last message was 8 days ago (triggers session-reset flow):
+    docker exec -it propeller_bot python scripts/reset_lead.py 0548897443 --fake-old
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime, timezone, timedelta
 
 from sqlalchemy import select
 
@@ -57,12 +61,30 @@ def _delete_where(pred_desc: str, candidates: list[str] | None,
     return len(leads)
 
 
+def _fake_old(candidates: list[str], days: int = 8) -> None:
+    """Move last_message_at back by ``days`` days to trigger the session-reset flow."""
+    fake_ts = datetime.now(timezone.utc) - timedelta(days=days)
+    with session_scope() as s:
+        leads = [l for l in s.execute(select(Lead)).scalars().all()
+                 if (l.phone or "") in set(candidates)]
+        if not leads:
+            print("No leads matched.")
+            return
+        for l in leads:
+            l.last_message_at = fake_ts
+            print(f"  lead id={l.id} phone={l.phone}: last_message_at set to {fake_ts.isoformat()}")
+    print("Done. Send a WhatsApp from that number now to trigger the session-reset.")
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("phone", nargs="?", help="Phone (any format).")
     p.add_argument("--all-test", action="store_true",
                    help="Delete all leads whose phone starts with 999 "
                         "(eval-harness fixtures).")
+    p.add_argument("--fake-old", action="store_true",
+                   help="Move last_message_at 8 days into the past to trigger "
+                        "the session-reset flow on the next inbound message.")
     args = p.parse_args()
 
     if args.all_test:
@@ -72,6 +94,11 @@ def main() -> int:
 
     candidates = _normalize(args.phone)
     print(f"Trying to match phone variants: {candidates}")
+
+    if args.fake_old:
+        _fake_old(candidates)
+        return 0
+
     _delete_where(f"phone in {candidates}", candidates, False)
     return 0
 

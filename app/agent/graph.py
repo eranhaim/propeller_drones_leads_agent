@@ -136,9 +136,25 @@ def _agent():
     return create_react_agent(model=_model(), tools=ALL_TOOLS)
 
 
+SESSION_RESET_DAYS = 7
+
+
 def _history_as_messages(lead: Lead, session) -> List[BaseMessage]:
-    """Turn stored DB messages into LangChain messages, oldest first."""
-    stored = repository.recent_messages(session, lead, limit=HISTORY_LIMIT)
+    """Turn stored DB messages into LangChain messages, oldest first.
+
+    Only messages from the current session are included — i.e. those created
+    after ``lead_metadata["session_reset_at"]`` if a reset has occurred.
+    """
+    from datetime import datetime, timezone
+    reset_str = (lead.lead_metadata or {}).get("session_reset_at")
+    after_dt = None
+    if reset_str:
+        try:
+            after_dt = datetime.fromisoformat(reset_str)
+        except ValueError:
+            pass
+
+    stored = repository.recent_messages(session, lead, limit=HISTORY_LIMIT, after_dt=after_dt)
     msgs: List[BaseMessage] = []
     for m in stored:
         if m.role == MessageRole.user:
@@ -146,6 +162,15 @@ def _history_as_messages(lead: Lead, session) -> List[BaseMessage]:
         elif m.role == MessageRole.assistant:
             msgs.append(AIMessage(content=m.content))
     return msgs
+
+
+def _should_reset_session(lead: Lead) -> bool:
+    """Return True if this lead's session has been idle for SESSION_RESET_DAYS."""
+    from datetime import datetime, timezone, timedelta
+    if lead.last_message_at is None:
+        return False
+    cutoff = datetime.now(timezone.utc) - timedelta(days=SESSION_RESET_DAYS)
+    return lead.last_message_at < cutoff
 
 
 def _extract_reply(result: dict) -> str:
@@ -185,8 +210,21 @@ def handle_message(
     # of the user's message in the DB. Losing the message means the sales
     # team has no idea the lead reached out.
     push_level_2 = False
+    session_was_reset = False
     with session_scope() as session:
         lead = repository.get_or_create_lead(session, phone=phone, name=sender_name)
+
+        # Session reset: if the lead has been idle for SESSION_RESET_DAYS, treat
+        # them as brand-new (clears stage/familiarity/videos/metadata except
+        # LeadMe IDs) so they get a fresh opener and can receive videos again.
+        if _should_reset_session(lead):
+            logger.info(
+                "[session-reset] lead {} idle since {}, resetting session",
+                lead.id, lead.last_message_at,
+            )
+            repository.reset_lead_session(session, lead)
+            session_was_reset = True
+
         # If this is the lead's very first inbound reply and we haven't
         # tagged them as booked yet, they qualify for engagement Level 2
         # (replied to the bot). We do the actual LeadMe push AFTER the
@@ -194,9 +232,19 @@ def handle_message(
         # user's message on failure.
         md_before = dict(lead.lead_metadata or {})
         already_level = md_before.get("leadme_last_level")
-        # count existing USER messages BEFORE we add this one:
+        # count existing USER messages after the current session start:
+        reset_str = md_before.get("session_reset_at")
+        from datetime import datetime as _dt
+        reset_dt = None
+        if reset_str:
+            try:
+                reset_dt = _dt.fromisoformat(reset_str)
+            except ValueError:
+                pass
         prior_user_msgs = sum(
-            1 for m in (lead.messages or []) if m.role == MessageRole.user
+            1 for m in (lead.messages or [])
+            if m.role == MessageRole.user
+            and (reset_dt is None or m.created_at > reset_dt)
         )
         # Trigger Level 2 (replied) on first user message unless we already
         # have a higher-engagement state (Level 1 = booked). NOTE: Level 3
@@ -211,6 +259,34 @@ def handle_message(
 
         repository.add_message(session, lead, MessageRole.user, text)
         lead_id = lead.id
+
+    # After reset, send a fresh opener so the lead gets a proper re-greeting,
+    # then bail out — the agent should not also reply to the same message.
+    if session_was_reset:
+        try:
+            from app.webhook.opener import _render_opener, _pick_topic, _greenapi_client, _chat_id
+            with session_scope() as s_op:
+                l_op = s_op.get(Lead, lead_id)
+                if l_op is not None:
+                    meta = dict(l_op.lead_metadata or {})
+                    topic = _pick_topic(meta.get("opener_campaign_id"), meta)
+                    opener_text = _render_opener(l_op.name, topic)
+                    try:
+                        _greenapi_client().sending.sendMessage(_chat_id(phone), opener_text)
+                    except Exception:
+                        logger.exception("[session-reset] failed to send re-opener to {}", phone)
+                        opener_text = None
+                    if opener_text:
+                        repository.add_message(s_op, l_op, MessageRole.assistant, opener_text)
+                        from datetime import datetime, timezone
+                        repository.update_lead_metadata(
+                            s_op, l_op,
+                            opener_sent_at=datetime.now(timezone.utc).isoformat(),
+                        )
+                        logger.info("[session-reset] re-opener sent to {}", phone)
+        except Exception:
+            logger.exception("[session-reset] re-opener flow failed for {}", phone)
+        return ""
 
     # Fire-and-forget level-2 push. Uses its own transaction so a CRM
     # failure never blocks the user-facing reply.

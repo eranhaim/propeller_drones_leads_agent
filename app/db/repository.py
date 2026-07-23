@@ -59,17 +59,53 @@ def add_message(
     return msg
 
 
-def recent_messages(session: Session, lead: Lead, limit: int = 30) -> List[Message]:
-    """Return the last ``limit`` messages for a lead, oldest first."""
-    stmt = (
-        select(Message)
-        .where(Message.lead_id == lead.id)
-        .order_by(Message.created_at.desc())
-        .limit(limit)
-    )
+def recent_messages(
+    session: Session,
+    lead: Lead,
+    limit: int = 30,
+    after_dt: Optional[datetime] = None,
+) -> List[Message]:
+    """Return the last ``limit`` messages for a lead, oldest first.
+
+    If ``after_dt`` is given, only messages created after that timestamp are
+    returned (used to hide pre-reset history from the agent without deleting
+    anything from the DB).
+    """
+    stmt = select(Message).where(Message.lead_id == lead.id)
+    if after_dt is not None:
+        stmt = stmt.where(Message.created_at > after_dt)
+    stmt = stmt.order_by(Message.created_at.desc()).limit(limit)
     msgs = list(session.execute(stmt).scalars().all())
     msgs.reverse()
     return msgs
+
+
+_LEADME_KEYS = frozenset({
+    "leadme_campaign_id",
+    "leadme_lead_id",
+    "leadme_raw_comment",
+    "leadme_last_level",
+    "opener_campaign_id",
+})
+
+
+def reset_lead_session(session: Session, lead: Lead) -> None:
+    """Reset a lead as if they are brand-new while preserving LeadMe history.
+
+    Clears funnel stage, familiarity, videos sent, and all metadata except
+    LeadMe identifiers (which must never be lost).  Records the reset time in
+    ``lead_metadata["session_reset_at"]`` so ``_history_as_messages`` can
+    filter out messages from the previous session.
+    """
+    lead.familiarity_level = FamiliarityLevel.unknown
+    lead.funnel_stage = FunnelStage.new
+    lead.videos_sent = []
+
+    old_meta = dict(lead.lead_metadata or {})
+    preserved = {k: v for k, v in old_meta.items() if k in _LEADME_KEYS}
+    preserved["session_reset_at"] = datetime.now(timezone.utc).isoformat()
+    lead.lead_metadata = preserved
+    session.flush()
 
 
 def update_familiarity(session: Session, lead: Lead, level: FamiliarityLevel) -> None:
