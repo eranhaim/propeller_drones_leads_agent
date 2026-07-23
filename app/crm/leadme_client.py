@@ -25,6 +25,7 @@ Env vars still consumed:
 
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 import httpx
@@ -171,10 +172,22 @@ def push_lead(
         return False
 
     try:
-        row = get_row_by_phone(lead.phone, client)
+        row = None
+        for attempt in range(4):
+            row = get_row_by_phone(lead.phone, client)
+            if row is not None:
+                break
+            if attempt < 3:
+                wait = (attempt + 1) * 5  # 5, 10, 15 seconds
+                logger.info(
+                    "[LeadMe] phone {} not found yet (attempt {}/4), "
+                    "retrying in {}s...", lead.phone, attempt + 1, wait,
+                )
+                time.sleep(wait)
+
         if row is None:
             logger.warning(
-                "[LeadMe] phone {} not found in LeadMe -- NOT creating "
+                "[LeadMe] phone {} not found in LeadMe after 4 attempts -- NOT creating "
                 "(would leak into supplier campaign). Level={}. "
                 "The lead must first be inserted via the customer's own "
                 "LeadMe form flow.", lead.phone, level,
