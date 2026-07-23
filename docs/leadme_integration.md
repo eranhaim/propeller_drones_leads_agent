@@ -243,25 +243,42 @@ JSON array `data`):
 
 | idx | Content                                                                    |
 |-----|-----------------------------------------------------------------------------|
-| 0   | Checkbox HTML: `<input name="selectedLeads[]" value="<leadme_id>"/>`         |
-| 1   | Plain numeric `leadme_id`                                                    |
+| 0   | Checkbox HTML: `<input name="selectedLeads[]" value="<lc_id>"/>`             |
+| 1   | Plain numeric `lc_id` (**lead-campaign id**, not the internal `leadId`!)     |
 | 2   | Lead name                                                                    |
 | 3   | Phone (formatted `053-346-0489`)                                             |
 | 4   | Campaign name (plain text, e.g. `מתעניינים אקדמיה`)                          |
 | 5   | Status HTML: `<span class="label status" ...>חדש - רמה 1</span>`             |
 | 6   | Created timestamp `dd/mm/YYYY HH:MM`                                         |
-| 7   | Action buttons (view / edit) with `javascript:showLeadSummary(<id>)` etc.    |
+| 7   | Action buttons (view / edit) with `javascript:showLeadSummary(<lc_id>)` etc. |
+
+> **CRITICAL**: what you get here is the **lead-campaign id** (typically
+> in the `22xxxxxx` range). LeadMe internally has a SECOND numeric id –
+> the **internal `leadId`** (typically `13xxxxxx`) – which is what
+> `addLeadTag` requires. See §7.4 for how to resolve it.
 
 ### 5.2. Writes
 
-| Purpose         | Endpoint                        | Payload (form-encoded)                                                                 |
-|-----------------|---------------------------------|----------------------------------------------------------------------------------------|
-| Change status   | `/app/leads/changeLeadsStatus`  | `data[status]=<rel_id>`, `data[leadId]=<id>[,<id>...]`, `csrf_lmcms=<token>`           |
-| Add tag         | `/app/ajax/addLeadTag`          | `text=<tag>`, `leadId=<id>`, `csrf_lmcms=<token>`                                       |
-| Delete lead(s)  | `/app/ajax/deleteLeads`         | `data[leadId][]=<id>` (or `leadIds[]=<id>` in some tenants), `csrf_lmcms=<token>`      |
+| Purpose         | Endpoint                        | ID to send                | Payload (form-encoded)                                                                 |
+|-----------------|---------------------------------|---------------------------|----------------------------------------------------------------------------------------|
+| Change status   | `/app/leads/changeLeadsStatus`  | `lc_id` (from row cell 1) | `data[status]=<rel_id>`, `data[leadId]=<lc_id>[,<lc_id>...]`, `csrf_lmcms=<token>`      |
+| Add tag         | `/app/ajax/addLeadTag`          | **internal `leadId`** (§7.4) | `text=<tag>`, `leadId=<internal_leadId>`, `csrf_lmcms=<token>`                       |
+| Delete lead(s)  | `/app/ajax/deleteLeads`         | `lc_id`                   | `data[leadId][]=<lc_id>` (or `leadIds[]=<lc_id>` in some tenants), `csrf_lmcms=<token>` |
 
-**Trap**: `data[leadId]` for `changeLeadsStatus` is a *comma-joined
-string*, not an array. The UI JS is:
+**Two-IDs trap.** LeadMe carries two distinct numeric identifiers per
+lead and mixes them freely across endpoints:
+
+| Name                    | Where you get it                                    | Range  | Used by                                              |
+|-------------------------|-----------------------------------------------------|--------|------------------------------------------------------|
+| `lc_id` (lead-campaign) | `getDataForTable` row cell 1, `viewLead/<lc_id>` URL | `22xxxxxx` | `changeLeadsStatus`, `deleteLeads`, `viewLead` URL |
+| `leadId` (internal)     | Scrape `viewLead` page HTML (§7.4)                   | `13xxxxxx` | `addLeadTag`, `removeLeadTag`                     |
+
+If you send `lc_id` to `addLeadTag` you'll get `{"result":true}` back
+and **nothing will land** – the tag is silently accepted against a
+phantom lead. Always resolve to the internal `leadId` first.
+
+**Second trap**: `data[leadId]` for `changeLeadsStatus` is a
+*comma-joined string*, not an array. The UI JS is:
 
 ```javascript
 data.leadId = $(".CB:checked, .leadCB:checked")
@@ -321,51 +338,94 @@ Tags are free-form Hebrew strings attached to a lead. They show up in
 LeadMe's UI as pills below the lead's name. The sales team filters and
 groups by tag heavily, so pick short, consistent labels.
 
-The bot uses three canonical engagement tags (see
-`app/crm/leadme_client.py::LEVEL_TAGS`):
+**Current bot policy (as of 2026-07-23): only ONE tag is pushed.**
 
-- `רמה 1 · קבע שיחה` – applied when a call slot is captured.
-- `רמה 2 · הגיב ולא קבע` – applied on the lead's first inbound.
-- `רמה 3 · לא הגיב` – applied when the follow-up scheduler exhausts
-  its nudges.
+- `חלון · <slot>` (e.g. `חלון · 9-12`, `חלון · 12-15`, `חלון · 15-18`,
+  `חלון · any`) – added the moment `preferred_call_slot` is set on the
+  lead.
+- Separator is the middle-dot **U+00B7 (`·`)**, NOT a colon `:`. This
+  matches how LeadMe's UI renders its own tag separators. If you push
+  `חלון: 9-12` (colon), the sales team sees an inconsistent style and
+  filters may miss it.
 
-And an ad-hoc slot tag: `חלון · 9-12` (or `12-15`, `15-18`, `any`) –
-added the moment a `preferred_call_slot` is set on the lead.
+**What used to be here and is gone (do NOT re-introduce):**
 
-### 7.2. How to add a tag from Python
+- `רמה 1 · קבע שיחה` / `רמה 2 · הגיב ולא קבע` / `רמה 3 · לא הגיב` –
+  the engagement level tags were removed on 2026-07-22 at the customer's
+  request. `LEVEL_TAGS = {}` in `leadme_client.py`. The engagement
+  signal now lives ONLY on the status pill (`חדש - רמה 1/2/3`).
+- `ביטול שיחה · <reason>` – the cancellation tag was also dropped.
+  `push_lead_cancellation` now only flips the status back to `חדש`
+  (rel=1).
+
+If you're asked to add a new tag category, extend `push_lead` (or
+`push_lead_cancellation`) rather than sprinkling `_admin_add_tag` calls
+elsewhere – that way the two-IDs resolution goes through the same code
+path.
+
+### 7.2. How to add a tag from Python – the RIGHT way
 
 ```python
-from app.crm.leadme_client import _admin_add_tag
+from app.crm.leadme_client import _admin_add_tag, _resolve_tag_lead_id
 from app.crm.leadme_delete import _build_client, find_leadme_id_by_phone
 
 client = _build_client()
-leadme_id = find_leadme_id_by_phone("972533460489", client)
-_admin_add_tag(client, leadme_id, "רמה 1 · קבע שיחה")
+lc_id = find_leadme_id_by_phone("972533460489", client)   # "22371797"
+tag_lead_id = _resolve_tag_lead_id(client, lc_id)         # "13xxxxxx"
+_admin_add_tag(client, tag_lead_id, "חלון · 9-12")
 client.close()
 ```
 
+If you skip `_resolve_tag_lead_id` and pass `lc_id` directly to
+`_admin_add_tag`, LeadMe replies `{"result": true}` and the tag simply
+does not show up on the lead. This was the exact bug we chased for
+half a day. Always resolve.
+
 `_admin_add_tag` returns `True` when LeadMe replied `{"result": true}`.
 Idempotency: LeadMe deduplicates internally, so re-adding an existing
-tag is safe (no duplicate pills).
+tag is safe (no duplicate pills). But note that "success" here does
+NOT prove the tag landed – only that LeadMe accepted the POST. The
+`_resolve_tag_lead_id` step is what makes it actually land.
 
-### 7.3. Removing tags
+### 7.3. How `_resolve_tag_lead_id` works
+
+Lives in `app/crm/leadme_client.py`. Given an `lc_id`, it:
+
+1. Fetches `GET /app/leads/viewLead/<lc_id>` (the human "view lead"
+   page).
+2. Regex-extracts the first `uploadLeadProfileImage(<id>)` call from
+   the returned HTML – that's the JS handler for the avatar upload
+   widget, and its argument is the internal `leadId`.
+3. Returns that id. On any failure (page 404s, regex miss, cookies
+   expired) it falls back to returning the original `lc_id` and the
+   subsequent tag POST will no-op – that's the graceful degradation
+   we accept in exchange for not needing a dedicated resolver
+   endpoint.
+
+If LeadMe ever changes the viewLead template, this regex will silently
+break and tags will stop landing. Symptom: `push_lead` logs show
+`slot=<something>` but the tag pill never appears in the LeadMe UI.
+Fix by scraping a fresh viewLead page and updating the regex.
+
+### 7.4. Removing tags
 
 There is a `/app/ajax/removeLeadTag` endpoint that the UI uses via
-`itemRemoved` events on `.tagsinput`. It expects `text` + `leadId` just
-like add. We haven't wired it into `leadme_client.py` yet because we
-never need to remove – if you build it, add it there and update the
-table in §5.2.
+`itemRemoved` events on `.tagsinput`. It expects `text` + `leadId`
+just like add – and just like add, `leadId` here means the **internal
+`leadId`** (§7.3), NOT `lc_id`. We haven't wired it into
+`leadme_client.py` yet – add a helper there if/when needed and update
+§5.2.
 
 ---
 
 ## 8. Adding a "call-window" (hours) tag
 
 This is the exact workflow the sales team wanted: when a lead picks a
-preferred call slot in WhatsApp (e.g. "9-12"), the bot should attach a
+preferred call slot in WhatsApp (e.g. "9-12"), the bot attaches a
 matching tag on the LeadMe row so a rep filtering by slot immediately
 sees the queue.
 
-Implementation (already in production):
+Implementation (as it exists today):
 
 1. The agent's `classify_lead` tool captures `preferred_call_slot` on
    the DB `Lead.lead_metadata` blob (`"9-12"`, `"12-15"`, `"15-18"`,
@@ -377,17 +437,31 @@ Implementation (already in production):
      → app/crm/client.py::mark_ready_for_call
        → app/crm/leadme_client.py::push_engagement_level(lead, level=1)
          → push_lead
-           → _admin_change_status(client, id, 7326)   # status pill
-           → _admin_add_tag(client, id, "רמה 1 · קבע שיחה")
+             → find row via get_row_by_phone            (yields lc_id)
+             → _admin_change_status(client, lc_id, 7326)  # status pill
+             → _resolve_tag_lead_id(client, lc_id)        # -> internal leadId
+             → _admin_add_tag(client, internal_leadId, f"חלון · {slot}")
    ```
 
-3. The `חלון: <slot>` tag is added in `_build_insert_payload`-style
-   logic that lives on the current `push_lead` (see the block that
-   composes `tag_parts`; the `preferred_call_slot` metadata becomes
-   the `חלון: X-Y` tag).
+3. The tag string is literally `f"חלון · {slot}"` – middle-dot
+   separator, no colon.
+4. If `preferred_call_slot` is missing from `lead_metadata`, no tag is
+   pushed. The status change still happens.
 
-If you need a different set of windows (Roy asked for e.g. "אחה"צ",
-"בוקר"), extend the canonical list in *two* places:
+**Backfill for historical leads** – `scripts/backfill_slot_tags.py`
+walks every `funnel_stage=handed_off` lead in the DB that has a
+`preferred_call_slot`, resolves the LeadMe row, and adds the slot tag
+if missing. Safe to re-run (LeadMe dedupes internally):
+
+```
+docker exec -e PYTHONPATH=/app propeller_bot \
+    python scripts/backfill_slot_tags.py --dry-run
+docker exec -e PYTHONPATH=/app propeller_bot \
+    python scripts/backfill_slot_tags.py
+```
+
+If you need a different set of windows (e.g. "אחה"צ", "בוקר"), extend
+the canonical list in *two* places:
 
 - `app/agent/prompts.py` – so the LLM asks for those windows.
 - `app/agent/tools.py::VALID_SLOTS` – so the classifier accepts them.
@@ -542,6 +616,7 @@ so it can't accidentally target the wrong lead).
 | `_debug_mcf.py <cid>`               | Call `/app/ajax2/loadMcfTable` + `/app/ajax4/getPieData`.            |
 | `_debug_js_url.py`                  | Fetch and grep `manageCampaign_.js` for ajax URLs.                  |
 | `_smoke_push.py <phone>`            | Run the full `push_lead(level=1)` code path against a real lead, and verify campaign 12277 count didn't grow. |
+| `backfill_slot_tags.py [--dry-run]` | Add missing `חלון · <slot>` tags to every handed-off lead in the DB. Idempotent. |
 
 Run them inside the bot container so they share cookies:
 
@@ -589,6 +664,15 @@ Chronological, so you can recognize the symptoms:
     ones on `*.leadmecms.co.il` matter. `_build_client` already
     filters – if you copy the pattern into a new script, keep the
     filter.
+11. **`addLeadTag` returns `{"result":true}` but the tag pill never
+    appears on the lead.** You sent the `lc_id` (from `getDataForTable`,
+    range `22xxxxxx`) instead of the internal `leadId` (range
+    `13xxxxxx`). Route it through `_resolve_tag_lead_id(client, lc_id)`
+    first. See §7.2–7.3.
+12. **Slot tag renders as `חלון: 9-12` instead of `חלון · 9-12`.**
+    You used a colon. LeadMe's UI uses a middle-dot (U+00B7) and the
+    sales team filters exact strings. Fix in whatever script generated
+    the tag.
 
 ---
 
@@ -614,14 +698,21 @@ Chronological, so you can recognize the symptoms:
 
 ```python
 # In a container shell with PYTHONPATH=/app.
-from app.crm.leadme_client import _admin_change_status, _admin_add_tag
+from app.crm.leadme_client import (
+    _admin_change_status, _admin_add_tag, _resolve_tag_lead_id,
+)
 from app.crm.leadme_delete import _build_client, find_leadme_id_by_phone
 
-client = _build_client()                       # loads cookies
-lid = find_leadme_id_by_phone("972533460489", client)  # -> "22371797"
-_admin_change_status(client, lid, "7326")      # -> חדש - רמה 1
-_admin_add_tag(client, lid, "רמה 1 · קבע שיחה")
-_admin_add_tag(client, lid, "חלון: 9-12")
+client = _build_client()                                   # loads cookies
+lc_id = find_leadme_id_by_phone("972533460489", client)    # -> "22371797"
+
+# Status uses lc_id directly.
+_admin_change_status(client, lc_id, "7326")                # -> חדש - רמה 1
+
+# Tags need the internal leadId. Resolve first, then add.
+tag_lid = _resolve_tag_lead_id(client, lc_id)              # -> "13xxxxxx"
+_admin_add_tag(client, tag_lid, "חלון · 9-12")             # middle-dot!
+
 client.close()
 ```
 
