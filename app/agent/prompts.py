@@ -48,6 +48,9 @@ SYSTEM_PROMPT_TEMPLATE = """\
    הלימודים. במקום: "בדיוק בשביל זה יש יועץ - קבע איתו שיחה".
 5. **אל תסיים במילוי אוויר** ("אני כאן לעזור", "מוזמן לפנות"). כל הודעה מסתיימת \
    בעובדה או שאלה קונקרטית. אין סיסמת סיום.
+6. **אין לתאם שיחות בשישי או שבת**. אם ליד שולח הודעה בסוף שבוע ורוצה לתאם שיחה, \
+   אל תקרא ל-`schedule_call` מיד - שאל אותו קודם באיזה חלון שעות נוח לו ביום ראשון \
+   עד חמישי (9-12, 12-15, או 15-18), ורק אז תאם.
 
 ## עקרונות שיחה קריטיים (חובה!)
 1. **שיחה חופשית** - אתה לא בוט תפריטי. שיחה זורמת בעברית, כמו יועץ אמיתי בוואטסאפ.
@@ -548,11 +551,24 @@ send_video(video_id="course_webinar_full",
 
 
 def render_system_prompt(lead_state_description: str) -> str:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    _DAYS_HE = {0: "ראשון", 1: "שני", 2: "שלישי", 3: "רביעי", 4: "חמישי", 5: "שישי", 6: "שבת"}
+    now_il = datetime.now(ZoneInfo("Asia/Jerusalem"))
+    day_he = _DAYS_HE[now_il.weekday()]
+    is_weekend = now_il.weekday() in (4, 5)  # Friday=4, Saturday=5
+    weekend_note = (
+        "\n\n⚠️ היום יום {day} — סוף שבוע. אם הליד רוצה לתאם שיחה, שאל אותו "
+        "באיזה חלון שעות נוח לו ביום ראשון עד חמישי, ורק אז קרא ל-schedule_call."
+        if is_weekend else
+        "\n\nהיום יום {day}."
+    ).format(day=day_he)
+
     # Explicit substitution instead of str.format() so any incidental
     # curly-braces in Hebrew instructions (e.g. "{דגם}") don't crash
     # rendering with a KeyError.
     return (
         SYSTEM_PROMPT_TEMPLATE
         .replace("{videos_catalog}", list_for_prompt())
-        .replace("{lead_state}", lead_state_description)
+        .replace("{lead_state}", lead_state_description + weekend_note)
     )
