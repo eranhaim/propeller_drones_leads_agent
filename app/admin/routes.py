@@ -191,6 +191,67 @@ header .hdr-actions {
 .hdr-btn:hover { background: var(--border); text-decoration: none; }
 .hdr-btn.danger { background: transparent; color: #f87171; border-color: #7f1d1d; }
 .hdr-btn.danger:hover { background: #7f1d1d; color: white; }
+/* LeadMe session-health pill in the header */
+.leadme-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 10px; border-radius: 999px; font-size: 11px;
+    font-weight: 700; letter-spacing: 0.3px;
+    border: 1px solid transparent;
+    text-decoration: none;
+}
+.leadme-pill:hover { text-decoration: none; opacity: 0.85; }
+.leadme-pill .dotp {
+    width: 8px; height: 8px; border-radius: 50%;
+}
+.leadme-pill.healthy   { background: #064e3b; color: #a7f3d0; border-color: #065f46; }
+.leadme-pill.healthy   .dotp { background: #10b981; box-shadow: 0 0 6px #10b98180; }
+.leadme-pill.expired   { background: #7c2d12; color: #fed7aa; border-color: #9a3412; }
+.leadme-pill.expired   .dotp { background: #f97316; }
+.leadme-pill.unreachable, .leadme-pill.no_cookies {
+    background: #7f1d1d; color: #fecaca; border-color: #991b1b;
+}
+.leadme-pill.unreachable .dotp, .leadme-pill.no_cookies .dotp {
+    background: #ef4444; box-shadow: 0 0 6px #ef444480;
+}
+
+/* LeadMe status page */
+.leadme-status-card {
+    background: var(--panel); padding: 24px; border-radius: 10px;
+    border: 1px solid var(--border); margin-bottom: 24px;
+}
+.leadme-status-card.healthy   { border-color: #065f46; }
+.leadme-status-card.expired   { border-color: #9a3412; }
+.leadme-status-card.unreachable, .leadme-status-card.no_cookies { border-color: #991b1b; }
+.leadme-status-card h2 { margin: 0 0 8px 0; font-size: 22px; }
+.leadme-status-card .detail { color: var(--text-dim); }
+.leadme-status-card .actions { margin-top: 16px; display: flex; gap: 10px; flex-wrap: wrap; }
+
+/* Queue table */
+table.queue {
+    width: 100%; border-collapse: collapse;
+    background: var(--panel); border-radius: 10px; overflow: hidden;
+    margin-top: 20px;
+}
+.queue thead th {
+    background: var(--panel-2);
+    text-align: right; padding: 10px 12px;
+    font-weight: 600; color: var(--text-dim);
+    font-size: 11px; text-transform: uppercase;
+    border-bottom: 1px solid var(--border);
+}
+.queue tbody td { padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.queue tr.abandoned td { color: #fca5a5; background: #450a0a; }
+.queue tr:last-child td { border-bottom: none; }
+.queue .items-cell { font-size: 12px; color: var(--text-dim); direction: ltr; text-align: left; }
+.queue .pill { display: inline-block; padding: 2px 8px; border-radius: 999px;
+               font-size: 11px; background: var(--panel-2); color: var(--text); }
+.queue .pill.abandoned { background: #7f1d1d; color: #fecaca; }
+.queue form.retry-form { display: inline; }
+.queue button.retry-btn {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 11px;
+}
+.queue button.retry-btn:hover { background: var(--border); }
 
 /* Search bar */
 .searchbar {
@@ -306,6 +367,36 @@ table.leads {
 """
 
 
+_HEALTH_PILL_LABEL_HE = {
+    "healthy":     "LeadMe · תקין",
+    "expired":     "LeadMe · פג תוקף",
+    "unreachable": "LeadMe · לא נגיש",
+    "no_cookies":  "LeadMe · אין עוגיות",
+}
+
+
+def _leadme_pill_html() -> str:
+    """Render the LeadMe session-health pill for the header.
+
+    Uses the 30s cached result inside leadme_client so this doesn't
+    make an outbound request on every admin page load. If the health
+    check itself raises (import error, etc.) we degrade to a neutral
+    pill instead of blowing up the header.
+    """
+    try:
+        from app.crm.leadme_client import check_leadme_session_health
+        h = check_leadme_session_health()
+        status = h.get("status", "unreachable")
+    except Exception:  # noqa: BLE001
+        status = "unreachable"
+    label = _HEALTH_PILL_LABEL_HE.get(status, "LeadMe · לא ידוע")
+    return (
+        f'<a class="leadme-pill {status}" href="/admin/leadme-status" '
+        f'title="לחץ לפרטים">'
+        f'<span class="dotp"></span>{_escape(label)}</a>'
+    )
+
+
 def _page(title: str, body: str, *, back_href: Optional[str] = None) -> str:
     back_btn = (
         f'<a class="hdr-btn" href="{_escape(back_href)}">→ חזרה לרשימת הלידים</a>'
@@ -324,6 +415,7 @@ def _page(title: str, body: str, *, back_href: Optional[str] = None) -> str:
   <h1><span class="dot"></span>פרופלור דרונס · ניהול</h1>
   <div class="hdr-actions">
     <span class="meta">{_escape(title)}</span>
+    {_leadme_pill_html()}
     {back_btn}
     <a class="hdr-btn" href="/admin/simulator">סימולטור</a>
     <a class="hdr-btn" href="/admin/leadme-cookies">עוגיות LeadMe</a>
@@ -645,6 +737,251 @@ def mute_lead(lead_id: int, _: str = Depends(_require_admin)) -> RedirectRespons
 def unmute_lead(lead_id: int, _: str = Depends(_require_admin)) -> RedirectResponse:
     _set_muted(lead_id, False)
     return RedirectResponse(url=f"/admin/leads/{lead_id}", status_code=303)
+
+
+# --- LeadMe session health + retry queue --------------------------------
+
+_QUEUE_STATUS_LABEL_HE = {
+    "healthy": ("תקין", "המערכת מחוברת ל-LeadMe. פוש-סטטוסים ותגיות ירדו כרגיל."),
+    "expired": (
+        "פג תוקף",
+        "העוגיות של LeadMe פגו תוקף. יש לרענן דרך הכפתור מטה, אחרת כל "
+        "הפוש-ים ממתינים בתור עד ריענון.",
+    ),
+    "unreachable": (
+        "לא נגיש",
+        "LeadMe לא ענתה כמצופה. יכול להיות שהיא חוותה נפילה זמנית או "
+        "שהחיבור נחסם. בדוק שוב עוד רגע.",
+    ),
+    "no_cookies": (
+        "אין עוגיות",
+        "לא נמצא קובץ עוגיות ל-LeadMe. יש להעלות עוגיות דרך /admin/leadme-cookies.",
+    ),
+}
+
+
+def _fmt_iso_to_local(iso: Optional[str]) -> str:
+    if not iso:
+        return "-"
+    try:
+        dt = datetime.fromisoformat(iso)
+    except ValueError:
+        return iso
+    return _fmt_ts(dt)
+
+
+@router.get("/leadme-status", response_class=HTMLResponse)
+def leadme_status(
+    force: int = 0,
+    _: str = Depends(_require_admin),
+) -> str:
+    """LeadMe session-health page + pending push queue.
+
+    Query param ``?force=1`` bypasses the 30s cache and does a fresh
+    session check. The "רענן בדיקה" button in the UI links here with
+    ``force=1``.
+    """
+    from app.crm.leadme_client import check_leadme_session_health
+    from app.crm.leadme_queue import (
+        MAX_ATTEMPTS,
+        MAX_LIFETIME_MINUTES,
+        RETRY_INTERVAL_MINUTES,
+        get_queue_snapshot,
+    )
+
+    health = check_leadme_session_health(force=bool(force))
+    status_key = health.get("status", "unreachable")
+    label, description = _QUEUE_STATUS_LABEL_HE.get(
+        status_key, ("לא ידוע", ""),
+    )
+    checked_at = _fmt_iso_to_local(health.get("checked_at"))
+    detail = _escape(health.get("detail", ""))
+
+    refresh_cookies_btn = (
+        '<a class="hdr-btn danger" href="/admin/leadme-cookies">'
+        'רענן עוגיות</a>'
+        if status_key in ("expired", "no_cookies") else ""
+    )
+
+    health_card = f"""
+    <section class="leadme-status-card {status_key}">
+      <h2>סטטוס חיבור ל-LeadMe: {_escape(label)}</h2>
+      <div class="detail">{_escape(description)}</div>
+      <div class="detail" style="margin-top:8px;font-size:12px">
+        פרטים טכניים: <code>{detail}</code><br>
+        נבדק לאחרונה: {_escape(checked_at)}
+        {"(מטמון)" if health.get("cached") else ""}
+      </div>
+      <div class="actions">
+        <a class="hdr-btn" href="/admin/leadme-status?force=1">רענן בדיקה עכשיו</a>
+        {refresh_cookies_btn}
+      </div>
+    </section>
+    """
+
+    queue = get_queue_snapshot()
+    total = len(queue)
+    abandoned_count = sum(1 for r in queue if r["abandoned"])
+    active_count = total - abandoned_count
+
+    if not queue:
+        queue_body = (
+            '<div style="padding:30px;text-align:center;color:var(--text-dim);'
+            'background:var(--panel);border-radius:10px">'
+            'אין פוש-ים ממתינים לתור כרגע.</div>'
+        )
+    else:
+        trs: list[str] = []
+        for r in queue:
+            items = r["items"] or []
+            items_repr = _escape(
+                json.dumps(items, ensure_ascii=False, separators=(",", ":"))
+            )
+            row_cls = "abandoned" if r["abandoned"] else ""
+            pill = (
+                '<span class="pill abandoned">נטוש</span>'
+                if r["abandoned"] else
+                '<span class="pill">ממתין</span>'
+            )
+            queued_at = _fmt_iso_to_local(r["queued_at"])
+            next_at = _fmt_iso_to_local(r["next_attempt_at"])
+            phone_disp = _escape(r["phone"] or "?")
+            name_disp = _escape(r["name"] or "-")
+            retry_form = (
+                '<form class="retry-form" method="post" '
+                f'action="/admin/leadme-status/{r["lead_id"]}/retry">'
+                '<button class="retry-btn" type="submit">נסה שוב עכשיו</button>'
+                '</form>'
+                if not r["abandoned"] else
+                '<form class="retry-form" method="post" '
+                f'action="/admin/leadme-status/{r["lead_id"]}/retry">'
+                '<button class="retry-btn" type="submit">שיחזור</button>'
+                '</form>'
+            )
+            clear_form = (
+                '<form class="retry-form" method="post" '
+                f'action="/admin/leadme-status/{r["lead_id"]}/clear" '
+                'onsubmit="return confirm(\'לנקות פריטים ממתינים לליד הזה?\')">'
+                '<button class="retry-btn" type="submit">נקה</button>'
+                '</form>'
+            )
+            trs.append(f"""
+            <tr class="{row_cls}">
+              <td>{pill}</td>
+              <td><a href="/admin/leads/{r['lead_id']}">{name_disp}</a></td>
+              <td class="phone">{phone_disp}</td>
+              <td class="items-cell">{items_repr}</td>
+              <td>{r['attempts']}</td>
+              <td>{_escape(queued_at)}</td>
+              <td>{_escape(next_at)}</td>
+              <td>{retry_form} {clear_form}</td>
+            </tr>
+            """)
+        queue_body = f"""
+        <table class="queue">
+          <thead>
+            <tr>
+              <th>מצב</th><th>שם</th><th>טלפון</th>
+              <th>פריטים ממתינים</th>
+              <th>ניסיונות</th><th>נכנס לתור</th><th>ניסיון הבא</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>{''.join(trs)}</tbody>
+        </table>
+        """
+
+    tunables_html = f"""
+    <div style="margin-top:16px;font-size:12px;color:var(--text-dim)">
+      פרמטרים: ניסיון חוזר כל {RETRY_INTERVAL_MINUTES} דקות ·
+      נטישה אחרי {MAX_LIFETIME_MINUTES} דקות ·
+      עד {MAX_ATTEMPTS} ניסיונות פר ליד.
+    </div>
+    """
+
+    body = health_card + f"""
+    <h2 style="margin:24px 0 12px 0">תור פוש-ים ממתינים ({active_count} פעילים, {abandoned_count} נטושים)</h2>
+    <div class="detail" style="color:var(--text-dim);font-size:13px;margin-bottom:12px">
+      לידים שלא נמצאו ב-LeadMe בזמן הריצה הראשונית מאוחסנים כאן ומנוסים
+      שוב ברקע. ברוב המקרים ה-CTWA sync של פייסבוק סוגר את הפער תוך
+      דקות ספורות והפריט נעלם מהתור לבד.
+    </div>
+    {queue_body}
+    {tunables_html}
+    """
+
+    return _page("LeadMe · סטטוס וניסיונות חוזרים", body)
+
+
+@router.post("/leadme-status/{lead_id}/retry")
+def leadme_status_retry(
+    lead_id: int, _: str = Depends(_require_admin),
+) -> RedirectResponse:
+    """Force an immediate retry for a single lead's pending pushes.
+
+    Resets ``next_attempt_at`` to now and clears any "abandoned" flag
+    so the scheduler picks it back up on the next tick (within a few
+    minutes). If the lead has no pending items, this is a no-op.
+    """
+    from loguru import logger
+    from app.crm.leadme_queue import retry_pending_pushes
+
+    with session_scope() as s:
+        lead = s.get(Lead, lead_id)
+        if lead:
+            md = dict(lead.lead_metadata or {})
+            # Bring back abandoned items so the drainer will process them.
+            if md.get("leadme_push_abandoned"):
+                abandoned_items = md.pop("leadme_push_abandoned_items", None) or []
+                if abandoned_items and not md.get("leadme_push_pending"):
+                    md["leadme_push_pending"] = abandoned_items
+                md.pop("leadme_push_abandoned", None)
+                md.pop("leadme_push_abandoned_at", None)
+                md["leadme_push_queued_at"] = datetime.now(timezone.utc).isoformat()
+                md["leadme_push_attempts"] = 0
+            md["leadme_push_next_attempt_at"] = datetime.now(timezone.utc).isoformat()
+            lead.lead_metadata = md
+            logger.info(
+                "[admin] manual retry for lead {} (phone={}) triggered",
+                lead_id, lead.phone,
+            )
+
+    # Kick the drainer immediately so the user sees results on the next
+    # page load rather than waiting for the scheduler's tick.
+    try:
+        retry_pending_pushes()
+    except Exception:  # noqa: BLE001
+        logger.exception("[admin] inline retry_pending_pushes raised")
+
+    return RedirectResponse(url="/admin/leadme-status", status_code=303)
+
+
+@router.post("/leadme-status/{lead_id}/clear")
+def leadme_status_clear(
+    lead_id: int, _: str = Depends(_require_admin),
+) -> RedirectResponse:
+    """Wipe a lead's pending queue (operator gave up / handled manually)."""
+    from loguru import logger
+    with session_scope() as s:
+        lead = s.get(Lead, lead_id)
+        if lead:
+            md = dict(lead.lead_metadata or {})
+            for k in (
+                "leadme_push_pending",
+                "leadme_push_next_attempt_at",
+                "leadme_push_attempts",
+                "leadme_push_queued_at",
+                "leadme_push_abandoned",
+                "leadme_push_abandoned_at",
+                "leadme_push_abandoned_items",
+            ):
+                md.pop(k, None)
+            lead.lead_metadata = md
+            logger.info(
+                "[admin] cleared pending LeadMe queue for lead {} (phone={})",
+                lead_id, lead.phone,
+            )
+    return RedirectResponse(url="/admin/leadme-status", status_code=303)
 
 
 @router.get("/logout", response_class=HTMLResponse)

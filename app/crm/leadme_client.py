@@ -397,6 +397,131 @@ def _admin_add_tag(client, leadme_id: str, tag: str) -> bool:
     return ok
 
 
+# --- session health -----------------------------------------------------
+
+# Cache the last health check for a short window so the admin UI can
+# render a pill on every page load without hammering LeadMe. Values:
+# ("healthy" | "expired" | "unreachable" | "no_cookies", detail, ts).
+_HEALTH_CACHE_TTL_SECONDS = 30
+_HEALTH_CACHE: dict = {"result": None, "checked_at": 0.0}
+
+
+def check_leadme_session_health(force: bool = False) -> dict:
+    """Return a snapshot of whether the LeadMe admin session is alive.
+
+    Result shape::
+
+        {
+            "status": "healthy" | "expired" | "unreachable" | "no_cookies",
+            "detail": "<short human-readable note>",
+            "checked_at": "<ISO timestamp UTC>",
+            "cached": True|False,
+        }
+
+    Semantics:
+    - ``healthy``      -> GET /app/leads returned 200 + a LeadMe-admin
+                          HTML title marker. Everything downstream will
+                          work.
+    - ``expired``      -> got 200 but the body looks like the login /
+                          reCAPTCHA page. Operator must refresh cookies
+                          via /admin/leadme-cookies.
+    - ``unreachable``  -> HTTP error, non-200, or network exception.
+                          Could be transient (LeadMe outage) or DNS.
+    - ``no_cookies``   -> LEADME_COOKIES_PATH doesn't point at a file,
+                          the file is empty, or we can't build a client.
+
+    Cached for ``_HEALTH_CACHE_TTL_SECONDS``. Pass ``force=True`` to
+    bypass the cache (used by the admin "check now" button).
+    """
+    now_ts = time.time()
+    cached = _HEALTH_CACHE.get("result")
+    if (
+        not force
+        and cached is not None
+        and now_ts - _HEALTH_CACHE.get("checked_at", 0.0) < _HEALTH_CACHE_TTL_SECONDS
+    ):
+        return {**cached, "cached": True}
+
+    from datetime import datetime as _dt, timezone as _tz
+    from app.crm.leadme_delete import _build_client
+
+    checked_at_iso = _dt.now(_tz.utc).isoformat()
+
+    client = _build_client()
+    if client is None:
+        result = {
+            "status": "no_cookies",
+            "detail": "לא נמצא קובץ עוגיות תקין. יש לרענן דרך /admin/leadme-cookies.",
+            "checked_at": checked_at_iso,
+        }
+        _HEALTH_CACHE["result"] = result
+        _HEALTH_CACHE["checked_at"] = now_ts
+        return {**result, "cached": False}
+
+    try:
+        base = get_settings().leadme_admin_base
+        try:
+            resp = client.get(base + "/app/leads")
+        except httpx.HTTPError as e:
+            result = {
+                "status": "unreachable",
+                "detail": f"HTTP error: {e}",
+                "checked_at": checked_at_iso,
+            }
+        else:
+            if resp.status_code != 200:
+                result = {
+                    "status": "unreachable",
+                    "detail": f"GET /app/leads returned HTTP {resp.status_code}",
+                    "checked_at": checked_at_iso,
+                }
+            else:
+                body_head = resp.text[:2000].lower()
+                # LeadMe's authenticated admin pages carry a distinctive
+                # marker in the <title> ("LeadMe CMS | ..."). The login
+                # page also contains "leadme" text but reliably shows a
+                # reCAPTCHA widget and a password input. We prefer a
+                # positive check on the admin marker.
+                admin_marker = "leadme cms |"
+                login_markers = (
+                    "recaptcha",
+                    'name="password"',
+                    "type=\"password\"",
+                )
+                if admin_marker in body_head:
+                    result = {
+                        "status": "healthy",
+                        "detail": "GET /app/leads OK",
+                        "checked_at": checked_at_iso,
+                    }
+                elif any(m in body_head for m in login_markers):
+                    result = {
+                        "status": "expired",
+                        "detail": "התקבל דף התחברות במקום דף הלידים -- העוגיות פגו תוקף.",
+                        "checked_at": checked_at_iso,
+                    }
+                else:
+                    result = {
+                        "status": "unreachable",
+                        "detail": "לא זוהתה תשובה של LeadMe (לא דף לידים ולא דף לוגין).",
+                        "checked_at": checked_at_iso,
+                    }
+    finally:
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    _HEALTH_CACHE["result"] = result
+    _HEALTH_CACHE["checked_at"] = now_ts
+    if result["status"] != "healthy":
+        logger.warning(
+            "[LeadMe health] status={} detail={!r}",
+            result["status"], result["detail"],
+        )
+    return {**result, "cached": False}
+
+
 def push_status_via_admin(lead: Lead, status_id: str) -> bool:
     """Backwards-compat wrapper -- prefer :func:`push_lead`.
 

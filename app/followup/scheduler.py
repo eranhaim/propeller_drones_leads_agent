@@ -577,6 +577,48 @@ def _campaign_leak_canary() -> None:
         logger.exception("[leak-canary] tick failed")
 
 
+# --- LeadMe session-health tripwire -------------------------------------
+
+_LAST_HEALTH_STATUS: Optional[str] = None
+
+
+def _leadme_session_health_tick() -> None:
+    """Log a loud ERROR if the LeadMe admin session isn't healthy.
+
+    Called every 30 min from the scheduler. Uses ``force=True`` so it
+    doesn't get shadowed by the 30s admin-UI cache. On transitions
+    healthy->!healthy we log ERROR; on !healthy->healthy we log INFO
+    ("recovered"); on steady-state we stay quiet at debug level.
+    """
+    global _LAST_HEALTH_STATUS
+    try:
+        from app.crm.leadme_client import check_leadme_session_health
+        h = check_leadme_session_health(force=True)
+        status = h.get("status", "unreachable")
+        detail = h.get("detail", "")
+    except Exception:  # noqa: BLE001
+        logger.exception("[leadme-health] tick raised")
+        return
+
+    if status == _LAST_HEALTH_STATUS:
+        return  # steady state, don't spam
+
+    if status == "healthy":
+        if _LAST_HEALTH_STATUS is not None:
+            logger.info(
+                "[leadme-health] RECOVERED (was={}, now=healthy): {}",
+                _LAST_HEALTH_STATUS, detail,
+            )
+    else:
+        logger.error(
+            "[leadme-health] LeadMe session status={} detail={!r}. "
+            "Any push_lead calls now enqueue and cannot drain until "
+            "cookies are refreshed via /admin/leadme-cookies.",
+            status, detail,
+        )
+    _LAST_HEALTH_STATUS = status
+
+
 # --- scheduler wiring ---------------------------------------------------
 
 
@@ -626,6 +668,20 @@ def run_in_background_thread() -> None:
         max_instances=1,
         coalesce=True,
         next_run_time=datetime.now(ISRAEL_TZ) + timedelta(seconds=30),
+    )
+    # Session-health probe. Fires every 30 min, forces a fresh check
+    # (bypasses the 30s admin-UI cache), and logs an ERROR whenever
+    # the session isn't healthy. Keeps a tripwire in the docker logs
+    # so we don't discover a dead session only via the wave of
+    # enqueued (and eventually abandoned) pushes.
+    scheduler.add_job(
+        _leadme_session_health_tick,
+        trigger="interval",
+        minutes=30,
+        id="leadme_session_health",
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(ISRAEL_TZ) + timedelta(minutes=1),
     )
 
     def _start() -> None:
