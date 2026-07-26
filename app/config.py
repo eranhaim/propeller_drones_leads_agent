@@ -142,6 +142,30 @@ class Settings(BaseSettings):
         3, alias="LEADME_QUEUE_INTERVAL_MINUTES",
     )
 
+    # LeadMe automatic cookie refresh -- see app/crm/leadme_login.py.
+    # LeadMe has no admin API (as of 2026-07); we impersonate a
+    # logged-in browser via saved cookies. The CSRF cookie
+    # hard-expires every 24h, so cookies must be rotated regularly.
+    # These vars power a pure-httpx + 2Captcha refresh flow that
+    # replaces the manual "paste cookies from DevTools" step:
+    #
+    # - leadme_auto_refresh_enabled: master switch. False -> no-op.
+    # - leadme_login_email / _password: the LeadMe account we log in
+    #   with. Should be a dedicated bot account, NOT a human's.
+    # - leadme_captcha_api_key: 2Captcha API key (or compatible
+    #   provider). Cost is <$0.01 per solve; expect ~2-3 solves/day.
+    # - leadme_auto_refresh_interval_hours: proactive refresh cadence.
+    #   Should be < 24 (the csrf_cookie_name hard-expiry).
+    leadme_auto_refresh_enabled: bool = Field(
+        False, alias="LEADME_AUTO_REFRESH_ENABLED",
+    )
+    leadme_login_email: str = Field("", alias="LEADME_LOGIN_EMAIL")
+    leadme_login_password: str = Field("", alias="LEADME_LOGIN_PASSWORD")
+    leadme_captcha_api_key: str = Field("", alias="LEADME_CAPTCHA_API_KEY")
+    leadme_auto_refresh_interval_hours: int = Field(
+        12, alias="LEADME_AUTO_REFRESH_INTERVAL_HOURS",
+    )
+
     # Shopify Storefront API (read-only: product search, prices, inventory)
     shopify_storefront_token: str = Field("", alias="SHOPIFY_STOREFRONT_TOKEN")
     shopify_storefront_url: str = Field("", alias="SHOPIFY_STOREFRONT_URL")

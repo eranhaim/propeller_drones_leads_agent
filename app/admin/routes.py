@@ -1133,23 +1133,76 @@ def leadme_cookies_form(
             f'border-radius:8px;margin-bottom:16px">✗ {_escape(error)}</div>'
         )
 
+    settings = get_settings()
+    auto_ok = bool(
+        settings.leadme_auto_refresh_enabled
+        and settings.leadme_login_email
+        and settings.leadme_login_password
+        and settings.leadme_captcha_api_key
+    )
+    auto_status_text = "פעיל" if auto_ok else "כבוי / לא מוגדר"
+    auto_status_color = "#10b981" if auto_ok else "#f97316"
+    if auto_ok:
+        auto_help = (
+            f"מוגדר עם חשבון <code>{_escape(settings.leadme_login_email)}</code>. "
+            f"רענון אוטומטי כל {settings.leadme_auto_refresh_interval_hours} "
+            "שעות + ריענון תגובתי כשהסטטוס נכשל. אפשר גם ללחוץ 'רענן עכשיו' "
+            "מתחת בשביל אימות מיידי (עולה בערך $0.003)."
+        )
+    else:
+        missing: list[str] = []
+        if not settings.leadme_auto_refresh_enabled:
+            missing.append("LEADME_AUTO_REFRESH_ENABLED=true")
+        if not settings.leadme_login_email:
+            missing.append("LEADME_LOGIN_EMAIL")
+        if not settings.leadme_login_password:
+            missing.append("LEADME_LOGIN_PASSWORD")
+        if not settings.leadme_captcha_api_key:
+            missing.append("LEADME_CAPTCHA_API_KEY")
+        auto_help = (
+            "כדי להפעיל ריענון אוטומטי, יש להגדיר ב-<code>.env</code> את המשתנים: "
+            "<code>" + _escape(", ".join(missing)) + "</code>. "
+            "אחר כך <code>docker compose up -d bot</code> בשרת."
+        )
+
+    refresh_btn = (
+        '<button type="submit" style="padding:10px 20px;background:#10b981;'
+        'color:#0f172a;border:none;border-radius:6px;font-weight:600;'
+        'cursor:pointer">רענן עכשיו (2Captcha)</button>'
+        if auto_ok else
+        '<button type="submit" disabled style="padding:10px 20px;background:'
+        '#334155;color:#64748b;border:none;border-radius:6px;font-weight:600;'
+        'cursor:not-allowed" title="הגדר תחילה את משתני הסביבה">רענן עכשיו</button>'
+    )
+
     body = f"""
 {flash}
 <div class="panel">
-  <h2>עוגיות LeadMe לצורך מחיקה</h2>
+  <h2>עוגיות LeadMe לצורך מחיקה + שינוי סטטוסים ותגיות</h2>
   <p class="muted">
-    כדי שכפתור "מחק ליד" באדמין ימחק את הליד גם ב-LeadMe (ולא רק ב-DB
-    המקומי), אנחנו צריכים עוגיות התחברות של חשבון LeadMe. הן פוגות אחרי
-    כמה שעות/ימים -- אז מפעם לפעם צריך לרענן אותן דרך העמוד הזה.
+    LeadMe לא מציעים API רשמי ולכן אנחנו מדמים דפדפן מחובר עם עוגיות
+    שמורות. עוגיית ה-CSRF פוגה בכל 24 שעות. יש שתי דרכים לרענן את
+    העוגיות: אוטומטית (מומלץ) או ידנית.
   </p>
 
   <div style="margin:16px 0;padding:12px 16px;background:#0f172a;
               border-radius:8px;border:1px solid #334155">
-    <b>מצב נוכחי:</b> <span style="color:#38bdf8">{_escape(badge)}</span><br>
+    <b>עוגיות שמורות כרגע:</b> <span style="color:#38bdf8">{_escape(badge)}</span><br>
     <span class="muted">{_escape(detail)}</span>
   </div>
 
-  <h3>איך מרעננים עוגיות (30 שניות):</h3>
+  <div style="margin:16px 0;padding:16px;background:#0f172a;
+              border-radius:8px;border:1px solid #334155">
+    <b>ריענון אוטומטי:</b>
+    <span style="color:{auto_status_color};font-weight:700">{_escape(auto_status_text)}</span>
+    <div class="muted" style="margin-top:8px;font-size:13px">{auto_help}</div>
+    <form method="post" action="/admin/leadme-cookies/auto-refresh"
+          style="margin-top:12px">
+      {refresh_btn}
+    </form>
+  </div>
+
+  <h3 style="margin-top:24px">רענון ידני (fallback) -- כמה שניות של עבודה:</h3>
   <ol style="line-height:1.9">
     <li>פתח Chrome וודא שאתה מחובר ל-
       <a href="https://www.leadmecms.co.il/app/leads" target="_blank"
@@ -1236,6 +1289,46 @@ def leadme_cookies_save(
         "PHPSESSID present)", len(parsed),
     )
     return RedirectResponse(url="/admin/leadme-cookies?saved=1", status_code=303)
+
+
+@router.post("/leadme-cookies/auto-refresh")
+def leadme_cookies_auto_refresh(
+    _: str = Depends(_require_admin),
+) -> RedirectResponse:
+    """Trigger a full LeadMe login (2Captcha) and write fresh cookies.
+
+    Synchronous — the browser waits until 2Captcha solves the challenge
+    and we've verified the resulting session (usually 20–60 s). We keep
+    it synchronous because the operator explicitly asked; a spinner in
+    the browser is more useful than a fire-and-forget log line.
+    """
+    from loguru import logger
+    from app.crm.leadme_login import refresh_leadme_cookies
+
+    logger.info("[admin] manual LeadMe auto-refresh triggered")
+    try:
+        result = refresh_leadme_cookies()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[admin] auto-refresh raised")
+        return RedirectResponse(
+            url="/admin/leadme-cookies?error="
+                f"auto-refresh+raised:+{exc}",
+            status_code=303,
+        )
+
+    if result.get("ok"):
+        wait = result.get("captcha_wait_seconds") or 0
+        n = result.get("cookie_count") or 0
+        msg = f"✓+refreshed+{n}+cookies+(captcha+wait+{wait}s)"
+        return RedirectResponse(
+            url=f"/admin/leadme-cookies?saved=1&auto={msg}",
+            status_code=303,
+        )
+    reason = str(result.get("reason") or "unknown").replace(" ", "+")
+    return RedirectResponse(
+        url=f"/admin/leadme-cookies?error=auto-refresh+failed:+{reason}",
+        status_code=303,
+    )
 
 
 # --- Simulator -------------------------------------------------------------

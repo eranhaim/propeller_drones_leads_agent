@@ -588,7 +588,13 @@ def _leadme_session_health_tick() -> None:
     Called every 30 min from the scheduler. Uses ``force=True`` so it
     doesn't get shadowed by the 30s admin-UI cache. On transitions
     healthy->!healthy we log ERROR; on !healthy->healthy we log INFO
-    ("recovered"); on steady-state we stay quiet at debug level.
+    ("recovered"); on steady-state we stay quiet.
+
+    ALSO reactive: if the session is expired/no_cookies AND auto-refresh
+    is enabled in .env, kick off an immediate refresh attempt. This
+    turns "cookies died, wait for a human to notice" into "cookies died,
+    self-heal within ~1 minute". Manual paste at /admin/leadme-cookies
+    remains as fallback.
     """
     global _LAST_HEALTH_STATUS
     try:
@@ -599,6 +605,41 @@ def _leadme_session_health_tick() -> None:
     except Exception:  # noqa: BLE001
         logger.exception("[leadme-health] tick raised")
         return
+
+    settings = get_settings()
+
+    # Reactive self-heal. Only trigger on states that a fresh login
+    # can actually fix (expired session, no cookies). "Unreachable"
+    # means LeadMe itself is down or unreachable -- logging in won't
+    # help, and would just burn 2Captcha budget.
+    if status in ("expired", "no_cookies") and settings.leadme_auto_refresh_enabled:
+        logger.warning(
+            "[leadme-health] status={} -- attempting reactive auto-refresh",
+            status,
+        )
+        try:
+            from app.crm.leadme_login import refresh_leadme_cookies
+            result = refresh_leadme_cookies()
+            if result.get("ok"):
+                logger.info(
+                    "[leadme-health] reactive refresh succeeded: {}",
+                    result.get("reason"),
+                )
+                # Force a fresh health check so we notice the recovery
+                # on this same tick.
+                try:
+                    h = check_leadme_session_health(force=True)
+                    status = h.get("status", status)
+                    detail = h.get("detail", detail)
+                except Exception:  # noqa: BLE001
+                    pass
+            else:
+                logger.error(
+                    "[leadme-health] reactive refresh FAILED: {}",
+                    result.get("reason"),
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("[leadme-health] reactive refresh raised")
 
     if status == _LAST_HEALTH_STATUS:
         return  # steady state, don't spam
@@ -613,10 +654,46 @@ def _leadme_session_health_tick() -> None:
         logger.error(
             "[leadme-health] LeadMe session status={} detail={!r}. "
             "Any push_lead calls now enqueue and cannot drain until "
-            "cookies are refreshed via /admin/leadme-cookies.",
+            "cookies are refreshed via /admin/leadme-cookies "
+            "(or the auto-refresh job succeeds).",
             status, detail,
         )
     _LAST_HEALTH_STATUS = status
+
+
+def _leadme_proactive_refresh_tick() -> None:
+    """Refresh LeadMe cookies proactively before they expire.
+
+    Runs every ``LEADME_AUTO_REFRESH_INTERVAL_HOURS`` (default 12).
+    Should be < 24 to stay ahead of the csrf_cookie_name hard-expiry.
+
+    No-op when auto-refresh is disabled or when the current session is
+    still healthy AND was refreshed recently (we don't burn 2Captcha
+    budget on a session that's clearly fine). The reactive path in
+    :func:`_leadme_session_health_tick` catches the "session died
+    unexpectedly" case.
+    """
+    settings = get_settings()
+    if not settings.leadme_auto_refresh_enabled:
+        return
+    try:
+        from app.crm.leadme_login import refresh_leadme_cookies
+        result = refresh_leadme_cookies()
+    except Exception:  # noqa: BLE001
+        logger.exception("[leadme-refresh] proactive tick raised")
+        return
+    if result.get("ok"):
+        logger.info(
+            "[leadme-refresh] proactive refresh OK ({} cookies, "
+            "captcha_wait={}s)",
+            result.get("cookie_count"),
+            result.get("captcha_wait_seconds"),
+        )
+    else:
+        logger.error(
+            "[leadme-refresh] proactive refresh FAILED: {}",
+            result.get("reason"),
+        )
 
 
 # --- scheduler wiring ---------------------------------------------------
@@ -683,6 +760,27 @@ def run_in_background_thread() -> None:
         coalesce=True,
         next_run_time=datetime.now(ISRAEL_TZ) + timedelta(minutes=1),
     )
+    # Proactive cookie refresh -- only registered when
+    # LEADME_AUTO_REFRESH_ENABLED is on, so we don't leak "job failed:
+    # no credentials configured" into the logs on setups that
+    # deliberately stay manual.
+    if settings.leadme_auto_refresh_enabled:
+        scheduler.add_job(
+            _leadme_proactive_refresh_tick,
+            trigger="interval",
+            hours=settings.leadme_auto_refresh_interval_hours,
+            id="leadme_proactive_refresh",
+            max_instances=1,
+            coalesce=True,
+            # Give the container time to warm up before the first
+            # refresh; also skip an immediate refresh right after
+            # startup so we don't burn a 2Captcha solve on every
+            # container restart.
+            next_run_time=(
+                datetime.now(ISRAEL_TZ)
+                + timedelta(hours=settings.leadme_auto_refresh_interval_hours)
+            ),
+        )
 
     def _start() -> None:
         try:
