@@ -84,39 +84,129 @@ def _is_allowed(phone: str) -> bool:
     return phone in allowed
 
 
-def _push_ctwa_tag(phone: str, campaign: str) -> None:
-    """Push a campaign attribution tag to LeadMe (runs in background thread)."""
+def _push_ctwa_tag(lead_id: int, phone: str, campaign: str) -> None:
+    """Push a campaign attribution tag to LeadMe (best-effort, single try).
+
+    Runs in a background thread on FIRST inbound (see caller). If the
+    LeadMe row can't be resolved on this one-shot attempt (CTWA race:
+    Facebook lead reached us before LeadMe's supplier sync landed) we
+    enqueue the tag in the persistent LeadMe queue and let the
+    scheduler drain it -- see :mod:`app.crm.leadme_queue`. Cross-restart
+    safe.
+    """
     try:
+        from app.crm.leadme_client import (
+            _admin_add_tag,
+            _resolve_tag_lead_id,
+            BANNED_LEAKY_CAMPAIGN_ID,
+            BANNED_LEAKY_CAMPAIGN_NAME,
+        )
         from app.crm.leadme_delete import _build_client, get_row_by_phone
-        from app.crm.leadme_client import _resolve_tag_lead_id, _admin_add_tag
-        import time
+        from app.crm import leadme_queue
+        from app.db.models import Lead as _Lead
+        from app.db.session import session_scope
+        import re as _re
 
         client = _build_client()
         if client is None:
-            logger.warning("[CTWA] no admin cookies, cannot push tag for {}", phone)
+            logger.warning(
+                "[CTWA] no admin cookies for {} -- enqueueing for retry",
+                phone,
+            )
+            with session_scope() as sess:
+                lead = sess.get(_Lead, lead_id)
+                if lead is not None:
+                    leadme_queue.enqueue_ctwa_tag(
+                        lead, campaign, session=sess,
+                    )
             return
 
-        row = None
-        for attempt in range(4):
+        try:
             row = get_row_by_phone(phone, client)
-            if row is not None:
-                break
-            if attempt < 3:
-                time.sleep((attempt + 1) * 5)
+        finally:
+            # Close early -- we might re-open in the queue path.
+            pass
 
         if row is None:
-            logger.warning("[CTWA] phone {} not found in LeadMe, skipping tag", phone)
+            logger.info(
+                "[CTWA] phone {} not visible in LeadMe yet -- enqueueing "
+                "campaign={!r} for background retry", phone, campaign,
+            )
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001
+                pass
+            with session_scope() as sess:
+                lead = sess.get(_Lead, lead_id)
+                if lead is not None:
+                    leadme_queue.enqueue_ctwa_tag(
+                        lead, campaign, session=sess,
+                    )
             return
 
         lc_id = str(row[1]).strip() if len(row) > 1 else ""
         if not lc_id or not lc_id.isdigit():
             logger.warning("[CTWA] no numeric id for {}", phone)
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001
+                pass
+            return
+
+        # Refuse to tag a lead sitting in the banned trash campaign.
+        campaign_name = ""
+        if len(row) > 4 and isinstance(row[4], str):
+            campaign_name = _re.sub(r"<[^>]+>", " ", row[4])
+            campaign_name = _re.sub(r"\s+", " ", campaign_name).strip()
+        if (BANNED_LEAKY_CAMPAIGN_ID in (row[0] or "")
+                or campaign_name == BANNED_LEAKY_CAMPAIGN_NAME):
+            logger.error(
+                "[CTWA SAFETY] refusing to tag {} -- sits in banned "
+                "campaign {!r}", phone,
+                campaign_name or BANNED_LEAKY_CAMPAIGN_NAME,
+            )
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001
+                pass
             return
 
         tag_lead_id = _resolve_tag_lead_id(client, lc_id)
+        if tag_lead_id is None:
+            # viewLead returned login page -- queue and let the drain
+            # retry with a fresh client.
+            logger.warning(
+                "[CTWA] could not resolve internal leadId for lc_id={} "
+                "phone={} -- enqueueing", lc_id, phone,
+            )
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001
+                pass
+            with session_scope() as sess:
+                lead = sess.get(_Lead, lead_id)
+                if lead is not None:
+                    leadme_queue.enqueue_ctwa_tag(
+                        lead, campaign, session=sess,
+                    )
+            return
+
         tag = f"מקור: {campaign}"
         ok = _admin_add_tag(client, tag_lead_id, tag)
         logger.info("[CTWA] tag {!r} pushed for {} ok={}", tag, phone, ok)
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001
+            pass
+        # Even a 200/result:true can be spurious in edge cases; if the
+        # admin log came back False, queue for a proper retry.
+        if not ok:
+            with session_scope() as sess:
+                lead = sess.get(_Lead, lead_id)
+                if lead is not None:
+                    leadme_queue.enqueue_ctwa_tag(
+                        lead, campaign, session=sess,
+                    )
     except Exception:
         logger.exception("[CTWA] failed to push tag for {}", phone)
 
@@ -166,9 +256,10 @@ def register_handlers(bot: GreenAPIBot) -> None:
                 if not existing:
                     repository.update_lead_metadata(session, lead, ctwa_campaign=campaign)
                     logger.info("[CTWA] lead {} attributed to campaign={!r}", phone, campaign)
+                    _lead_id_for_thread = lead.id
                     threading.Thread(
                         target=_push_ctwa_tag,
-                        args=(phone, campaign),
+                        args=(_lead_id_for_thread, phone, campaign),
                         daemon=True,
                     ).start()
 

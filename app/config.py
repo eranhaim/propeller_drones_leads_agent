@@ -134,6 +134,14 @@ class Settings(BaseSettings):
     # Video-specific follow-up (after a non-webinar video is sent).
     video_followup_hours: int = Field(2, alias="VIDEO_FOLLOWUP_HOURS")
 
+    # LeadMe push queue -- see app/crm/leadme_queue.py. How often to
+    # drain pending pushes for leads whose phone wasn't yet visible in
+    # LeadMe at the time of the request. Small enough to keep the CTWA
+    # race under 5 minutes typical, large enough to not hammer LeadMe.
+    leadme_queue_interval_minutes: int = Field(
+        3, alias="LEADME_QUEUE_INTERVAL_MINUTES",
+    )
+
     # Shopify Storefront API (read-only: product search, prices, inventory)
     shopify_storefront_token: str = Field("", alias="SHOPIFY_STOREFRONT_TOKEN")
     shopify_storefront_url: str = Field("", alias="SHOPIFY_STOREFRONT_URL")

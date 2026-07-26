@@ -613,6 +613,20 @@ def run_in_background_thread() -> None:
         coalesce=True,
         next_run_time=datetime.now(ISRAEL_TZ) + timedelta(minutes=2),
     )
+    # LeadMe push queue drainer: retries pending status/tag pushes that
+    # couldn't resolve their phone on the first try (CTWA race). This
+    # is what turns "leads stuck at חדש forever" into "leads updated
+    # within ~5 minutes of Facebook's supplier sync landing".
+    from app.crm.leadme_queue import retry_pending_pushes
+    scheduler.add_job(
+        retry_pending_pushes,
+        trigger="interval",
+        minutes=settings.leadme_queue_interval_minutes,
+        id="leadme_queue_drain",
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(ISRAEL_TZ) + timedelta(seconds=30),
+    )
 
     def _start() -> None:
         try:

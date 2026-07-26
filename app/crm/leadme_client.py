@@ -16,6 +16,21 @@ now goes through the internal admin endpoints using session cookies:
     POST /app/ajax/addLeadTag           -- attach engagement tag
     (see :mod:`app.crm.leadme_delete`   -- delete + phone-lookup)
 
+The CTWA race
+-------------
+Facebook / TikTok leads reach the bot BEFORE LeadMe's own supplier
+sync updates their DB. Historical behaviour was to retry the phone
+lookup 4 times over 30 seconds and then give up forever, silently
+dropping the push. That produced 40/44 dropped pushes in one 48h
+window -- from the customer's perspective, "the LeadMe integration
+randomly breaks".
+
+The current behaviour is: try 2 fast in-request attempts (~10s total),
+then enqueue the desired action in :mod:`app.crm.leadme_queue`, which
+is drained by the follow-up scheduler every few minutes for up to 60
+minutes. Only after the queue fully expires do we log a loud ERROR
+and give up. Cross-restart safe (state lives on ``lead.lead_metadata``).
+
 Env vars still consumed:
     LEADME_STATUS_LEVEL_1/2/3  -- numeric status ids for engagement tiers
     LEADME_STATUS_ID           -- fallback for level 1 if the tier var is empty
@@ -48,11 +63,11 @@ def _is_test_phone(phone: Optional[str]) -> bool:
     return p.startswith("999")
 
 
-# Human-readable Hebrew engagement tag applied to every LeadMe update. The
-# sales team can filter by these tags in LeadMe's UI even when the numeric
-# status ids aren't yet configured. Level 1 == booked a call, Level 2 ==
-# replied but didn't book, Level 3 == never replied to the opener.
-LEVEL_TAGS = {}
+# Reserved for backwards compatibility. Historically we pushed engagement
+# level tags (רמה 1/2/3) alongside the status pill; the customer asked
+# us to drop those on 2026-07-22 -- the status pill alone carries the
+# engagement signal. Kept as an empty dict so no import site breaks.
+LEVEL_TAGS: dict[int, str] = {}
 
 
 # LeadMe campaign id for the "trash" bucket the bot must never leak into.
@@ -61,28 +76,11 @@ BANNED_LEAKY_CAMPAIGN_ID = "12277"
 BANNED_LEAKY_CAMPAIGN_NAME = "הוסרו מ-Whatsapp"
 
 
-def _push_slot_tag_via_api(phone: str, tag: str) -> bool:
-    """Add a slot tag via the public supplier/insert API (no cookies needed)."""
-    settings = get_settings()
-    url = (settings.leadme_insert_url or "").strip()
-    if not url:
-        logger.warning("[LeadMe API] LEADME_INSERT_URL not set, cannot push slot tag")
-        return False
-    try:
-        resp = httpx.post(url, data={
-            "action": "new_lead",
-            "phone": phone,
-            "tags": tag,
-        }, timeout=10.0)
-        ok = resp.status_code == 200 and "success" in resp.text
-        if ok:
-            logger.info("[LeadMe API] slot tag sent phone={} tag={!r}", phone, tag)
-        else:
-            logger.warning("[LeadMe API] slot tag failed phone={} tag={!r} status={}", phone, tag, resp.status_code)
-        return ok
-    except Exception:
-        logger.exception("[LeadMe API] slot tag raised for phone={}", phone)
-        return False
+# How many fast, in-request retries we do before handing off to the
+# durable queue. Short by design -- the queue picks up the slack for
+# the CTWA race (see module docstring).
+_INREQUEST_RETRIES = 2
+_INREQUEST_WAIT_SEC = 5  # first wait; second wait doubles this.
 
 
 def _status_id_for_level(level: int) -> str:
@@ -98,38 +96,29 @@ def push_lead(
     lead: Lead,
     note: Optional[str] = None,
     level: int = 1,
-    slot: Optional[str] = None,
 ) -> bool:
     """Sync an engagement change to LeadMe -- admin-only path.
 
-    IMPORTANT: this function does NOT call the public ``/supplier/*``
-    endpoints. Both ``/supplier/insert`` and ``/supplier/update`` act as
-    upserts on our account -- when the phone isn't visible inside the
-    supplier's linked campaign, LeadMe silently creates a duplicate row
-    in the supplier's default campaign (id 12277 = "הוסרו מ-Whatsapp").
-    That's the "leads keep leaking into the removed campaign" bug the
-    customer keeps reporting.
+    Flow:
+    1. Guards (test mode / banned phones / kill-switch / no phone).
+    2. Try 2 fast in-request phone lookups (~10s total).
+    3. If found -> do the admin push (status + optional slot tag) and
+       return the boolean success.
+    4. If not found -> enqueue the desired action on
+       ``lead.lead_metadata['leadme_push_pending']`` (see
+       :mod:`app.crm.leadme_queue`) and return True. A background
+       scheduler tick will drain the queue.
 
-    Instead, everything now flows through the internal admin API using
-    the session cookies we already carry (see
-    :mod:`app.crm.leadme_delete`):
-
-    - Resolve the lead's numeric LeadMe id via getDataForTable search.
-    - Change status via ``POST /app/leads/changeLeadsStatus``.
-    - Add engagement tag via ``POST /app/ajax/addLeadTag``.
-
-    Guards kept from before:
-    - ``leadme_test_mode`` on -> full no-op (log only).
-    - Phone starting with the eval-harness ``999`` prefix -> full no-op.
-    - ``LEADME_INSERT_MODE=never`` -> full no-op (kept for kill-switch).
-
-    ``level`` picks the engagement status / tag (see ``LEVEL_TAGS``):
+    ``level`` picks the engagement status:
         1 = booked, 2 = replied but no booking, 3 = never replied.
+
+    The slot to tag (``חלון · <slot>``) is read from
+    ``lead.lead_metadata['preferred_call_slot']``. Only pushed for
+    level=1 (bookings); levels 2/3 don't carry a slot.
     """
-    # Local import: leadme_delete imports config which imports us at
-    # module load in some paths, so keep it lazy.
     import re as _re
     from app.crm.leadme_delete import _build_client, get_row_by_phone
+    from app.crm import leadme_queue
 
     settings = get_settings()
 
@@ -159,44 +148,47 @@ def push_lead(
         )
         return True
 
-    status_val = _status_id_for_level(level)
-    level_tag = LEVEL_TAGS.get(level)
+    slot = (lead.lead_metadata or {}).get("preferred_call_slot")
 
     client = _build_client()
     if client is None:
         logger.warning(
-            "[LeadMe] no admin cookies configured; cannot push lead {} "
-            "(status={}, level={}). Refresh cookies via the /admin panel.",
-            lead.phone, status_val, level,
+            "[LeadMe] no admin cookies configured; queueing push for lead "
+            "{} (level={}, slot={}). Refresh cookies via the /admin panel.",
+            lead.phone, level, slot,
         )
-        return False
+        leadme_queue.enqueue_engagement(lead, level=level, slot=slot, note=note)
+        return True
 
     try:
         row = None
-        for attempt in range(4):
+        for attempt in range(_INREQUEST_RETRIES):
             row = get_row_by_phone(lead.phone, client)
             if row is not None:
                 break
-            if attempt < 3:
-                wait = (attempt + 1) * 5  # 5, 10, 15 seconds
+            if attempt < _INREQUEST_RETRIES - 1:
+                wait = _INREQUEST_WAIT_SEC * (attempt + 1)
                 logger.info(
-                    "[LeadMe] phone {} not found yet (attempt {}/4), "
-                    "retrying in {}s...", lead.phone, attempt + 1, wait,
+                    "[LeadMe] phone {} not found yet (in-request attempt "
+                    "{}/{}), waiting {}s...",
+                    lead.phone, attempt + 1, _INREQUEST_RETRIES, wait,
                 )
                 time.sleep(wait)
 
         if row is None:
-            logger.warning(
-                "[LeadMe] phone {} not found in LeadMe after 4 attempts -- NOT creating "
-                "(would leak into supplier campaign). Level={}. "
-                "The lead must first be inserted via the customer's own "
-                "LeadMe form flow.", lead.phone, level,
+            # CTWA race: LeadMe supplier sync hasn't landed yet. Hand
+            # off to the durable queue instead of dropping.
+            logger.info(
+                "[LeadMe] phone {} not visible in LeadMe yet -- enqueueing "
+                "for background retry (level={}, slot={})",
+                lead.phone, level, slot,
             )
+            leadme_queue.enqueue_engagement(lead, level=level, slot=slot, note=note)
             return True
 
         # row layout (see leadme_delete.py):
         #   [checkbox_html, id, name, phone, campaign, status_html, ...]
-        leadme_id = str(row[1]).strip() if len(row) > 1 else ""
+        lc_id = str(row[1]).strip() if len(row) > 1 else ""
         campaign = ""
         if len(row) > 4 and isinstance(row[4], str):
             campaign = _re.sub(r"<[^>]+>", " ", row[4])
@@ -210,35 +202,53 @@ def push_lead(
                 or campaign == BANNED_LEAKY_CAMPAIGN_NAME):
             logger.error(
                 "[LeadMe SAFETY] REFUSED to push status/tag for {} "
-                "leadme_id={} because it lives in the banned campaign "
+                "lc_id={} because it lives in the banned campaign "
                 "{!r}. This lead should be moved manually.",
-                lead.phone, leadme_id, campaign or BANNED_LEAKY_CAMPAIGN_NAME,
+                lead.phone, lc_id, campaign or BANNED_LEAKY_CAMPAIGN_NAME,
             )
             return False
 
-        if not leadme_id or not leadme_id.isdigit():
+        if not lc_id or not lc_id.isdigit():
             logger.warning(
                 "[LeadMe] no numeric id in row for {} (row[1]={!r})",
                 lead.phone, row[1] if len(row) > 1 else None,
             )
             return False
 
+        status_val = _status_id_for_level(level)
         ok_status = True
         if status_val:
-            ok_status = _admin_change_status(client, leadme_id, status_val)
+            ok_status = _admin_change_status(client, lc_id, status_val)
 
-        slot = (lead.lead_metadata or {}).get("preferred_call_slot")
+        ok_tag = True
         if slot:
-            tag_lead_id = _resolve_tag_lead_id(client, leadme_id)
-            _admin_add_tag(client, tag_lead_id, f"חלון · {slot}")
+            tag_lead_id = _resolve_tag_lead_id(client, lc_id)
+            if tag_lead_id is None:
+                # Resolution failed (viewLead probably returned a login
+                # page). Pushing the tag against lc_id silently
+                # succeeds but never lands -- so queue instead of
+                # firing into the void.
+                logger.warning(
+                    "[LeadMe] slot tag pending: could not resolve internal "
+                    "leadId for phone={} lc_id={} slot={!r}; queueing for "
+                    "later retry", lead.phone, lc_id, slot,
+                )
+                leadme_queue.enqueue_engagement(
+                    lead, level=level, slot=slot, note=note,
+                )
+                ok_tag = False
+            else:
+                ok_tag = _admin_add_tag(
+                    client, tag_lead_id, f"חלון · {slot}",
+                )
 
         logger.info(
-            "[LeadMe admin] pushed lead {} leadme_id={} campaign={!r} "
-            "level={} status={} slot={!r} (status_ok={})",
-            lead.phone, leadme_id, campaign, level, status_val or "-",
-            slot, ok_status,
+            "[LeadMe admin] pushed lead {} lc_id={} campaign={!r} "
+            "level={} status={} slot={!r} (status_ok={}, tag_ok={})",
+            lead.phone, lc_id, campaign, level, status_val or "-",
+            slot, ok_status, ok_tag,
         )
-        return ok_status
+        return ok_status and ok_tag
     finally:
         try:
             client.close()
@@ -272,9 +282,16 @@ def _admin_change_status(client, leadme_id: str, status_id: str) -> bool:
     try:
         body = resp.json()
     except Exception:  # noqa: BLE001
+        # HTML instead of JSON almost always means the session cookies
+        # expired and we got the login page back. Flag it clearly so
+        # ops sees "refresh cookies" in the logs rather than a generic
+        # parse error.
+        preview = resp.text[:200]
+        looks_like_login = "login" in preview.lower() or "recaptcha" in preview.lower()
         logger.warning(
-            "[LeadMe admin status] non-JSON for leadme_id={}: {!r}",
-            leadme_id, resp.text[:200],
+            "[LeadMe admin status] non-JSON for leadme_id={} "
+            "(likely_session_expired={}): {!r}",
+            leadme_id, looks_like_login, preview,
         )
         return False
     if not body.get("result"):
@@ -290,27 +307,58 @@ def _admin_change_status(client, leadme_id: str, status_id: str) -> bool:
     return True
 
 
-def _resolve_tag_lead_id(client, lc_id: str) -> str:
+def _resolve_tag_lead_id(client, lc_id: str) -> Optional[str]:
     """Fetch viewLead page and extract the internal leadId for addLeadTag.
 
-    LeadMe uses two different numeric IDs:
-    - lc_id (22xxxxxx): returned by getDataForTable, used for status changes.
-    - leadId (13xxxxxx): embedded in viewLead HTML, required by addLeadTag.
+    LeadMe uses two different numeric IDs per lead:
+    - ``lc_id`` (22xxxxxx): returned by getDataForTable, used for status
+      changes and delete.
+    - internal ``leadId`` (13xxxxxx): embedded in the ``viewLead``
+      profile page HTML as ``uploadLeadProfileImage(<id>)``. Required
+      by ``addLeadTag`` (posting the ``lc_id`` here silently returns
+      ``result:true`` but the tag never lands).
+
+    Returns the internal id on success, or ``None`` on any failure
+    (page 404s, regex miss, session expired, network error). Callers
+    MUST treat ``None`` as "don't push the tag yet" -- do NOT fall
+    back to ``lc_id`` or the tag will vanish silently.
     """
     import re as _re2
     base = get_settings().leadme_admin_base
     try:
         resp = client.get(base + f"/app/leads/viewLead/{lc_id}")
-        match = _re2.search(r"uploadLeadProfileImage\((\d+)\)", resp.text)
-        if match:
-            return match.group(1)
-    except Exception:  # noqa: BLE001
-        pass
-    return lc_id  # fallback to lc_id if not found
+    except httpx.HTTPError as e:
+        logger.warning(
+            "[LeadMe] viewLead HTTP error for lc_id={}: {}", lc_id, e,
+        )
+        return None
+    if resp.status_code != 200:
+        logger.warning(
+            "[LeadMe] viewLead returned HTTP {} for lc_id={} -- "
+            "cannot resolve internal leadId",
+            resp.status_code, lc_id,
+        )
+        return None
+    match = _re2.search(r"uploadLeadProfileImage\((\d+)\)", resp.text)
+    if match:
+        return match.group(1)
+    preview = resp.text[:200]
+    looks_like_login = "login" in preview.lower() or "recaptcha" in preview.lower()
+    logger.warning(
+        "[LeadMe] viewLead page for lc_id={} did not contain internal "
+        "leadId (likely_session_expired={}); tag push will be deferred",
+        lc_id, looks_like_login,
+    )
+    return None
 
 
 def _admin_add_tag(client, leadme_id: str, tag: str) -> bool:
-    """POST /app/ajax/addLeadTag. Returns True on ``result:true``."""
+    """POST /app/ajax/addLeadTag. Returns True on ``result:true``.
+
+    ``leadme_id`` must be the INTERNAL ``leadId`` (13xxxxxx range),
+    not the ``lc_id`` (22xxxxxx range). Use :func:`_resolve_tag_lead_id`
+    to convert.
+    """
     if not (tag or "").strip():
         return True
     base = get_settings().leadme_admin_base
@@ -327,13 +375,25 @@ def _admin_add_tag(client, leadme_id: str, tag: str) -> bool:
         logger.error("[LeadMe admin tag] HTTP error: {}", e)
         return False
     if resp.status_code != 200:
+        logger.warning(
+            "[LeadMe admin tag] HTTP {} leadme_id={} tag={!r} body={!r}",
+            resp.status_code, leadme_id, tag, resp.text[:200],
+        )
         return False
     try:
         body = resp.json()
     except Exception:  # noqa: BLE001
+        preview = resp.text[:200]
+        looks_like_login = "login" in preview.lower() or "recaptcha" in preview.lower()
+        logger.warning(
+            "[LeadMe admin tag] non-JSON leadme_id={} tag={!r} "
+            "(likely_session_expired={}): {!r}",
+            leadme_id, tag, looks_like_login, preview,
+        )
         return False
     ok = bool(body.get("result"))
-    logger.info("[LeadMe admin tag] leadme_id={} tag={!r} ok={} body={!r}", leadme_id, tag, ok, body)
+    logger.info("[LeadMe admin tag] leadme_id={} tag={!r} ok={} body={!r}",
+                leadme_id, tag, ok, body)
     return ok
 
 
@@ -341,7 +401,6 @@ def push_status_via_admin(lead: Lead, status_id: str) -> bool:
     """Backwards-compat wrapper -- prefer :func:`push_lead`.
 
     Kept so any external caller referencing the old symbol still works.
-    Prefer :func:`push_lead` in new code.
     """
     from app.crm.leadme_delete import (
         _build_client, find_leadme_id_by_phone,
@@ -367,9 +426,15 @@ def push_engagement_level(
     lead: Lead,
     level: int,
     note: Optional[str] = None,
-    slot: Optional[str] = None,
+    slot: Optional[str] = None,  # kept for API compat, slot is read from metadata
 ) -> bool:
     """Convenience wrapper: push an engagement level (1/2/3) to LeadMe.
+
+    ``slot`` is accepted for API back-compat but IGNORED: the effective
+    slot is always read from ``lead.lead_metadata['preferred_call_slot']``
+    (that's the source of truth after ``schedule_call`` persists it).
+    Pass slots via :func:`app.db.repository.update_lead_metadata` before
+    calling this.
 
     Level semantics (numerically LOWER = more engaged):
         1 = booked a call.
@@ -391,6 +456,15 @@ def push_engagement_level(
     if level not in (1, 2, 3):
         logger.warning("[LeadMe] ignoring invalid engagement level {}", level)
         return False
+    # Deliberately accept the parameter and log if someone passed a
+    # slot expecting it to be honored -- silent shadowing was a real
+    # bug we hit before this cleanup.
+    if slot:
+        logger.debug(
+            "[LeadMe] push_engagement_level(slot={!r}) argument is IGNORED "
+            "-- slot must be persisted via update_lead_metadata first.",
+            slot,
+        )
 
     md = dict(lead.lead_metadata or {})
     already = md.get("leadme_last_level")
@@ -421,7 +495,7 @@ def push_engagement_level(
         return True
 
     # 3 -> 2, 3 -> 1, 2 -> 1, None -> any: proceed.
-    ok = push_lead(lead, note=note, level=level, slot=slot)
+    ok = push_lead(lead, note=note, level=level)
     if ok:
         md["leadme_last_level"] = int(level)
         lead.lead_metadata = md
@@ -429,12 +503,12 @@ def push_engagement_level(
 
 
 def push_lead_cancellation(lead: Lead, reason: Optional[str] = None) -> bool:
-    """Mark a previously handed-off lead as cancelled/re-open in LeadMe.
+    """Mark a previously-scheduled call as cancelled in LeadMe.
 
-    Uses the admin-only path (no ``/supplier/*`` calls -- those upsert and
-    leak duplicates into the supplier's default campaign 12277). Attaches
-    a ``ביטול שיחה`` tag to make it visible to sales; the reason is
-    captured in the tag suffix so Roy can see it at a glance.
+    Uses the admin-only path. Flips the status back to plain "חדש"
+    (rel=1) so the sales team can re-book without confusion. No tag
+    is pushed -- the customer asked us to keep the LeadMe UI clean
+    (only ``חלון · <slot>`` tags are used now).
     """
     from app.crm.leadme_delete import (
         _build_client, find_leadme_id_by_phone,
@@ -468,19 +542,16 @@ def push_lead_cancellation(lead: Lead, reason: Optional[str] = None) -> bool:
         leadme_id = find_leadme_id_by_phone(lead.phone, client)
         if not leadme_id:
             logger.warning(
-                "[LeadMe cancel] phone {} not found in LeadMe (no-op)",
-                lead.phone,
+                "[LeadMe cancel] phone {} not found in LeadMe (no-op) "
+                "reason={!r}", lead.phone, reason,
             )
             return True
-        ok_tag = True
-        # Move status back to plain "חדש" (rel=1) so the sales team can
-        # rebook without confusion.
         ok_status = _admin_change_status(client, leadme_id, "1")
         logger.info(
-            "[LeadMe cancel] leadme_id={} phone={} tag_ok={} status_ok={}",
-            leadme_id, lead.phone, ok_tag, ok_status,
+            "[LeadMe cancel] leadme_id={} phone={} reason={!r} status_ok={}",
+            leadme_id, lead.phone, reason, ok_status,
         )
-        return ok_tag or ok_status
+        return ok_status
     finally:
         try:
             client.close()
