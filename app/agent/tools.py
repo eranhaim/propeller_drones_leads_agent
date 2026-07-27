@@ -57,6 +57,39 @@ def search_knowledge(query: str, topic: Optional[str] = None) -> str:
     track.
     """
     logger.info("Tool search_knowledge: query='{}' topic={}", query, topic)
+
+    # Shop queries → live WooCommerce catalog (real prices + stock)
+    if topic == "shop":
+        from app.woocommerce.client import search_woocommerce_products
+        products = search_woocommerce_products(query, limit=3)
+        # If specific query found nothing, try progressively broader searches
+        if not products:
+            words = query.split()
+            # try first word, then first word trimmed of last 2 chars (Hebrew plural/suffix)
+            candidates = []
+            if words:
+                candidates.append(words[0])
+                if len(words[0]) > 4:
+                    candidates.append(words[0][:-2])
+            for broad in candidates:
+                products = search_woocommerce_products(broad, limit=3)
+                if products:
+                    break
+        if products:
+            lines = []
+            for p in products:
+                parts = [f"*{p['title']}*"]
+                if p["price_min"]:
+                    parts.append(f"מחיר: ₪{p['price_min']:,}")
+                if p["in_stock"]:
+                    parts.append("יש במלאי")
+                if p["description"]:
+                    parts.append(p["description"])
+                if p["url"]:
+                    parts.append(p["url"])
+                lines.append(" | ".join(parts))
+            return "מוצרים מהחנות:\n" + "\n".join(f"{i+1}. {l}" for i, l in enumerate(lines))
+
     return search_as_text(query, k=5, topic=topic)
 
 
@@ -444,9 +477,9 @@ def search_shop_products(query: str) -> str:
         "Tool search_shop_products: query={!r} lead={}", query, ctx.lead.id
     )
 
-    from app.shopify.client import search_shopify_products
+    from app.woocommerce.client import search_woocommerce_products
 
-    products = search_shopify_products(query, limit=3)
+    products = search_woocommerce_products(query, limit=3)
 
     if not products:
         return (
