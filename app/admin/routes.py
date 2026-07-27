@@ -463,6 +463,7 @@ def leads_list(_: str = Depends(_require_admin)) -> str:
             else:
                 last_msg = ""
 
+            meta = lead.lead_metadata or {}
             snapshot.append({
                 "id": lead.id,
                 "name": lead.name or "",
@@ -472,6 +473,8 @@ def leads_list(_: str = Depends(_require_admin)) -> str:
                 "msg_count": int(msg_count or 0),
                 "last_at": last_at,
                 "last_msg": last_msg,
+                "leadme_level": meta.get("leadme_last_level"),
+                "call_slot": meta.get("preferred_call_slot"),
             })
 
     total_leads = len(snapshot)
@@ -505,18 +508,37 @@ def leads_list(_: str = Depends(_require_admin)) -> str:
             '<span class="badge" style="background:#dc2626;margin-inline-start:6px">בוט מושתק</span>'
             if r["muted"] else ""
         )
+        # stage badge — only show handed_off, everything else replaced by leadme level
+        stage_badge = (
+            f'<span class="badge" style="background:{badge_color}">{_escape(stage_label)}</span>'
+            if r["stage"] == "handed_off" else ""
+        )
+        # leadme level pill: 1=נסגר(ירוק) 2=ביניים(כתום) 3=לא הגיב(אדום)
+        _LEVEL_COLOR = {1: "#16a34a", 2: "#d97706", 3: "#dc2626"}
+        level = r.get("leadme_level")
+        level_pill = (
+            f'<span class="badge" style="background:{_LEVEL_COLOR.get(int(level), "#64748b")};margin-inline-start:6px">חדש-{_escape(str(level))}</span>'
+            if level is not None else ""
+        )
+        # preferred call slot — badge style
+        call_slot = r.get("call_slot") or ""
+        slot_html = (
+            f'<span class="badge" style="background:#1e40af;margin-top:4px;display:inline-block">🕐 {_escape(call_slot)}</span>'
+            if call_slot else ""
+        )
         haystack = " ".join([
             r["name"] or "",
             r["phone"] or "",
             r["stage"] or "",
             stage_label,
             r["last_msg"] or "",
+            call_slot,
         ]).lower()
         trs.append(f"""
         <tr data-search="{_escape(haystack)}" onclick="location.href='/admin/leads/{r['id']}'">
           <td class="name">{name_html}{mute_pill}</td>
           <td class="phone">{_escape(r['phone'])}</td>
-          <td><span class="badge" style="background:{badge_color}">{_escape(stage_label)}</span></td>
+          <td style="white-space:nowrap">{stage_badge}{level_pill}<br>{slot_html}</td>
           <td class="count">{r['msg_count']}</td>
           <td class="last-msg">{_escape(r['last_msg'])}</td>
           <td class="time">{_escape(_time_ago(r['last_at']))}<br><span style="opacity:0.6">{_escape(_fmt_ts(r['last_at']))}</span></td>
@@ -582,6 +604,7 @@ def lead_conversation(lead_id: int, _: str = Depends(_require_admin)) -> str:
         badge_color = STAGE_BADGE_COLOR.get(lead.funnel_stage.value, "#64748b")
         metadata_str = _json.dumps(lead.lead_metadata or {}, ensure_ascii=False, indent=2)
         videos_sent_str = ", ".join(lead.videos_sent or []) or "-"
+        _meta = lead.lead_metadata or {}
 
         lead_snapshot = {
             "id": lead.id,
@@ -595,6 +618,8 @@ def lead_conversation(lead_id: int, _: str = Depends(_require_admin)) -> str:
             "last_message_at": _fmt_ts(lead.last_message_at),
             "videos_sent": videos_sent_str,
             "metadata_str": metadata_str,
+            "leadme_level": _meta.get("leadme_last_level"),
+            "call_slot": _meta.get("preferred_call_slot"),
         }
 
         msgs = list(s.execute(
@@ -682,7 +707,13 @@ def lead_conversation(lead_id: int, _: str = Depends(_require_admin)) -> str:
             </form>
           </dd>
           <dt>טלפון</dt><dd style="font-family:ui-monospace">{_escape(ls['phone'])}</dd>
-          <dt>שלב</dt><dd><span class="badge" style="background:{ls['badge_color']}">{_escape(stage_label)}</span></dd>
+          <dt>שלב</dt><dd>
+            {f'<span class="badge" style="background:{ls["badge_color"]}">{_escape(stage_label)}</span>' if ls["stage"] == "handed_off" else ""}
+            {(lambda lv: f'<span class="badge" style="background:{"#16a34a" if lv==1 else "#d97706" if lv==2 else "#dc2626"};margin-inline-start:6px">חדש-{lv}</span>')(int(ls["leadme_level"])) if ls.get("leadme_level") is not None else ""}
+          </dd>
+          <dt>חלון שעות להתקשרות</dt><dd>
+            {f'<span class="badge" style="background:#1e40af">🕐 {_escape(ls["call_slot"])}</span>' if ls.get("call_slot") else "-"}
+          </dd>
           <dt>רמת היכרות</dt><dd>{_escape(familiarity_label)}</dd>
           <dt>נוצר</dt><dd>{_escape(ls['created_at'])}</dd>
           <dt>הודעה אחרונה</dt><dd>{_escape(ls['last_message_at'])}</dd>
