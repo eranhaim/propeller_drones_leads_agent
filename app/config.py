@@ -170,6 +170,11 @@ class Settings(BaseSettings):
     shopify_storefront_token: str = Field("", alias="SHOPIFY_STOREFRONT_TOKEN")
     shopify_storefront_url: str = Field("", alias="SHOPIFY_STOREFRONT_URL")
 
+    # WooCommerce REST API (read-only: product catalog)
+    wc_consumer_key: str = Field("", alias="WC_CONSUMER_KEY")
+    wc_consumer_secret: str = Field("", alias="WC_CONSUMER_SECRET")
+    wc_store_url: str = Field("https://propeller-drones.shop", alias="WC_STORE_URL")
+
     # Logging
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
