@@ -620,7 +620,16 @@ def push_engagement_level(
         return True
 
     # 3 -> 2, 3 -> 1, 2 -> 1, None -> any: proceed.
-    ok = push_lead(lead, note=note, level=level)
+    # Try v3 API first (clean, no cookies); fall back to legacy cookie path.
+    from app.crm.leadme_v3 import push_level as _v3_push_level
+    settings = get_settings()
+    if settings.leadme_api_key:
+        slot = (lead.lead_metadata or {}).get("preferred_call_slot")
+        tag = f"חלון · {slot}" if slot and level == 1 else None
+        ok = _v3_push_level(lead.phone, level=level, tag=tag)
+    else:
+        ok = push_lead(lead, note=note, level=level)
+
     if ok:
         md["leadme_last_level"] = int(level)
         lead.lead_metadata = md

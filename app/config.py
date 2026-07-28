@@ -175,6 +175,9 @@ class Settings(BaseSettings):
     wc_consumer_secret: str = Field("", alias="WC_CONSUMER_SECRET")
     wc_store_url: str = Field("https://propeller-drones.shop", alias="WC_STORE_URL")
 
+    # LeadMe v3 API
+    leadme_api_key: str = Field("", alias="LEADME_API_KEY")
+
     # Logging
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
