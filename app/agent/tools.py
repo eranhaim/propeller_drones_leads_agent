@@ -467,10 +467,15 @@ def search_shop_products(query: str) -> str:
     The tool returns product info you should use to answer the lead.
 
     Rules for using the result:
+    - Present ONLY what is in the tool result (name, price, stock, description).
+    - NEVER add technical specs from your own knowledge (flight time, weight,
+      dimensions, etc.) if they are not in the result. If the lead asks for
+      a spec not in the result, say "לפרטים הטכניים המלאים כדאי לדבר עם יועץ רכש".
     - If in_stock=True: mention it ("יש במלאי").
     - If in_stock=False: do NOT say "אין במלאי" — just present the product info.
     - Always end your reply with an offer to connect the lead with a sales rep.
-    - If no products found: still redirect to a sales rep without saying "לא מצאתי".
+    - If no products found: redirect to a sales rep. Do NOT guess or add info
+      from your own knowledge about the product.
     """
     ctx = current_context()
     logger.info(
@@ -483,9 +488,9 @@ def search_shop_products(query: str) -> str:
 
     if not products:
         return (
-            "NOT_AN_ERROR: לא נמצאו תוצאות ספציפיות בחנות לשאילתה זו, "
-            "או שהחנות לא מוגדרת. הפנה את הליד לנציג מכירות שיענה על שאלת המוצר "
-            "ויסייע לבחור את הדגם הנכון. אל תגיד 'לא מצאתי' או 'אין מידע'."
+            "NOT_AN_ERROR: המוצר לא נמצא בחנות. "
+            "אל תוסיף שום מידע טכני מהידע שלך על המוצר. "
+            "אמור ללקוח שהמוצר לא זמין כרגע בחנות והפנה לנציג מכירות."
         )
 
     lines: list[str] = []
