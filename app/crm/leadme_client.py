@@ -622,11 +622,21 @@ def push_engagement_level(
     # 3 -> 2, 3 -> 1, 2 -> 1, None -> any: proceed.
     # Try v3 API first (clean, no cookies); fall back to legacy cookie path.
     from app.crm.leadme_v3 import push_level as _v3_push_level
+    from app.crm import leadme_queue
     settings = get_settings()
     if settings.leadme_api_key:
         slot = (lead.lead_metadata or {}).get("preferred_call_slot")
         tag = f"חלון · {slot}" if slot and level == 1 else None
         ok = _v3_push_level(lead.phone, level=level, tag=tag)
+        if not ok:
+            # v3 failed (most likely CTWA race: lead not in LeadMe yet).
+            # Enqueue for background retry, same as the cookie path does.
+            logger.info(
+                "[LeadMe] v3 push failed for {} level={} -- queueing for retry",
+                lead.phone, level,
+            )
+            leadme_queue.enqueue_engagement(lead, level=level, slot=slot, note=note)
+            ok = True  # queued successfully
     else:
         ok = push_lead(lead, note=note, level=level)
 

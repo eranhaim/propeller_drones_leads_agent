@@ -320,6 +320,53 @@ def _is_expired(md: dict, now: datetime) -> bool:
     return now - queued_at >= timedelta(minutes=MAX_LIFETIME_MINUTES)
 
 
+def _try_drain_via_v3(
+    sess: Session, lead: Lead, md: dict, pending: list, now: datetime
+) -> bool:
+    """Try to drain engagement items via the v3 REST API.
+
+    Returns True if we handled the queue (success OR permanent failure),
+    False if v3 also can't find the lead yet (caller should fall back to
+    cookie path or retry later).
+    """
+    from app.crm.leadme_v3 import get_lead_id, update_lead_status, add_lead_tag, LEVEL_STATUS_ID
+
+    phone = lead.phone or ""
+    lead_id = get_lead_id(phone)
+    if not lead_id:
+        # Still not in LeadMe -- leave for next tick.
+        return False
+
+    remaining: list[dict] = []
+    for item in pending:
+        kind = item.get("kind")
+        if kind != "engagement":
+            # Non-engagement items (ctwa_tag) need cookie path; keep them.
+            remaining.append(item)
+            continue
+        level = int(item.get("level") or 2)
+        slot = item.get("slot")
+        status_id = LEVEL_STATUS_ID.get(level)
+        ok_status = True
+        if status_id:
+            ok_status = update_lead_status(lead_id, status_id)
+        ok_tag = True
+        if slot:
+            tag = f"חלון · {slot}"
+            ok_tag = add_lead_tag(lead_id, tag)
+        if ok_status and ok_tag:
+            logger.info(
+                "[leadme-queue v3] DRAINED engagement lead {} phone={} "
+                "leadId={} level={} slot={!r}",
+                lead.id, phone, lead_id, level, slot,
+            )
+        else:
+            remaining.append(item)
+
+    _clear_pending(lead, remaining)
+    return True
+
+
 def _process_lead(sess: Session, lead: Lead, now: datetime) -> None:
     """Execute the pending items for a single lead, if any are due.
 
@@ -363,6 +410,13 @@ def _process_lead(sess: Session, lead: Lead, now: datetime) -> None:
         md["leadme_push_abandoned_items"] = pending
         lead.lead_metadata = md
         return
+
+    # If v3 API key is available, try draining via v3 first (no cookies needed).
+    from app.config import get_settings as _get_settings
+    if _get_settings().leadme_api_key:
+        _drained = _try_drain_via_v3(sess, lead, md, pending, now)
+        if _drained:
+            return
 
     client = _build_client()
     if client is None:
