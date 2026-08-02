@@ -85,7 +85,7 @@ from app.db.session import session_scope
 # real cases; anything longer is very likely a data problem (the lead
 # is in a campaign the bot doesn't have visibility into, or the phone
 # doesn't match). See :func:`retry_pending_pushes`.
-MAX_LIFETIME_MINUTES = 60
+MAX_LIFETIME_MINUTES = 180
 
 # Interval between retry attempts, in minutes. Linear -- no fancy
 # exponential backoff. LeadMe rate-limits us implicitly via CSRF/session
@@ -93,8 +93,8 @@ MAX_LIFETIME_MINUTES = 60
 RETRY_INTERVAL_MINUTES = 3
 
 # Cap on attempts (defense-in-depth alongside MAX_LIFETIME_MINUTES).
-# MAX_LIFETIME_MINUTES / RETRY_INTERVAL_MINUTES rounded up = 20.
-MAX_ATTEMPTS = 20
+# MAX_LIFETIME_MINUTES / RETRY_INTERVAL_MINUTES rounded up = 60.
+MAX_ATTEMPTS = 60
 
 
 # --- Queue mutations ----------------------------------------------------
