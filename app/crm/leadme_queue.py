@@ -340,28 +340,44 @@ def _try_drain_via_v3(
     remaining: list[dict] = []
     for item in pending:
         kind = item.get("kind")
-        if kind != "engagement":
-            # Non-engagement items (ctwa_tag) need cookie path; keep them.
-            remaining.append(item)
-            continue
-        level = int(item.get("level") or 2)
-        slot = item.get("slot")
-        status_id = LEVEL_STATUS_ID.get(level)
-        ok_status = True
-        if status_id:
-            ok_status = update_lead_status(lead_id, status_id)
-        ok_tag = True
-        if slot:
-            tag = f"חלון · {slot}"
-            ok_tag = add_lead_tag(lead_id, tag)
-        if ok_status and ok_tag:
-            logger.info(
-                "[leadme-queue v3] DRAINED engagement lead {} phone={} "
-                "leadId={} level={} slot={!r}",
-                lead.id, phone, lead_id, level, slot,
-            )
+        if kind == "engagement":
+            level = int(item.get("level") or 2)
+            slot = item.get("slot")
+            status_id = LEVEL_STATUS_ID.get(level)
+            ok_status = True
+            if status_id:
+                ok_status = update_lead_status(lead_id, status_id)
+            ok_tag = True
+            if slot and slot not in ("any", "none"):
+                tag = f"חלון · {slot}"
+                ok_tag = add_lead_tag(lead_id, tag)
+            if ok_status and ok_tag:
+                logger.info(
+                    "[leadme-queue v3] DRAINED engagement lead {} phone={} "
+                    "leadId={} level={} slot={!r}",
+                    lead.id, phone, lead_id, level, slot,
+                )
+            else:
+                remaining.append(item)
+        elif kind == "ctwa_tag":
+            # v3 supports add_lead_tag directly -- no need for cookie path.
+            campaign = (item.get("campaign") or "").strip()
+            if not campaign:
+                continue
+            ok = add_lead_tag(lead_id, f"מקור: {campaign}")
+            if ok:
+                logger.info(
+                    "[leadme-queue v3] DRAINED ctwa_tag lead {} phone={} "
+                    "leadId={} campaign={!r}",
+                    lead.id, phone, lead_id, campaign,
+                )
+            else:
+                remaining.append(item)
         else:
-            remaining.append(item)
+            logger.warning(
+                "[leadme-queue v3] unknown pending kind={!r} on lead {} "
+                "-- dropping item", kind, lead.id,
+            )
 
     _clear_pending(lead, remaining)
     return True
