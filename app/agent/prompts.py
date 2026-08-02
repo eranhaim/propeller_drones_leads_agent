@@ -622,7 +622,8 @@ send_video(video_id="course_webinar_full",
 def render_system_prompt(lead_state_description: str) -> str:
     from datetime import datetime
     from zoneinfo import ZoneInfo
-    _DAYS_HE = {0: "ראשון", 1: "שני", 2: "שלישי", 3: "רביעי", 4: "חמישי", 5: "שישי", 6: "שבת"}
+    # Python weekday(): 0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri, 5=Sat, 6=Sun
+    _DAYS_HE = {0: "שני", 1: "שלישי", 2: "רביעי", 3: "חמישי", 4: "שישי", 5: "שבת", 6: "ראשון"}
     now_il = datetime.now(ZoneInfo("Asia/Jerusalem"))
     day_he = _DAYS_HE[now_il.weekday()]
     is_weekend = now_il.weekday() in (4, 5)  # Friday=4, Saturday=5
