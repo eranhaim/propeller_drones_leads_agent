@@ -448,6 +448,12 @@ def mark_not_relevant() -> str:
     """
     ctx = current_context()
     repository.reset_lead_session(ctx.session, ctx.lead)
+    # Persist the not_relevant flag AFTER the reset so it survives the wipe.
+    # The follow-up scheduler reads this to skip nudging opted-out leads.
+    md = dict(ctx.lead.lead_metadata or {})
+    md["not_relevant"] = True
+    ctx.lead.lead_metadata = md
+    ctx.session.flush()
     logger.info("[mark_not_relevant] session reset for lead {}", ctx.lead.id)
     return "השיחה אופסה. שלח ללקוח הודעת סיום קצרה וידידותית בלבד."
 

@@ -295,6 +295,8 @@ def _pick_leads_to_nudge(session, now: datetime) -> list[Lead]:
             # window -- even if funnel_stage somehow didn't advance to
             # handed_off. If they booked, they're the salesman's problem now.
             continue
+        if md.get("not_relevant"):
+            continue
         nudges_sent = int(md.get("nudge_count", 0) or 0)
         if nudges_sent >= max_nudges:
             continue

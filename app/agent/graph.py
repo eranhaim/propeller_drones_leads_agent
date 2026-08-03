@@ -231,6 +231,12 @@ def handle_message(
         # transaction commits so a slow CRM call can't roll back the
         # user's message on failure.
         md_before = dict(lead.lead_metadata or {})
+        # If the lead previously said "not relevant" but came back, clear the
+        # flag so they can receive nudges again in a future silence.
+        if md_before.get("not_relevant"):
+            md_before.pop("not_relevant")
+            lead.lead_metadata = md_before
+            session.flush()
         already_level = md_before.get("leadme_last_level")
         # count existing USER messages after the current session start:
         reset_str = md_before.get("session_reset_at")
