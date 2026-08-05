@@ -406,16 +406,23 @@ def _enforce_booking_promise(session, lead: Lead, reply: str) -> None:
         return
 
     md = lead.lead_metadata or {}
-    slot = md.get("preferred_call_slot") or "any"
+    slot = md.get("preferred_call_slot")
 
     logger.warning(
         "[booking-safety-net] Reply for lead {} promises a call but stage is "
-        "{!r}. Auto-invoking mark_ready_for_call (slot={}).",
-        lead.id, lead.funnel_stage.value, slot,
+        "{!r}. slot={}.",
+        lead.id, lead.funnel_stage.value, slot or "not captured yet",
     )
 
-    if not md.get("preferred_call_slot"):
-        repository.update_lead_metadata(session, lead, preferred_call_slot="any")
+    # If no slot yet -- don't push to LeadMe with "any". The LLM will call
+    # schedule_call() once the lead gives a real slot. Just log and bail.
+    if not slot:
+        logger.warning(
+            "[booking-safety-net] No slot captured for lead {} -- skipping "
+            "auto-push. schedule_call() will fire once lead gives a slot.",
+            lead.id,
+        )
+        return
 
     try:
         ok = mark_ready_for_call(
