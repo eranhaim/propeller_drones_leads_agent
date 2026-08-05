@@ -71,7 +71,12 @@ def get_lead_id(phone: str) -> Optional[int]:
 
 
 def update_lead_status(lead_id: int, status_id: int) -> bool:
-    """Update lead status by leadId. Returns True on success."""
+    """Update lead status by leadId. Returns True on success.
+
+    After updating, verifies the status actually landed by calling
+    getLeadStatus. If the status doesn't match, logs an error and
+    returns False so the caller can retry.
+    """
     try:
         with httpx.Client(timeout=8.0) as client:
             resp = client.post(
@@ -80,12 +85,34 @@ def update_lead_status(lead_id: int, status_id: int) -> bool:
                 json={"leadId": lead_id, "status": status_id},
             )
         data = resp.json()
-        if data.get("result"):
-            logger.info("[leadme_v3] status updated: leadId={} status={}", lead_id, status_id)
-            return True
-        logger.error("[leadme_v3] updateLeadStatus failed: leadId={} status={} msg={}",
-                     lead_id, status_id, data.get("message"))
-        return False
+        if not data.get("result"):
+            logger.error("[leadme_v3] updateLeadStatus failed: leadId={} status={} msg={}",
+                         lead_id, status_id, data.get("message"))
+            return False
+        # Verify the status actually landed.
+        try:
+            with httpx.Client(timeout=8.0) as client:
+                req = client.build_request(
+                    "GET",
+                    f"{_BASE}/getLeadStatus",
+                    headers=_headers(),
+                    json={"leadId": lead_id},
+                )
+                vresp = client.send(req)
+            vdata = vresp.json()
+            actual = vdata.get("status")
+            if actual is not None and actual != status_id:
+                logger.error(
+                    "[leadme_v3] status MISMATCH after update: leadId={} "
+                    "expected={} got={} -- will retry",
+                    lead_id, status_id, actual,
+                )
+                return False
+        except Exception:
+            # Verification failed -- log but don't block (the update returned true).
+            logger.warning("[leadme_v3] could not verify status for leadId={}", lead_id)
+        logger.info("[leadme_v3] status updated and verified: leadId={} status={}", lead_id, status_id)
+        return True
     except Exception:
         logger.exception("[leadme_v3] updateLeadStatus raised: leadId={}", lead_id)
         return False
