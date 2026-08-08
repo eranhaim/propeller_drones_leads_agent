@@ -738,16 +738,23 @@ def run_in_background_thread() -> None:
     # couldn't resolve their phone on the first try (CTWA race). This
     # is what turns "leads stuck at חדש forever" into "leads updated
     # within ~5 minutes of Facebook's supplier sync landing".
-    from app.crm.leadme_queue import retry_pending_pushes
-    scheduler.add_job(
-        retry_pending_pushes,
-        trigger="interval",
-        minutes=settings.leadme_queue_interval_minutes,
-        id="leadme_queue_drain",
-        max_instances=1,
-        coalesce=True,
-        next_run_time=datetime.now(ISRAEL_TZ) + timedelta(seconds=30),
-    )
+    try:
+        from app.crm.leadme_queue import retry_pending_pushes
+        scheduler.add_job(
+            retry_pending_pushes,
+            trigger="interval",
+            minutes=settings.leadme_queue_interval_minutes,
+            id="leadme_queue_drain",
+            max_instances=1,
+            coalesce=True,
+            next_run_time=datetime.now(ISRAEL_TZ) + timedelta(seconds=30),
+        )
+        logger.info(
+            "[followup] leadme_queue_drain job registered (every {}min)",
+            settings.leadme_queue_interval_minutes,
+        )
+    except Exception:
+        logger.exception("[followup] FAILED to register leadme_queue_drain job")
     # Session-health probe. Fires every 30 min, forces a fresh check
     # (bypasses the 30s admin-UI cache), and logs an ERROR whenever
     # the session isn't healthy. Keeps a tripwire in the docker logs
