@@ -628,7 +628,7 @@ def retry_pending_pushes() -> None:
             if pending:
                 due.append(lead)
         if not due:
-            logger.debug("[leadme-queue] no pending items to drain")
+            logger.info("[leadme-queue] tick: no pending items")
             return
         logger.info("[leadme-queue] tick: draining {} lead(s)", len(due))
         for lead in due:
