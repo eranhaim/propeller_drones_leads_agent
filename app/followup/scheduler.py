@@ -705,35 +705,13 @@ def run_in_background_thread() -> None:
     """Start APScheduler in a daemon thread. Cheap: one Python thread,
     no new container."""
     settings = get_settings()
-    if not settings.followup_enabled:
-        logger.info("[followup] disabled via FOLLOWUP_ENABLED=false")
-        return
 
     from apscheduler.schedulers.background import BackgroundScheduler
 
     scheduler = BackgroundScheduler(timezone=ISRAEL_TZ)
-    scheduler.add_job(
-        run_once,
-        trigger="interval",
-        minutes=settings.followup_interval_minutes,
-        id="followup_tick",
-        max_instances=1,
-        coalesce=True,
-        next_run_time=datetime.now(ISRAEL_TZ) + timedelta(minutes=1),
-    )
-    # Canary: watch LeadMe campaign 12277 ("הוסרו מ-Whatsapp") for any
-    # unexpected growth. If the bot ever leaks a lead into it again, this
-    # tick will log a loud ERROR that shows up in monitoring so we catch
-    # a regression the same day instead of via a customer complaint.
-    scheduler.add_job(
-        _campaign_leak_canary,
-        trigger="interval",
-        minutes=max(15, settings.followup_interval_minutes),
-        id="leadme_leak_canary",
-        max_instances=1,
-        coalesce=True,
-        next_run_time=datetime.now(ISRAEL_TZ) + timedelta(minutes=2),
-    )
+
+    # --- Always-on jobs (run regardless of FOLLOWUP_ENABLED) --------
+
     # LeadMe push queue drainer: retries pending status/tag pushes that
     # couldn't resolve their phone on the first try (CTWA race). This
     # is what turns "leads stuck at חדש forever" into "leads updated
@@ -750,11 +728,39 @@ def run_in_background_thread() -> None:
             next_run_time=datetime.now(ISRAEL_TZ) + timedelta(seconds=30),
         )
         logger.info(
-            "[followup] leadme_queue_drain job registered (every {}min)",
+            "[scheduler] leadme_queue_drain job registered (every {}min)",
             settings.leadme_queue_interval_minutes,
         )
     except Exception:
-        logger.exception("[followup] FAILED to register leadme_queue_drain job")
+        logger.exception("[scheduler] FAILED to register leadme_queue_drain job")
+
+    # --- Followup-only jobs (skipped when FOLLOWUP_ENABLED=false) ---
+
+    if not settings.followup_enabled:
+        logger.info("[followup] disabled via FOLLOWUP_ENABLED=false (queue drain still active)")
+    else:
+        scheduler.add_job(
+            run_once,
+            trigger="interval",
+            minutes=settings.followup_interval_minutes,
+            id="followup_tick",
+            max_instances=1,
+            coalesce=True,
+            next_run_time=datetime.now(ISRAEL_TZ) + timedelta(minutes=1),
+        )
+        # Canary: watch LeadMe campaign 12277 ("הוסרו מ-Whatsapp") for any
+        # unexpected growth. If the bot ever leaks a lead into it again, this
+        # tick will log a loud ERROR that shows up in monitoring so we catch
+        # a regression the same day instead of via a customer complaint.
+        scheduler.add_job(
+            _campaign_leak_canary,
+            trigger="interval",
+            minutes=max(15, settings.followup_interval_minutes),
+            id="leadme_leak_canary",
+            max_instances=1,
+            coalesce=True,
+            next_run_time=datetime.now(ISRAEL_TZ) + timedelta(minutes=2),
+        )
     # Session-health probe. Fires every 30 min, forces a fresh check
     # (bypasses the 30s admin-UI cache), and logs an ERROR whenever
     # the session isn't healthy. Keeps a tripwire in the docker logs
@@ -794,17 +800,9 @@ def run_in_background_thread() -> None:
     def _start() -> None:
         try:
             scheduler.start()
-            logger.info(
-                "[followup] scheduler started (every {}min, first={}h, "
-                "second={}h, max={} nudges, active {:02d}:00-{:02d}:00 Asia/Jerusalem)",
-                settings.followup_interval_minutes,
-                settings.followup_first_hours,
-                settings.followup_second_hours,
-                settings.followup_max_nudges,
-                settings.followup_quiet_start_hour,
-                settings.followup_quiet_end_hour,
-            )
+            job_ids = [j.id for j in scheduler.get_jobs()]
+            logger.info("[scheduler] started with jobs: {}", job_ids)
         except Exception:
-            logger.exception("[followup] scheduler failed to start")
+            logger.exception("[scheduler] scheduler failed to start")
 
     Thread(target=_start, daemon=True, name="followup-scheduler").start()
