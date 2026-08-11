@@ -209,7 +209,7 @@ def handle_message(
     # If the agent invocation crashes below, we still have a durable record
     # of the user's message in the DB. Losing the message means the sales
     # team has no idea the lead reached out.
-    push_level_2 = False
+    push_level: Optional[int] = None  # 2 or 3, decided below
     session_was_reset = False
     with session_scope() as session:
         lead = repository.get_or_create_lead(session, phone=phone, name=sender_name)
@@ -225,11 +225,6 @@ def handle_message(
             repository.reset_lead_session(session, lead)
             session_was_reset = True
 
-        # If this is the lead's very first inbound reply and we haven't
-        # tagged them as booked yet, they qualify for engagement Level 2
-        # (replied to the bot). We do the actual LeadMe push AFTER the
-        # transaction commits so a slow CRM call can't roll back the
-        # user's message on failure.
         md_before = dict(lead.lead_metadata or {})
         # If the lead previously said "not relevant" but came back, clear the
         # flag so they can receive nudges again in a future silence.
@@ -252,16 +247,16 @@ def handle_message(
             if m.role == MessageRole.user
             and (reset_dt is None or m.created_at > reset_dt)
         )
-        # Trigger Level 2 (replied) on first user message unless we already
-        # have a higher-engagement state (Level 1 = booked). NOTE: Level 3
-        # (silent) SHOULD be overridden -- a lead who replies is no longer
-        # silent. push_engagement_level enforces the upgrade rules.
-        if (
-            prior_user_msgs == 0
-            and lead.funnel_stage != FunnelStage.handed_off
-            and already_level != 1
-        ):
-            push_level_2 = True
+        # Classification levels:
+        #   Level 3 = lead just arrived (first message, e.g. CTWA auto-text)
+        #   Level 2 = lead actually replied to the bot (second message onward)
+        #   Level 1 = lead booked a call (handled by schedule_call tool)
+        # push_engagement_level enforces upgrade-only rules.
+        if lead.funnel_stage != FunnelStage.handed_off and already_level != 1:
+            if prior_user_msgs == 0:
+                push_level = 3  # first contact — not yet a real reply
+            elif prior_user_msgs == 1:
+                push_level = 2  # second message — lead is actually engaging
 
         repository.add_message(session, lead, MessageRole.user, text)
         lead_id = lead.id
@@ -294,17 +289,20 @@ def handle_message(
             logger.exception("[session-reset] re-opener flow failed for {}", phone)
         return ""
 
-    # Fire-and-forget level-2 push. Uses its own transaction so a CRM
-    # failure never blocks the user-facing reply.
-    if push_level_2:
+    # Fire-and-forget engagement level push. Uses its own transaction so
+    # a CRM failure never blocks the user-facing reply.
+    if push_level is not None:
         try:
-            from app.crm.client import mark_engaged_no_book
-            with session_scope() as s2:
-                l2 = s2.get(Lead, lead_id)
-                if l2 is not None:
-                    mark_engaged_no_book(l2, note="first user reply")
+            from app.crm.client import mark_engaged_no_book, mark_no_reply
+            with session_scope() as s_lvl:
+                l_lvl = s_lvl.get(Lead, lead_id)
+                if l_lvl is not None:
+                    if push_level == 3:
+                        mark_no_reply(l_lvl, note="first contact, awaiting reply")
+                    elif push_level == 2:
+                        mark_engaged_no_book(l_lvl, note="lead replied to bot")
         except Exception:
-            logger.exception("[level-2] push failed for lead {}", lead_id)
+            logger.exception("[level-push] level={} failed for lead {}", push_level, lead_id)
     # ---- Transaction 2: run the agent and persist the reply. ---------------
     with session_scope() as session:
         lead = session.get(Lead, lead_id)
