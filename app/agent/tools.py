@@ -38,6 +38,11 @@ def search_knowledge(query: str, topic: Optional[str] = None) -> str:
     - ``course_4_professions`` -- specific to the "4 professions" campaign.
       Use when lead asks "מה 4 המקצועות" / "אילו מקצועות בקורס" so we get
       the correct dedicated answer instead of a generic industry list.
+    - ``course_syllabus`` -- detailed syllabus info for all courses: what they
+      teach, duration, prerequisites, practical vs theory breakdown, who it's
+      for, what you learn day-by-day. Use when the lead asks specific questions
+      about course content, structure, schedule, or syllabus (e.g. "מה לומדים?",
+      "כמה זמן הקורס?", "מה כולל הקורס?", "יש חלק מעשי?", "למי זה מתאים?").
     - ``courses`` -- general academy overview.
     - ``service_flight`` / ``service_washing`` -- commercial services offered.
     - ``shop`` -- e-commerce store (drone models, pricing policy, DJI/Enterprise).
