@@ -337,11 +337,27 @@ def _try_drain_via_v3(
         # Still not in LeadMe -- leave for next tick.
         return False
 
+    # Re-read metadata to get the latest leadme_last_level -- it may have
+    # been updated by a successful direct push while this item sat in queue.
+    current_md = dict(lead.lead_metadata or {})
+    current_level = current_md.get("leadme_last_level")
+    current_level_int = int(current_level) if current_level is not None else None
+
     remaining: list[dict] = []
     for item in pending:
         kind = item.get("kind")
         if kind == "engagement":
             level = int(item.get("level") or 2)
+            # Guard: don't downgrade. If a higher-engagement level was
+            # already pushed successfully (directly, not via queue), skip
+            # this stale queue item instead of overwriting it in LeadMe.
+            if current_level_int is not None and current_level_int < level:
+                logger.info(
+                    "[leadme-queue v3] SKIPPING stale level={} for lead {} "
+                    "(already at level={})",
+                    level, lead.id, current_level_int,
+                )
+                continue
             slot = item.get("slot")
             status_id = LEVEL_STATUS_ID.get(level)
             ok_status = True
@@ -352,6 +368,11 @@ def _try_drain_via_v3(
                 tag = f"חלון · {slot}"
                 ok_tag = add_lead_tag(lead_id, tag)
             if ok_status and ok_tag:
+                # Write leadme_last_level now that the push actually landed.
+                current_md = dict(lead.lead_metadata or {})
+                current_md["leadme_last_level"] = int(level)
+                lead.lead_metadata = current_md
+                current_level_int = level
                 logger.info(
                     "[leadme-queue v3] DRAINED engagement lead {} phone={} "
                     "leadId={} level={} slot={!r}",

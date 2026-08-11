@@ -84,8 +84,12 @@ _LEADME_KEYS = frozenset({
     "leadme_campaign_id",
     "leadme_lead_id",
     "leadme_raw_comment",
-    "leadme_last_level",
     "opener_campaign_id",
+    # NOTE: leadme_last_level is intentionally NOT preserved across session
+    # resets. It represents the current engagement classification, not a
+    # permanent identifier. Keeping it blocks the opener's Level 3 push
+    # (downgrade guard refuses 2->3) so returning leads never get
+    # reclassified.
 })
 
 

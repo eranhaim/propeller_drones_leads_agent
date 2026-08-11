@@ -419,9 +419,11 @@ def cancel_call(reason: Optional[str] = None) -> str:
 
     # Reset local state either way -- the lead-facing reality is more
     # important than the CRM sync (we can retry the CRM manually).
-    repository.update_lead_metadata(
-        ctx.session, ctx.lead, preferred_call_slot=None,
-    )
+    # Must pop the key directly -- update_lead_metadata filters None values.
+    md = dict(ctx.lead.lead_metadata or {})
+    md.pop("preferred_call_slot", None)
+    ctx.lead.lead_metadata = md
+    ctx.session.flush()
     repository.update_funnel_stage(ctx.session, ctx.lead, FunnelStage.warm)
 
     return (

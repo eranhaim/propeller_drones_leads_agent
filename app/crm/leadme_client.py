@@ -628,22 +628,28 @@ def push_engagement_level(
         slot = (lead.lead_metadata or {}).get("preferred_call_slot")
         tag = f"חלון · {slot}" if slot and level == 1 else None
         ok = _v3_push_level(lead.phone, level=level, tag=tag)
-        if not ok:
+        if ok:
+            # Push actually landed in LeadMe -- record it.
+            md["leadme_last_level"] = int(level)
+            lead.lead_metadata = md
+        else:
             # v3 failed (most likely CTWA race: lead not in LeadMe yet).
-            # Enqueue for background retry, same as the cookie path does.
+            # Enqueue for background retry. Do NOT write leadme_last_level
+            # here -- the queue drain writes it when the push actually
+            # lands. Writing it prematurely causes the downgrade guard to
+            # block future pushes for a level that never reached LeadMe.
             logger.info(
                 "[LeadMe] v3 push failed for {} level={} -- queueing for retry",
                 lead.phone, level,
             )
             leadme_queue.enqueue_engagement(lead, level=level, slot=slot, note=note)
-            ok = True  # queued successfully
     else:
         ok = push_lead(lead, note=note, level=level)
+        if ok:
+            md["leadme_last_level"] = int(level)
+            lead.lead_metadata = md
 
-    if ok:
-        md["leadme_last_level"] = int(level)
-        lead.lead_metadata = md
-    return ok
+    return True  # queued or pushed -- caller should not retry
 
 
 def push_lead_cancellation(lead: Lead, reason: Optional[str] = None) -> bool:
@@ -691,6 +697,12 @@ def push_lead_cancellation(lead: Lead, reason: Optional[str] = None) -> bool:
             )
             return True
         ok_status = _admin_change_status(client, leadme_id, "1")
+        if ok_status:
+            # Reset leadme_last_level so push_engagement_level's
+            # downgrade guard won't block the next classification.
+            md = dict(lead.lead_metadata or {})
+            md.pop("leadme_last_level", None)
+            lead.lead_metadata = md
         logger.info(
             "[LeadMe cancel] leadme_id={} phone={} reason={!r} status_ok={}",
             leadme_id, lead.phone, reason, ok_status,
