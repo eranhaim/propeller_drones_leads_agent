@@ -293,12 +293,18 @@ def handle_message(
     # a CRM failure never blocks the user-facing reply.
     if push_level is not None:
         try:
-            from app.crm.client import mark_engaged_no_book, mark_no_reply
+            from app.crm.client import mark_ready_for_call, mark_engaged_no_book, mark_no_reply
             with session_scope() as s_lvl:
                 l_lvl = s_lvl.get(Lead, lead_id)
                 if l_lvl is not None:
+                    # Check if LeadMe tags mark this lead as sales-ready
+                    # (e.g. "שיחה נכנסת", "אתר הבית", "עמוד נחיתה").
                     if push_level == 3:
-                        mark_no_reply(l_lvl, note="first contact, awaiting reply")
+                        from app.crm.leadme_v3 import check_auto_level1
+                        if check_auto_level1(l_lvl.phone):
+                            mark_ready_for_call(l_lvl, note="auto-L1: sales-ready tag")
+                        else:
+                            mark_no_reply(l_lvl, note="first contact, awaiting reply")
                     elif push_level == 2:
                         mark_engaged_no_book(l_lvl, note="lead replied to bot")
         except Exception:

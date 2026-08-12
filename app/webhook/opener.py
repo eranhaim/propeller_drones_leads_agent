@@ -134,17 +134,22 @@ def handle_new_lead(
             logger.info("[opener] sent to {} (campaign={}, topic={!r})",
                         phone, campaign_id, topic)
 
-        # Push Level 3 immediately after opener -- lead hasn't replied yet.
-        # graph.py will upgrade to Level 2 on first reply, tools.py to Level 1
-        # on booking. We do this outside the session_scope above so a CRM
-        # failure never blocks the opener flow.
+        # Classify the lead. If LeadMe tags indicate the lead is already
+        # sales-ready (e.g. "שיחה נכנסת", "אתר הבית"), push Level 1
+        # immediately. Otherwise push Level 3 (awaiting reply).
+        # graph.py will upgrade to Level 2 on reply, tools.py to Level 1
+        # on booking.
         try:
+            from app.crm.leadme_v3 import check_auto_level1
             from app.crm.leadme_client import push_engagement_level
             with session_scope() as s3:
                 l3 = s3.query(Lead).filter_by(phone=phone).first()
                 if l3 is not None:
-                    push_engagement_level(l3, level=3, note="opener sent, awaiting reply")
+                    if check_auto_level1(phone):
+                        push_engagement_level(l3, level=1, note="auto-L1: sales-ready tag")
+                    else:
+                        push_engagement_level(l3, level=3, note="opener sent, awaiting reply")
         except Exception:
-            logger.exception("[opener] level-3 push failed for {}", phone)
+            logger.exception("[opener] level push failed for {}", phone)
     except Exception:
         logger.exception("[opener] unexpected error handling {}", phone)

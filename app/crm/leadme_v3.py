@@ -112,6 +112,54 @@ def add_lead_tag(lead_id: int, tag: str) -> bool:
         return False
 
 
+def get_lead_tags(lead_id: int) -> list[str]:
+    """Return a list of tag strings for the given leadId."""
+    try:
+        with httpx.Client(timeout=8.0) as client:
+            req = client.build_request(
+                "GET",
+                f"{_BASE}/getLeadTags",
+                headers=_headers(),
+                json={"leadId": lead_id},
+            )
+            resp = client.send(req)
+        data = resp.json()
+        if data.get("result"):
+            return [t["tag"] for t in (data.get("tags") or []) if "tag" in t]
+        return []
+    except Exception:
+        logger.exception("[leadme_v3] getLeadTags raised for leadId={}", lead_id)
+        return []
+
+
+# Tags that indicate the lead is already sales-ready and should be
+# classified as Level 1 immediately (no need to wait for bot booking).
+AUTO_LEVEL1_TAGS = frozenset({
+    "שיחה נכנסת",
+    "אתר הבית",
+    "עמוד נחיתה",
+})
+
+
+def check_auto_level1(phone: str) -> bool:
+    """Check if a lead has tags that make it auto-Level-1.
+
+    Returns True if the lead has any of the AUTO_LEVEL1_TAGS.
+    Returns False if the lead isn't found or has no matching tags.
+    """
+    if not get_settings().leadme_api_key:
+        return False
+    lead_id = get_lead_id(phone)
+    if not lead_id:
+        return False
+    tags = get_lead_tags(lead_id)
+    matching = AUTO_LEVEL1_TAGS & set(tags)
+    if matching:
+        logger.info("[leadme_v3] lead {} has auto-L1 tags: {}", phone, matching)
+        return True
+    return False
+
+
 def push_level(phone: str, level: int, tag: Optional[str] = None) -> bool:
     """Main entry point: look up lead by phone, set engagement level status,
     and optionally add a tag.
