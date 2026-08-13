@@ -252,10 +252,19 @@ def handle_message(
         #   Level 3 = lead just arrived (first message, e.g. CTWA auto-text)
         #   Level 2 = lead actually replied to the bot (second message onward)
         #   Level 1 = lead booked a call (handled by schedule_call tool)
+        #            OR lead has auto-L1 tags (שיחה נכנסת, אתר הבית, עמוד נחיתה)
         # push_engagement_level enforces upgrade-only rules.
         if lead.funnel_stage != FunnelStage.handed_off and already_level != 1:
             if prior_user_msgs == 0:
-                push_level = 3  # first contact — not yet a real reply
+                try:
+                    from app.crm.leadme_v3 import check_auto_level1
+                    if check_auto_level1(phone):
+                        push_level = 1
+                    else:
+                        push_level = 3
+                except Exception:
+                    logger.exception("[auto-L1] tag check failed for {}", phone)
+                    push_level = 3
             elif prior_user_msgs == 1:
                 push_level = 2  # second message — lead is actually engaging
 
