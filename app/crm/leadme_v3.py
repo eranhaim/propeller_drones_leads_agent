@@ -29,6 +29,30 @@ LEVEL_STATUS_ID = {
 }
 
 
+def _is_v3_enabled() -> bool:
+    """Kill switch. When LeadMe's backend returns PHP error HTML instead
+    of JSON, every v3 call throws JSONDecodeError; that alone isn't fatal
+    but at high concurrency (message handler + queue drainer) it starves
+    the httpx connection pool and hangs the polling thread. Setting
+    LEADME_V3_ENABLED=false makes every call a fast no-op so the bot
+    keeps chatting with customers while LeadMe fixes their side.
+
+    Logs at INFO level ONCE per process (module-level cache) to avoid
+    spamming when the switch is off.
+    """
+    enabled = get_settings().leadme_v3_enabled
+    if not enabled and not _WARNED_DISABLED["value"]:
+        logger.warning(
+            "[leadme_v3] LEADME_V3_ENABLED=false -- all v3 calls will "
+            "no-op. Turn back on when LeadMe API is healthy."
+        )
+        _WARNED_DISABLED["value"] = True
+    return enabled
+
+
+_WARNED_DISABLED: dict = {"value": False}
+
+
 def _headers() -> dict:
     return {
         "LeadMeCMS-API-Key": get_settings().leadme_api_key,
@@ -50,6 +74,8 @@ def _normalize_phone(phone: str) -> str:
 
 def get_lead_id(phone: str) -> Optional[int]:
     """Look up a lead by phone and return its leadId, or None if not found."""
+    if not _is_v3_enabled():
+        return None
     normalized = _normalize_phone(phone)
     try:
         with httpx.Client(timeout=8.0) as client:
@@ -72,6 +98,8 @@ def get_lead_id(phone: str) -> Optional[int]:
 
 def update_lead_status(lead_id: int, status_id: int) -> bool:
     """Update lead status by leadId. Returns True on success."""
+    if not _is_v3_enabled():
+        return False
     try:
         with httpx.Client(timeout=8.0) as client:
             resp = client.post(
@@ -93,6 +121,8 @@ def update_lead_status(lead_id: int, status_id: int) -> bool:
 
 def add_lead_tag(lead_id: int, tag: str) -> bool:
     """Add a tag to a lead. Returns True on success."""
+    if not _is_v3_enabled():
+        return False
     try:
         with httpx.Client(timeout=8.0) as client:
             resp = client.post(
@@ -114,6 +144,8 @@ def add_lead_tag(lead_id: int, tag: str) -> bool:
 
 def get_lead_tags(lead_id: int) -> list[str]:
     """Return a list of tag strings for the given leadId."""
+    if not _is_v3_enabled():
+        return []
     try:
         with httpx.Client(timeout=8.0) as client:
             req = client.build_request(
@@ -147,6 +179,8 @@ def check_auto_level1(phone: str) -> bool:
     Returns True if the lead has any of the AUTO_LEVEL1_TAGS.
     Returns False if the lead isn't found or has no matching tags.
     """
+    if not _is_v3_enabled():
+        return False
     if not get_settings().leadme_api_key:
         return False
     lead_id = get_lead_id(phone)
@@ -166,6 +200,8 @@ def push_level(phone: str, level: int, tag: Optional[str] = None) -> bool:
 
     level: 1 = booked call, 2 = replied, 3 = no reply
     """
+    if not _is_v3_enabled():
+        return False
     if not get_settings().leadme_api_key:
         logger.debug("[leadme_v3] LEADME_API_KEY not set, skipping push")
         return False
