@@ -142,6 +142,14 @@ class Settings(BaseSettings):
         3, alias="LEADME_QUEUE_INTERVAL_MINUTES",
     )
 
+    # EMERGENCY KILL SWITCH for the LeadMe v3 API. When LeadMe's backend
+    # is down (returns HTML PHP error pages instead of JSON), leaving this
+    # enabled causes hangs in the message handler and the queue drainer.
+    # Set to false to make every leadme_v3 call a no-op that returns
+    # gracefully. Turn back on when LeadMe support confirms the API is
+    # healthy again. Default TRUE (normal operation).
+    leadme_v3_enabled: bool = Field(True, alias="LEADME_V3_ENABLED")
+
     # LeadMe automatic cookie refresh -- see app/crm/leadme_login.py.
     # LeadMe has no admin API (as of 2026-07); we impersonate a
     # logged-in browser via saved cookies. The CSRF cookie
