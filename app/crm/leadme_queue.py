@@ -69,7 +69,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.db.models import Lead
@@ -653,33 +653,44 @@ def retry_pending_pushes() -> None:
 
     Called from :mod:`app.followup.scheduler`. Safe to call by hand
     from a shell -- it opens/closes its own DB session.
+
+    Each lead is processed in its own DB session so that:
+    1. A deadlock on one lead doesn't block others.
+    2. The function always returns (no infinite hang that starves
+       APScheduler's max_instances=1 slot).
     """
     now = datetime.now(timezone.utc)
+
+    # Phase 1: collect lead IDs that have pending items (read-only).
+    due_ids: list[int] = []
     with session_scope() as sess:
-        # Find every lead that has any pending items. We can't easily
-        # index on JSON key existence portably; a full scan of leads
-        # with non-null metadata is fine at our volume (~thousands of
-        # rows total).
         stmt = select(Lead).where(Lead.lead_metadata.isnot(None))
-        leads = list(sess.execute(stmt).scalars().all())
-        due: list[Lead] = []
-        for lead in leads:
+        for lead in sess.execute(stmt).scalars().all():
             md = lead.lead_metadata or {}
-            pending = md.get("leadme_push_pending")
-            if pending:
-                due.append(lead)
-        if not due:
-            logger.info("[leadme-queue] tick: no pending items")
-            return
-        logger.info("[leadme-queue] tick: draining {} lead(s)", len(due))
-        for lead in due:
-            try:
+            if md.get("leadme_push_pending"):
+                due_ids.append(lead.id)
+
+    if not due_ids:
+        logger.info("[leadme-queue] tick: no pending items")
+        return
+    logger.info("[leadme-queue] tick: draining {} lead(s)", len(due_ids))
+
+    # Phase 2: process each lead in its own session with a lock timeout.
+    for lead_id in due_ids:
+        try:
+            with session_scope() as sess:
+                # Set a 10-second lock timeout so we don't deadlock with
+                # handle_message's session holding the same lead row.
+                sess.execute(text("SET LOCAL lock_timeout = '10s'"))
+                lead = sess.get(Lead, lead_id)
+                if lead is None:
+                    continue
                 _process_lead(sess, lead, now)
-            except Exception:  # noqa: BLE001
-                logger.exception(
-                    "[leadme-queue] _process_lead raised for lead {}",
-                    lead.id,
-                )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "[leadme-queue] _process_lead raised for lead {}",
+                lead_id,
+            )
 
 
 # --- Public introspection (for admin UI) --------------------------------
