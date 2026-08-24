@@ -448,7 +448,10 @@ def _process_lead(sess: Session, lead: Lead, now: datetime) -> None:
         lead.lead_metadata = md
         return
 
-    # If v3 API key is available, try draining via v3 first (no cookies needed).
+    # If v3 API key is available, try draining via v3 (no cookies needed).
+    # When v3 is configured we NEVER fall through to the cookie-based admin
+    # path — that path can hang for minutes on a dead LeadMe site, blocking
+    # APScheduler's single-instance slot and starving the whole bot.
     from app.config import get_settings as _get_settings
     if _get_settings().leadme_api_key:
         try:
@@ -462,8 +465,15 @@ def _process_lead(sess: Session, lead: Lead, now: datetime) -> None:
             return
         if _drained:
             return
-        # v3 couldn't find the lead yet — fall through to cookie path only
-        # if v3 didn't error out (i.e. API is healthy but lead isn't synced).
+        # v3 couldn't drain (lead not found yet, or API unhealthy).
+        # Do NOT fall through to cookie path — just retry next tick.
+        logger.info(
+            "[leadme-queue] v3 drain returned False for lead {} — "
+            "will retry next tick (skipping cookie path)",
+            lead.id,
+        )
+        _mark_attempt(lead)
+        return
 
     client = _build_client()
     if client is None:
