@@ -142,6 +142,13 @@ class Settings(BaseSettings):
         3, alias="LEADME_QUEUE_INTERVAL_MINUTES",
     )
 
+    # Master switch for the LeadMe push retry queue. Set to false to
+    # skip job registration entirely when LeadMe is down and we want
+    # zero background pressure on their broken API. The queue's own
+    # in-DB state is preserved -- flip the flag back to true and the
+    # drainer picks up where it left off.
+    leadme_queue_enabled: bool = Field(True, alias="LEADME_QUEUE_ENABLED")
+
     # EMERGENCY KILL SWITCH for the LeadMe v3 API. When LeadMe's backend
     # is down (returns HTML PHP error pages instead of JSON), leaving this
     # enabled causes hangs in the message handler and the queue drainer.
