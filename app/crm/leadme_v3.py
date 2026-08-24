@@ -13,7 +13,8 @@ Status IDs:
 
 from __future__ import annotations
 
-from typing import Optional
+import json as _json
+from typing import Any, Optional
 
 import httpx
 from loguru import logger
@@ -21,6 +22,31 @@ from loguru import logger
 from app.config import get_settings
 
 _BASE = "https://api.leadmecms.co.il/v3"
+
+
+def _parse_json_response(resp: httpx.Response) -> dict[str, Any]:
+    """Parse LeadMe's response body, tolerating PHP notice HTML prefixes.
+
+    LeadMe's production PHP config runs with ``display_errors=on``, so
+    non-fatal notices (e.g. "Trying to get property of non-object" from
+    ``runCampaignAutomation``) get prepended to the JSON response as an
+    HTML ``<div>`` block. HTTP is still 200 and the actual write DID
+    happen server-side, but ``resp.json()`` raises ``JSONDecodeError``.
+
+    We look for the first ``{"result"`` marker and parse from there.
+    Falls back to the normal parser (which will raise) if that marker
+    isn't found -- so genuinely broken responses still surface loudly.
+    """
+    text = resp.text
+    idx = text.find('{"result"')
+    if idx == -1:
+        return resp.json()  # will raise JSONDecodeError -- fine, no marker
+    if idx > 0:
+        logger.debug(
+            "[leadme_v3] stripped {} chars of PHP-notice HTML prefix from "
+            "response before JSON payload", idx,
+        )
+    return _json.loads(text[idx:])
 
 LEVEL_STATUS_ID = {
     1: 7326,  # קבע שיחה
@@ -86,7 +112,7 @@ def get_lead_id(phone: str) -> Optional[int]:
                 json={"phone": normalized},
             )
             resp = client.send(req)
-        data = resp.json()
+        data = _parse_json_response(resp)
         if data.get("result"):
             return data.get("leadId")
         logger.warning("[leadme_v3] getLeadStatus failed for {}: {}", normalized, data.get("message"))
@@ -107,7 +133,7 @@ def update_lead_status(lead_id: int, status_id: int) -> bool:
                 headers=_headers(),
                 json={"leadId": lead_id, "status": status_id},
             )
-        data = resp.json()
+        data = _parse_json_response(resp)
         if not data.get("result"):
             logger.error("[leadme_v3] updateLeadStatus failed: leadId={} status={} msg={}",
                          lead_id, status_id, data.get("message"))
@@ -130,7 +156,7 @@ def add_lead_tag(lead_id: int, tag: str) -> bool:
                 headers=_headers(),
                 json={"leadId": lead_id, "tag": tag},
             )
-        data = resp.json()
+        data = _parse_json_response(resp)
         if data.get("result"):
             logger.info("[leadme_v3] tag added: leadId={} tag={!r}", lead_id, tag)
             return True
@@ -155,7 +181,7 @@ def get_lead_tags(lead_id: int) -> list[str]:
                 json={"leadId": lead_id},
             )
             resp = client.send(req)
-        data = resp.json()
+        data = _parse_json_response(resp)
         if data.get("result"):
             return [t["tag"] for t in (data.get("tags") or []) if "tag" in t]
         return []
