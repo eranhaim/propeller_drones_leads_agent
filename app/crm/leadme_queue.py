@@ -451,9 +451,19 @@ def _process_lead(sess: Session, lead: Lead, now: datetime) -> None:
     # If v3 API key is available, try draining via v3 first (no cookies needed).
     from app.config import get_settings as _get_settings
     if _get_settings().leadme_api_key:
-        _drained = _try_drain_via_v3(sess, lead, md, pending, now)
+        try:
+            _drained = _try_drain_via_v3(sess, lead, md, pending, now)
+        except Exception:
+            logger.exception(
+                "[leadme-queue] v3 drain raised for lead {} — will retry next tick",
+                lead.id,
+            )
+            _mark_attempt(lead)
+            return
         if _drained:
             return
+        # v3 couldn't find the lead yet — fall through to cookie path only
+        # if v3 didn't error out (i.e. API is healthy but lead isn't synced).
 
     client = _build_client()
     if client is None:
