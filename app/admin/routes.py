@@ -692,9 +692,20 @@ def lead_conversation(lead_id: int, _: str = Depends(_require_admin)) -> str:
         f"{toggle_label} עבור {ls['phone']}?"
     ).replace("'", "\\'")
 
+    error_banner = ""
+    if _meta.get("last_error"):
+        _err_at = _meta.get("last_error_at", "")
+        _err_msg = _escape(_meta["last_error"])
+        error_banner = f"""
+        <div style="background:#7f1d1d;color:#fecaca;padding:12px 16px;border-radius:8px;margin-bottom:12px;font-size:14px;direction:ltr">
+          <strong>⚠ שגיאה אחרונה:</strong> {_err_msg}<br>
+          <span style="font-size:12px;opacity:0.8">{_escape(_err_at)}</span>
+        </div>"""
+
     body = f"""
     <div class="conv-wrap">
       <div class="chat">
+        {error_banner}
         {''.join(bubbles) or '<p style="color:#64748b">אין הודעות עדיין.</p>'}
       </div>
       <aside class="sidepanel">

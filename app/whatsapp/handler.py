@@ -6,12 +6,15 @@ message is fed to the LangChain agent, which then replies via GreenAPI.
 
 from __future__ import annotations
 
+import concurrent.futures
+import threading
+from datetime import datetime, timezone
 from typing import Optional
 
 from loguru import logger
 from whatsapp_chatbot_python import GreenAPIBot, Notification
 
-import threading
+_MESSAGE_TIMEOUT = 90  # seconds
 
 from app.agent.graph import handle_message
 from app.config import get_settings
@@ -249,6 +252,9 @@ def register_handlers(bot: GreenAPIBot) -> None:
             return
 
         phone = _phone_from_chat_id(chat_id)
+        if not phone.startswith("972"):
+            logger.info("Non-IL phone {} ignored", phone)
+            return
         if not _is_allowed(phone):
             logger.info("Blocked phone {} (not in ALLOWED_TEST_PHONES)", phone)
             return
@@ -292,18 +298,37 @@ def register_handlers(bot: GreenAPIBot) -> None:
         sender.send_typing()
 
         try:
-            reply = handle_message(
-                phone=phone,
-                text=text,
-                sender_name=sender_name,
-                send_video_fn=sender.send_video,
-            )
-        except Exception:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(
+                    handle_message,
+                    phone=phone,
+                    text=text,
+                    sender_name=sender_name,
+                    send_video_fn=sender.send_video,
+                )
+                reply = future.result(timeout=_MESSAGE_TIMEOUT)
+        except concurrent.futures.TimeoutError:
+            logger.error("handle_message timed out after {}s for {}", _MESSAGE_TIMEOUT, phone)
+            _save_lead_error(phone, f"Timeout: handle_message took >{_MESSAGE_TIMEOUT}s")
+            return
+        except Exception as exc:
             logger.exception("Failed to process message from {}", phone)
-            reply = (
-                "סליחה, יש לי כרגע תקלה. אנסה שוב תוך רגע - "
-                "או שאפשר להשאיר טלפון ויועץ יחזור אליך."
-            )
+            _save_lead_error(phone, f"{type(exc).__name__}: {exc}")
+            return
 
         if reply:
             sender.send_text(reply)
+
+
+def _save_lead_error(phone: str, error_msg: str) -> None:
+    """Save error details to lead metadata so it's visible in admin portal."""
+    try:
+        with session_scope() as s:
+            lead = repository.get_or_create_lead(s, phone=phone)
+            repository.update_lead_metadata(
+                s, lead,
+                last_error=error_msg,
+                last_error_at=datetime.now(timezone.utc).isoformat(),
+            )
+    except Exception:
+        logger.exception("Failed to save error metadata for {}", phone)
