@@ -43,3 +43,6 @@ data/leadme_cookies.json
 handover/
 docs//reference/
 
+
+# Names the production host and points at a private key
+deploy/deploy.env
