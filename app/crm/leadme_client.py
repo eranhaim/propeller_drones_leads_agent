@@ -620,6 +620,19 @@ def push_engagement_level(
         return True
 
     # 3 -> 2, 3 -> 1, 2 -> 1, None -> any: proceed.
+    # push_lead and cancel_lead honour test mode; this path did not, so the
+    # eval harness still called the v3 API with its synthetic 999... phones.
+    # Placed after the upgrade-only guards and still recording the level
+    # locally, so the harness observes exactly what production would record.
+    if get_settings().leadme_test_mode:
+        logger.info(
+            "[LeadMe TEST_MODE] recording level {} for {} without calling LeadMe",
+            level, lead.phone,
+        )
+        md["leadme_last_level"] = int(level)
+        lead.lead_metadata = md
+        return True
+
     # Try v3 API first (clean, no cookies); fall back to legacy cookie path.
     from app.crm.leadme_v3 import push_level as _v3_push_level
     from app.crm import leadme_queue
