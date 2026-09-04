@@ -101,7 +101,17 @@ def describe_state(lead: Lead) -> str:
     # Loud banner when a call is already booked, so the LLM can't miss it and
     # accidentally re-ask for a time slot.
     banner = ""
-    if lead.funnel_stage == FunnelStage.handed_off:
+    if lead.funnel_stage == FunnelStage.handed_off and slot == "any":
+        # Booked without a window (the lead agreed but never picked one).
+        # The rep can still use a preference, so one more ask is welcome --
+        # but the booking itself is done and must not be re-negotiated.
+        banner = (
+            "⚠️ *שיחה עם יועץ לימודים כבר תואמה* (בלי חלון שעות מוגדר). "
+            "אל תתאם מחדש. מותר לשאול פעם אחת איזה חלון מועדף עליו "
+            "(9-12 / 12-15 / 15-18) כדי לעדכן את היועץ - ואם הוא לא עונה, "
+            "המשך הלאה בלי ללחוץ.\n"
+        )
+    elif lead.funnel_stage == FunnelStage.handed_off:
         banner = (
             "⚠️ *שיחה עם יועץ לימודים כבר תואמה!* אל תבקש חלון שעות מחדש. "
             f"החלון שנקבע: {slot}. אם הליד שואל על השיחה - תזכיר לו שכבר "
