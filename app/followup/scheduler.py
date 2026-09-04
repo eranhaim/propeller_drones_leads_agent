@@ -40,6 +40,7 @@ from app.config import get_settings
 from app.db import repository
 from app.db.models import FunnelStage, Lead, Message, MessageRole
 from app.db.session import session_scope
+from app.names import first_name
 
 ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 
@@ -61,6 +62,10 @@ def _lead_already_booked(md: dict) -> bool:
 # Kept as canned Hebrew templates: safe, cheap, and predictable. If we
 # ever want LLM-generated nudges (referring to the last thing the lead
 # said), swap _render_nudge for a call to the agent.
+#
+# Nudge #2 deliberately asks a yes/no question instead of "9-12, 12-15 or
+# 15-18?". Asking for a time window is where warm leads go quiet: 317 of them
+# in two months. The window is asked only AFTER the call is booked.
 
 _NUDGE_TEMPLATES_KNOWN = {
     1: (
@@ -72,7 +77,7 @@ _NUDGE_TEMPLATES_KNOWN = {
     2: (
         "היי {name} 👋\n"
         "רק רוצה לבדוק, הפנייה אלינו עדיין רלוונטית?\n"
-        "אם כן, באיזה שעה עדיף לך שנחזור אליך? 9-12, 12-15, או 15-18?"
+        "אם כן - אבקש מיועץ לימודים לחזור אליך לשיחה קצרה. מתאים?"
     ),
 }
 
@@ -85,7 +90,7 @@ _NUDGE_TEMPLATES_ANON = {
     2: (
         "היי 👋\n"
         "רק רוצה לבדוק, הפנייה אלינו עדיין רלוונטית?\n"
-        "אם כן, באיזה שעה עדיף לך שנחזור אליך? 9-12, 12-15, או 15-18?"
+        "אם כן - אבקש מיועץ לימודים לחזור אליך לשיחה קצרה. מתאים?"
     ),
 }
 
@@ -118,22 +123,22 @@ _VIDEO_FOLLOWUP_ANON = (
 
 
 def _render_webinar_followup(name: Optional[str]) -> str:
-    first = ((name or "").strip().split(" ", 1)[0] or "").strip()
-    if first and not first.isdigit():
+    first = first_name(name)
+    if first:
         return _WEBINAR_FOLLOWUP_KNOWN.format(name=first)
     return _WEBINAR_FOLLOWUP_ANON
 
 
 def _render_video_followup(name: Optional[str]) -> str:
-    first = ((name or "").strip().split(" ", 1)[0] or "").strip()
-    if first and not first.isdigit():
+    first = first_name(name)
+    if first:
         return _VIDEO_FOLLOWUP_KNOWN.format(name=first)
     return _VIDEO_FOLLOWUP_ANON
 
 
 def _render_nudge(name: Optional[str], nudge_number: int) -> Optional[str]:
-    first = ((name or "").strip().split(" ", 1)[0] or "").strip()
-    if first and not first.isdigit():
+    first = first_name(name)
+    if first:
         tpl = _NUDGE_TEMPLATES_KNOWN.get(nudge_number)
         return tpl.format(name=first) if tpl else None
     tpl = _NUDGE_TEMPLATES_ANON.get(nudge_number)

@@ -25,6 +25,7 @@ from app.config import get_settings
 from app.db import repository
 from app.db.models import Lead, MessageRole
 from app.db.session import session_scope
+from app.names import first_name
 
 
 OPENER_TEMPLATE_KNOWN_NAME = (
@@ -82,8 +83,8 @@ def _pick_topic(campaign_id: Optional[str], metadata: Dict[str, Any]) -> str:
 
 
 def _render_opener(name: Optional[str], topic: str) -> str:
-    clean_name = (name or "").strip().split(" ", 1)[0]  # first word only
-    if clean_name and not clean_name.isdigit():
+    clean_name = first_name(name)
+    if clean_name:
         return OPENER_TEMPLATE_KNOWN_NAME.format(name=clean_name, topic=topic)
     return OPENER_TEMPLATE_ANON.format(topic=topic)
 
