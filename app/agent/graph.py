@@ -62,8 +62,61 @@ _FILLER_PATTERNS = [
 ]
 _FILLER_RE = re.compile("|".join(_FILLER_PATTERNS))
 
+# The same filler, as bare phrases, for the sentence-level pass below. Kept as
+# its own list rather than derived from _FILLER_PATTERNS: two short explicit
+# lists are easier to read and to extend than one list plus string surgery.
+_FILLER_SENTENCE_PATTERNS = [
+    r"אם\s+יש\s+לך\s+(?:עוד\s+)?שאלות",
+    r"אם\s+תרצ[הי]\s+לשמוע\s+עוד.*כאן",
+    r"אני\s+כאן\s+(?:בשבילך|לעזור|לרשותך|להסביר)",
+    r"אני\s+זמינ",
+    r"מוזמנ(?:ת)?\s+לפנות",
+    r"מקווה\s+שעזרתי",
+    r"אשמח\s+לעזור",
+    r"בשמחה\s+אענה",
+    r"תרגיש(?:י)?\s+חופשי",
+]
+_FILLER_SENTENCE_RE = re.compile("|".join(_FILLER_SENTENCE_PATTERNS))
+
+# Sentence boundary: end punctuation followed by whitespace. The capturing
+# group keeps the whitespace in the split result so the line can be rebuilt
+# unchanged when nothing is dropped.
+_SENTENCE_SPLIT_RE = re.compile(r"((?<=[.!?])\s+)")
+
 
 _HEBREW_CHAR_RE = re.compile(r"[\u0590-\u05FF]")
+
+
+# Refusal phrases a lead uses to end the conversation. Measured on two months
+# of production conversations: 45 leads said one of these and 21 of them were
+# nudged again afterwards, because ``not_relevant`` is only set when the LLM
+# remembers to call ``mark_not_relevant``. Detecting the refusal here makes
+# the follow-up scheduler skip them regardless of what the LLM did.
+#
+# Only applied to SHORT messages: "לא מעוניין בקורס אלא בשירות" is a redirect,
+# not a refusal. A false positive costs one skipped nudge and is cleared by
+# the lead's next message, so the bar is deliberately cheap.
+_REFUSAL_MAX_CHARS = 80
+_REFUSAL_PATTERNS = [
+    r"לא\s+מעוני",
+    r"לא\s+מעניין",
+    r"לא\s+רלוונטי",
+    r"לא\s+תודה",
+    r"תודה\s+אבל\s+לא",
+    r"לא\s+כרגע",
+    r"תפסיק|הפסיקו|תפסיקו",
+    r"תסיר|הסר\s+אותי|להסיר\s+אותי",
+    r"אל\s+תשלח",
+]
+_REFUSAL_RE = re.compile("|".join(_REFUSAL_PATTERNS))
+
+
+def _is_refusal(text: str) -> bool:
+    """Return True if the lead's message is a short, explicit 'stop' message."""
+    trimmed = (text or "").strip()
+    if not trimmed or len(trimmed) > _REFUSAL_MAX_CHARS:
+        return False
+    return bool(_REFUSAL_RE.search(trimmed))
 
 
 def _looks_like_english(reply: str) -> bool:
@@ -88,7 +141,7 @@ def _looks_like_english(reply: str) -> bool:
 
 
 def _strip_filler(reply: str) -> str:
-    """Drop trailing filler-line sign-offs the customer flagged as annoying."""
+    """Drop trailing filler sign-offs the customer flagged as annoying."""
     if not reply:
         return reply
     lines = reply.splitlines()
@@ -97,27 +150,57 @@ def _strip_filler(reply: str) -> str:
     # (unlikely) we'd rather keep it than lose real content.
     while lines and (not lines[-1].strip() or _FILLER_RE.match(lines[-1])):
         lines.pop()
+    if lines:
+        lines[-1] = _strip_trailing_filler_sentence(lines[-1])
+        while lines and not lines[-1].strip():
+            lines.pop()
     return "\n".join(lines).rstrip()
 
 
-# WhatsApp does NOT render markdown links. The LLM sometimes falls back
-# to markdown syntax anyway ('[label](url)' or '**url**') and the lead
-# sees the raw brackets/asterisks. Convert every markdown link to just
-# its URL and strip bold-asterisks around URLs.
+def _strip_trailing_filler_sentence(line: str) -> str:
+    """Drop filler appended to the END of an otherwise real sentence.
+
+    The line-level pass only catches filler that got its own line. In practice
+    the LLM writes it inline -- "המחיר תלוי במסלול. אם יש לך שאלות נוספות אני
+    כאן!" -- which is why 20% of production replies still ended with a
+    sign-off. Only the final sentence is examined, and only a whole sentence
+    is removed, so real content is never cut mid-thought.
+    """
+    # parts alternates [sentence, separator, sentence, ...], so dropping a
+    # sentence also drops the separator in front of it. The length guard keeps
+    # at least one real sentence.
+    parts = _SENTENCE_SPLIT_RE.split(line)
+    while len(parts) > 2 and _FILLER_SENTENCE_RE.search(parts[-1]):
+        parts.pop()
+        parts.pop()
+    return "".join(parts).rstrip()
+
+
+# WhatsApp does NOT render markdown. The LLM falls back to markdown syntax
+# anyway ('[label](url)', '**bold**', '## heading') and the lead sees the raw
+# brackets and asterisks. Links were fixed first; bold was not, and it kept
+# growing (2.7% of replies in July, 5.0% in August). WhatsApp's own bold is a
+# SINGLE asterisk, so '**text**' becomes '*text*' rather than being deleted.
 _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
 _BOLD_URL_RE = re.compile(r"\*\*(https?://\S+?)\*\*")
 _BOLD_EMAIL_RE = re.compile(r"\*\*([\w.+-]+@[\w.-]+\.[A-Za-z]{2,})\*\*")
+_BOLD_RE = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*", re.S)
+_HEADING_RE = re.compile(r"^\s*#{1,6}\s+", re.M)
 
 
-def _strip_markdown_links(reply: str) -> str:
-    """WhatsApp-safe: turn markdown-link and bold-URL syntax into plain URLs."""
+def _strip_markdown(reply: str) -> str:
+    """Rewrite markdown syntax WhatsApp does not render into plain text."""
     if not reply:
         return reply
     # [text](url) -> url (drop the label; label is usually the same as the
     # URL anyway, and WhatsApp will linkify the bare URL cleanly).
     reply = _MD_LINK_RE.sub(r"\2", reply)
+    # URLs and emails lose their asterisks entirely -- bolding them adds
+    # nothing and breaks WhatsApp's auto-linking.
     reply = _BOLD_URL_RE.sub(r"\1", reply)
     reply = _BOLD_EMAIL_RE.sub(r"\1", reply)
+    reply = _BOLD_RE.sub(r"*\1*", reply)
+    reply = _HEADING_RE.sub("", reply)
     return reply
 
 
@@ -166,12 +249,35 @@ def _history_as_messages(lead: Lead, session) -> List[BaseMessage]:
 
 
 def _should_reset_session(lead: Lead) -> bool:
-    """Return True if this lead's session has been idle for SESSION_RESET_DAYS."""
+    """Return True if this lead's session has been idle for SESSION_RESET_DAYS.
+
+    Idle is measured from the lead's OWN last message, not ``last_message_at``
+    -- that column is bumped by our nudges too, so a lead answering a nudge
+    used to be greeted with the first-contact opener as if we had never
+    spoken.
+    """
     from datetime import datetime, timezone, timedelta
-    if lead.last_message_at is None:
+
+    messages = lead.messages or []
+    last_user = max(
+        (m for m in messages if m.role == MessageRole.user),
+        key=lambda m: m.created_at, default=None,
+    )
+    if last_user is None:
+        # Opener only, no conversation yet -- there is nothing to reset.
         return False
+
+    last_assistant = max(
+        (m for m in messages if m.role == MessageRole.assistant),
+        key=lambda m: m.created_at, default=None,
+    )
+    if last_assistant is not None and (last_assistant.msg_metadata or {}).get("nudge"):
+        # They are answering our nudge -- keep the thread rather than
+        # greeting them as a stranger in reply to our own invitation.
+        return False
+
     cutoff = datetime.now(timezone.utc) - timedelta(days=SESSION_RESET_DAYS)
-    return lead.last_message_at < cutoff
+    return last_user.created_at < cutoff
 
 
 def _extract_reply(result: dict) -> str:
@@ -227,10 +333,16 @@ def handle_message(
             session_was_reset = True
 
         md_before = dict(lead.lead_metadata or {})
-        # If the lead previously said "not relevant" but came back, clear the
-        # flag so they can receive nudges again in a future silence.
-        if md_before.get("not_relevant"):
+        # A returning lead gets their nudges back -- unless this very message
+        # is the refusal, in which case the flag goes straight back on.
+        refused_now = _is_refusal(text)
+        if md_before.get("not_relevant") and not refused_now:
             md_before.pop("not_relevant")
+            lead.lead_metadata = md_before
+            session.flush()
+        elif refused_now and not md_before.get("not_relevant"):
+            logger.info("[not-relevant] lead {} refused: {!r}", lead.id, text[:60])
+            md_before["not_relevant"] = True
             lead.lead_metadata = md_before
             session.flush()
         already_level = md_before.get("leadme_last_level")
@@ -389,7 +501,7 @@ def handle_message(
                     )
 
         reply = _strip_filler(reply)
-        reply = _strip_markdown_links(reply)
+        reply = _strip_markdown(reply)
 
         _enforce_booking_promise(session, lead, reply)
 
@@ -422,15 +534,17 @@ def _enforce_booking_promise(session, lead: Lead, reply: str) -> None:
         lead.id, lead.funnel_stage.value, slot or "not captured yet",
     )
 
-    # If no slot yet -- don't push to LeadMe with "any". The LLM will call
-    # schedule_call() once the lead gives a real slot. Just log and bail.
+    # No slot captured -- book with "any" rather than bail. The reply already
+    # promised the lead a call; leaving them out of the CRM because we are
+    # missing a time window is exactly how warm leads get lost.
     if not slot:
+        slot = "any"
+        repository.update_lead_metadata(session, lead, preferred_call_slot=slot)
         logger.warning(
-            "[booking-safety-net] No slot captured for lead {} -- skipping "
-            "auto-push. schedule_call() will fire once lead gives a slot.",
+            "[booking-safety-net] No slot captured for lead {} -- pushing "
+            "with slot='any' to keep the promise.",
             lead.id,
         )
-        return
 
     try:
         ok = mark_ready_for_call(
@@ -562,14 +676,17 @@ def _sim_schedule_call(
     state = _sim_state_var.get()
     if preferred_call_slot:
         state["preferred_call_slot"] = preferred_call_slot
-    slot = state.get("preferred_call_slot") or "לא צוין"
-    if not state.get("preferred_call_slot"):
-        return (
-            "NOT_AN_ERROR: אין עדיין חלון שעות מועדף. "
-            "שאל את המשתמש: '9-12, 12-15, או 15-18?'"
-        )
+    booked_without_slot = not state.get("preferred_call_slot")
+    if booked_without_slot:
+        state["preferred_call_slot"] = "any"
+    slot = state["preferred_call_slot"]
     state["call_scheduled"] = True
     state["stage"] = "handed_off"
+    if booked_without_slot:
+        return (
+            "[סימולטור] שיחה הייתה מתואמת (חלון: any). כעת אמור ללקוח "
+            "שהיועץ ייצור איתו קשר, ושאל פעם אחת איזה חלון שעות מועדף עליו."
+        )
     return f"[סימולטור] שיחה הייתה מתואמת (חלון: {slot}). אין push ל-CRM בסימולטור."
 
 
@@ -644,7 +761,7 @@ def simulate_message(session_id: str, text: str) -> dict:
 
     reply = _extract_reply(result) or "..."
     reply = _strip_filler(reply)
-    reply = _strip_markdown_links(reply)
+    reply = _strip_markdown(reply)
 
     history.append(HumanMessage(content=text))
     history.append(AIMessage(content=reply))
