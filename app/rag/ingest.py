@@ -43,7 +43,7 @@ WEBSITE_PATHS: List[str] = [
 DEFAULT_CHUNK_SIZE = 1000
 DEFAULT_CHUNK_OVERLAP = 200
 
-KNOWLEDGE_DIR = Path("data/knowledge")
+KNOWLEDGE_DIR = Path("knowledge")
 
 # E-commerce store (WooCommerce-based -- exposes sitemap.xml). We seed with
 # the homepage and try to enrich with product URLs discovered via sitemap.
@@ -214,7 +214,13 @@ def _infer_topic_from_url(url: str) -> str:
 
 
 def load_local_documents(directory: Path = KNOWLEDGE_DIR) -> List[Document]:
-    """Load PDFs and text files from ``data/knowledge``."""
+    """Load PDFs and text files from ``knowledge/`` (recursively).
+
+    Topic is derived from the source path, so the sub-folder a file sits
+    in participates in the match (a file under ``faq/`` becomes
+    ``topic="faq"``). Folder names must not collide with the substrings
+    checked below.
+    """
     if not directory.exists():
         logger.info("Knowledge directory {} does not exist, skipping", directory)
         return []
@@ -251,8 +257,12 @@ def load_local_documents(directory: Path = KNOWLEDGE_DIR) -> List[Document]:
             logger.warning("Text loading failed for pattern {}: {}", pattern, exc)
 
     for doc in pdf_docs + text_docs:
-        doc.metadata["origin"] = "document"
         src = str(doc.metadata.get("source", "")).lower()
+        # README files document the folder for maintainers; they are not
+        # knowledge and must never surface in an answer to a lead.
+        if Path(src).name.startswith("readme"):
+            continue
+        doc.metadata["origin"] = "document"
         if "academy_products" in src:
             doc.metadata["topic"] = "course_details"
         elif "ecommerce_store" in src or "store" in src:

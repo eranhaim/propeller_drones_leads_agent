@@ -14,9 +14,11 @@ env/
 
 # Data / persistence
 chroma_db/
-data/knowledge/*
-!data/knowledge/.gitkeep
-!data/knowledge/*.md
+# Knowledge base: Markdown is committed at any depth; anything else
+# dropped in (customer PDFs, exports) stays local.
+knowledge/**
+!knowledge/**/
+!knowledge/**/*.md
 *.sqlite
 *.db
 
@@ -36,3 +38,8 @@ logs/
 leadme-recon/
 # Session cookies mounted into the container for LeadMe internal delete
 data/leadme_cookies.json
+
+
+handover/
+docs//reference/
+

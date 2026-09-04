@@ -19,6 +19,7 @@ RUN pip install -r requirements.txt
 COPY app/ ./app/
 COPY scripts/ ./scripts/
 COPY data/ ./data/
+COPY knowledge/ ./knowledge/
 COPY alembic.ini ./alembic.ini
 
 CMD ["python", "-m", "app.main"]
