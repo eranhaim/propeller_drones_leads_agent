@@ -7,6 +7,13 @@ endpoint we reverse-engineered, every trap we fell into, and the exact
 recipes we settled on. If you find something new, please add a section
 here.
 
+> **Scope.** This file documents *LeadMe's own HTTP surface*. For our
+> client code — module map, transport selection, the level state machine,
+> the retry queue, and guards — see
+> [`reference/leadme_client_technical.md`](reference/leadme_client_technical.md).
+> A shorter contract summary (what is sent/received, keys needed) is in
+> [`integrations/leadme.md`](integrations/leadme.md).
+
 > **Ground truth locations in this repo**
 >
 > - `app/crm/leadme_client.py` – the *only* place that pushes engagement
