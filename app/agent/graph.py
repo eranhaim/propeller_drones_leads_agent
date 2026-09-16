@@ -554,6 +554,7 @@ def _enforce_booking_promise(session, lead: Lead, reply: str) -> None:
         ok = mark_ready_for_call(
             lead,
             note=f"safety-net auto-push (slot={slot})",
+            session=session,
         )
         if ok:
             repository.update_funnel_stage(session, lead, FunnelStage.handed_off)

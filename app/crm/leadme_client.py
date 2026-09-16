@@ -45,6 +45,7 @@ from typing import Optional
 
 import httpx
 from loguru import logger
+from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db.models import Lead
@@ -96,6 +97,8 @@ def push_lead(
     lead: Lead,
     note: Optional[str] = None,
     level: int = 1,
+    *,
+    session: Optional[Session] = None,
 ) -> bool:
     """Sync an engagement change to LeadMe -- admin-only path.
 
@@ -157,7 +160,9 @@ def push_lead(
             "{} (level={}, slot={}). Refresh cookies via the /admin panel.",
             lead.phone, level, slot,
         )
-        leadme_queue.enqueue_engagement(lead, level=level, slot=slot, note=note)
+        leadme_queue.enqueue_engagement(
+            lead, level=level, slot=slot, note=note, session=session,
+        )
         return True
 
     try:
@@ -183,7 +188,9 @@ def push_lead(
                 "for background retry (level={}, slot={})",
                 lead.phone, level, slot,
             )
-            leadme_queue.enqueue_engagement(lead, level=level, slot=slot, note=note)
+            leadme_queue.enqueue_engagement(
+                lead, level=level, slot=slot, note=note, session=session,
+            )
             return True
 
         # row layout (see leadme_delete.py):
@@ -234,7 +241,7 @@ def push_lead(
                     "later retry", lead.phone, lc_id, slot,
                 )
                 leadme_queue.enqueue_engagement(
-                    lead, level=level, slot=slot, note=note,
+                    lead, level=level, slot=slot, note=note, session=session,
                 )
                 ok_tag = False
             else:
@@ -552,6 +559,8 @@ def push_engagement_level(
     level: int,
     note: Optional[str] = None,
     slot: Optional[str] = None,  # kept for API compat, slot is read from metadata
+    *,
+    session: Optional[Session] = None,
 ) -> bool:
     """Convenience wrapper: push an engagement level (1/2/3) to LeadMe.
 
@@ -655,9 +664,11 @@ def push_engagement_level(
                 "[LeadMe] v3 push failed for {} level={} -- queueing for retry",
                 lead.phone, level,
             )
-            leadme_queue.enqueue_engagement(lead, level=level, slot=slot, note=note)
+            leadme_queue.enqueue_engagement(
+                lead, level=level, slot=slot, note=note, session=session,
+            )
     else:
-        ok = push_lead(lead, note=note, level=level)
+        ok = push_lead(lead, note=note, level=level, session=session)
         if ok:
             md["leadme_last_level"] = int(level)
             lead.lead_metadata = md

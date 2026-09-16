@@ -364,7 +364,15 @@ def schedule_call(
     # be loud in the logs so we can retry manually.
     logger.info("[schedule_call] calling mark_ready_for_call with slot={!r}", slot)
     try:
-        ok = mark_ready_for_call(ctx.lead, note=" | ".join(note_parts), slot=slot)
+        # The tool runs inside the agent transaction. Reuse it for the
+        # durable-queue fallback; opening a second session for this lead
+        # would wait forever on the row lock held by this one.
+        ok = mark_ready_for_call(
+            ctx.lead,
+            note=" | ".join(note_parts),
+            slot=slot,
+            session=ctx.session,
+        )
         if ok:
             logger.info("schedule_call: LeadMe push succeeded for lead {}",
                         ctx.lead.id)
