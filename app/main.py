@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import sys
+import threading
 import time
 
 from alembic import command
@@ -14,6 +16,13 @@ from whatsapp_chatbot_python import GreenAPIBot
 
 from app.config import get_settings
 from app.db.session import engine
+from app.webhook.server import (
+    mark_polling_error,
+    mark_polling_started,
+    mark_polling_success,
+    polling_seconds_since_success,
+    run_in_background_thread as run_webhook,
+)
 from app.whatsapp.handler import register_handlers
 
 
@@ -60,13 +69,79 @@ def _build_bot() -> GreenAPIBot:
     bot = GreenAPIBot(
         settings.green_api_instance_id,
         settings.green_api_token,
+        host=settings.green_api_host,
+        media=settings.green_api_media_host,
         # Do NOT delete queued notifications on startup. If the bot crashed
         # or was redeployed while a message was in flight, we still want to
         # process it. Missing a lead's message = lost lead.
         delete_notifications_at_startup=False,
     )
+    # The upstream client otherwise allows a GreenAPI HTTP request to block
+    # for three minutes. Keep the request bounded; the process watchdog below
+    # is the final safeguard for a socket that fails to honour this timeout.
+    bot.api.host_timeout = settings.green_api_request_timeout_seconds
     register_handlers(bot)
     return bot
+
+
+def _start_polling_watchdog() -> None:
+    """Restart the container if receive polling or a message handler wedges.
+
+    GreenAPIBot processes one notification synchronously. A stuck HTTP/LLM
+    call would therefore leave the HTTP health endpoint alive while every
+    subsequent WhatsApp message remains queued. Exiting lets Compose's
+    ``restart: unless-stopped`` recover the worker; the notification is not
+    deleted until after its handler returns.
+    """
+    settings = get_settings()
+    timeout = settings.polling_watchdog_seconds
+
+    def _watch() -> None:
+        while True:
+            time.sleep(min(15, max(1, timeout // 4)))
+            age = polling_seconds_since_success()
+            if age is not None and age > timeout:
+                logger.critical(
+                    "WhatsApp poller has made no successful receive request "
+                    "for {:.0f}s (limit={}s); exiting for Docker restart",
+                    age,
+                    timeout,
+                )
+                os._exit(75)
+
+    threading.Thread(
+        target=_watch, daemon=True, name="greenapi-poll-watchdog"
+    ).start()
+
+
+def _run_polling_loop(bot: GreenAPIBot) -> None:
+    """GreenAPI polling loop with liveness instrumentation."""
+    bot.api.session.headers["Connection"] = "keep-alive"
+    logger.info("Bot ready -- entering polling loop")
+    logger.info("Started receiving incoming notifications.")
+
+    while True:
+        try:
+            mark_polling_started()
+            response = bot.api.receiving.receiveNotification()
+            # Empty queue responses count: they prove GreenAPI connectivity.
+            mark_polling_success()
+
+            if not response.data:
+                continue
+
+            notification = response.data
+            bot.router.route_event(notification["body"])
+            bot.api.receiving.deleteNotification(notification["receiptId"])
+        except KeyboardInterrupt:
+            break
+        except Exception as exc:  # noqa: BLE001
+            mark_polling_error(str(exc))
+            logger.exception("GreenAPI polling/dispatch error; retrying in 5s")
+            time.sleep(5)
+
+    bot.api.session.headers["Connection"] = "close"
+    logger.info("Stopped receiving incoming notifications.")
 
 
 def main() -> None:
@@ -76,8 +151,7 @@ def main() -> None:
     _wait_for_db()
     _run_migrations()
 
-    from app.webhook.server import run_in_background_thread as _run_webhook
-    _run_webhook()
+    run_webhook()
 
     from app.followup.scheduler import run_in_background_thread as _run_followup
     _run_followup()
@@ -95,8 +169,8 @@ def main() -> None:
         threading.Event().wait()
         return
 
-    logger.info("Bot ready -- entering polling loop")
-    bot.run_forever()
+    _start_polling_watchdog()
+    _run_polling_loop(bot)
 
 
 if __name__ == "__main__":

@@ -53,6 +53,17 @@ services:
     ports:
       - "127.0.0.1:${WEBHOOK_HOST_PORT:-8082}:8080"
     command: ["python", "-m", "app.main"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
 volumes:
   postgres_data:

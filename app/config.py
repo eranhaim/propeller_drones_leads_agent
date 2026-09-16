@@ -31,6 +31,14 @@ class Settings(BaseSettings):
     green_api_media_host: str = Field(
         "https://media.green-api.com", alias="GREEN_API_MEDIA_HOST"
     )
+    # Bound each GreenAPI HTTP request. The polling watchdog is a second
+    # safeguard for a network call that does not return within its timeout.
+    green_api_request_timeout_seconds: float = Field(
+        60.0, alias="GREEN_API_REQUEST_TIMEOUT_SECONDS",
+    )
+    polling_watchdog_seconds: int = Field(
+        240, alias="POLLING_WATCHDOG_SECONDS",
+    )
 
     # Database
     database_url: str = Field(

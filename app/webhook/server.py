@@ -23,7 +23,8 @@ that reaches the endpoint is accepted (dev-mode only).
 from __future__ import annotations
 
 import re
-from threading import Thread
+import time
+from threading import Lock, Thread
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, HTTPException, Request
@@ -33,6 +34,60 @@ from loguru import logger
 from app.admin.routes import router as admin_router
 from app.config import get_settings
 from app.webhook.opener import handle_new_lead
+
+
+_polling_lock = Lock()
+_polling_started_at: Optional[float] = None
+_polling_last_success_at: Optional[float] = None
+_polling_last_error: Optional[str] = None
+
+
+def mark_polling_started() -> None:
+    """Record entry into a GreenAPI receive request."""
+    global _polling_started_at
+    with _polling_lock:
+        _polling_started_at = time.monotonic()
+
+
+def mark_polling_success() -> None:
+    """Record a successful GreenAPI receive request (including empty queue)."""
+    global _polling_last_success_at, _polling_last_error
+    with _polling_lock:
+        _polling_last_success_at = time.monotonic()
+        _polling_last_error = None
+
+
+def mark_polling_error(error: str) -> None:
+    """Keep the last safe error summary for the liveness endpoint."""
+    global _polling_last_error
+    with _polling_lock:
+        _polling_last_error = error[:200]
+
+
+def polling_seconds_since_success() -> Optional[float]:
+    with _polling_lock:
+        if _polling_last_success_at is None:
+            if _polling_started_at is None:
+                return None
+            return time.monotonic() - _polling_started_at
+        return time.monotonic() - _polling_last_success_at
+
+
+def _polling_health() -> Dict[str, Any]:
+    age = polling_seconds_since_success()
+    settings = get_settings()
+    healthy = age is not None and age <= settings.polling_watchdog_seconds
+    with _polling_lock:
+        last_error = _polling_last_error
+    result: Dict[str, Any] = {
+        "status": "ok" if healthy else "degraded",
+        "polling": "healthy" if healthy else "stale",
+    }
+    if age is not None:
+        result["poll_age_seconds"] = round(age, 1)
+    if last_error:
+        result["poll_error"] = last_error
+    return result
 
 
 PHONE_KEYS = (
@@ -120,8 +175,10 @@ app.include_router(admin_router)
 
 
 @app.get("/health")
-def health() -> Dict[str, str]:
-    return {"status": "ok"}
+def health() -> JSONResponse:
+    payload = _polling_health()
+    status_code = 200 if payload["status"] == "ok" else 503
+    return JSONResponse(payload, status_code=status_code)
 
 
 @app.post("/webhook/leadme/{secret}")

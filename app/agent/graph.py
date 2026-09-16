@@ -211,6 +211,10 @@ def _model() -> ChatOpenAI:
         model=settings.openai_chat_model,
         api_key=settings.openai_api_key,
         temperature=0.4,
+        # A permanently stalled model request blocks GreenAPI's synchronous
+        # dispatcher and leaves all newer WhatsApp messages queued.
+        timeout=90.0,
+        max_retries=2,
     )
 
 
