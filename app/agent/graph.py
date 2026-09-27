@@ -116,6 +116,10 @@ def _is_refusal(text: str) -> bool:
     trimmed = (text or "").strip()
     if not trimmed or len(trimmed) > _REFUSAL_MAX_CHARS:
         return False
+    # "לא מעוניין בקורס אלא בשירות" redirects to a different business line;
+    # it is not consent to stop all contact.
+    if re.search(r"לא\s+מעוני.{0,40}\bאלא\b", trimmed):
+        return False
     return bool(_REFUSAL_RE.search(trimmed))
 
 
@@ -321,6 +325,7 @@ def handle_message(
     # of the user's message in the DB. Losing the message means the sales
     # team has no idea the lead reached out.
     push_level: Optional[int] = None  # 2 or 3, decided below
+    push_not_relevant = False
     session_was_reset = False
     with session_scope() as session:
         lead = repository.get_or_create_lead(session, phone=phone, name=sender_name)
@@ -337,18 +342,34 @@ def handle_message(
             session_was_reset = True
 
         md_before = dict(lead.lead_metadata or {})
-        # A returning lead gets their nudges back -- unless this very message
-        # is the refusal, in which case the flag goes straight back on.
+        # An explicit refusal is terminal in LeadMe. A later inbound message
+        # is a renewed conversation, so normal engagement classification may
+        # resume on that turn.
         refused_now = _is_refusal(text)
         if md_before.get("not_relevant") and not refused_now:
             md_before.pop("not_relevant")
+            md_before.pop("leadme_relevance", None)
+            pending = list(md_before.get("leadme_push_pending") or [])
+            pending = [item for item in pending if item.get("kind") != "status"]
+            if pending:
+                md_before["leadme_push_pending"] = pending
+            else:
+                for key in (
+                    "leadme_push_pending",
+                    "leadme_push_next_attempt_at",
+                    "leadme_push_attempts",
+                    "leadme_push_queued_at",
+                ):
+                    md_before.pop(key, None)
             lead.lead_metadata = md_before
             session.flush()
         elif refused_now and not md_before.get("not_relevant"):
             logger.info("[not-relevant] lead {} refused: {!r}", lead.id, text[:60])
             md_before["not_relevant"] = True
+            md_before["leadme_relevance"] = "not_relevant"
             lead.lead_metadata = md_before
             session.flush()
+            push_not_relevant = True
         already_level = md_before.get("leadme_last_level")
         # count existing USER messages after the current session start:
         reset_str = md_before.get("session_reset_at")
@@ -370,7 +391,11 @@ def handle_message(
         #   Level 1 = lead booked a call (handled by schedule_call tool)
         #            OR lead has auto-L1 tags (שיחה נכנסת, אתר הבית, עמוד נחיתה)
         # push_engagement_level enforces upgrade-only rules.
-        if lead.funnel_stage != FunnelStage.handed_off and already_level != 1:
+        if (
+            not refused_now
+            and lead.funnel_stage != FunnelStage.handed_off
+            and already_level != 1
+        ):
             if prior_user_msgs == 0:
                 try:
                     from app.crm.leadme_v3 import check_auto_level1
@@ -415,8 +440,24 @@ def handle_message(
             logger.exception("[session-reset] re-opener flow failed for {}", phone)
         return ""
 
-    # Fire-and-forget engagement level push. Uses its own transaction so
-    # a CRM failure never blocks the user-facing reply.
+    # CRM changes use their own transaction so a CRM failure never blocks the
+    # user-facing reply. An explicit opt-out wins over engagement levels.
+    if push_not_relevant:
+        try:
+            from app.crm.client import mark_not_relevant
+            with session_scope() as s_relevance:
+                l_relevance = s_relevance.get(Lead, lead_id)
+                if l_relevance is not None:
+                    mark_not_relevant(
+                        l_relevance,
+                        note="explicit WhatsApp opt-out",
+                        session=s_relevance,
+                    )
+        except Exception:
+            logger.exception(
+                "[not-relevant] LeadMe status queue failed for lead {}", lead_id,
+            )
+
     if push_level is not None:
         try:
             from app.crm.client import mark_engaged_no_book, mark_no_reply

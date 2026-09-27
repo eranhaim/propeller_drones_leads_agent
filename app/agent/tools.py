@@ -9,7 +9,11 @@ from loguru import logger
 
 from app.agent.classifier import apply_classification
 from app.agent.context import current_context
-from app.crm.client import cancel_ready_for_call, mark_ready_for_call
+from app.crm.client import (
+    cancel_ready_for_call,
+    mark_not_relevant as mark_not_relevant_in_crm,
+    mark_ready_for_call,
+)
 from app.db import repository
 from app.db.models import FunnelStage
 from app.rag.retriever import search_as_text
@@ -482,8 +486,17 @@ def mark_not_relevant() -> str:
     # The follow-up scheduler reads this to skip nudging opted-out leads.
     md = dict(ctx.lead.lead_metadata or {})
     md["not_relevant"] = True
+    md["leadme_relevance"] = "not_relevant"
     ctx.lead.lead_metadata = md
     ctx.session.flush()
+    try:
+        mark_not_relevant_in_crm(
+            ctx.lead,
+            note="explicit WhatsApp opt-out",
+            session=ctx.session,
+        )
+    except Exception:
+        logger.exception("[mark_not_relevant] LeadMe status queue failed")
     logger.info("[mark_not_relevant] session reset for lead {}", ctx.lead.id)
     return "השיחה אופסה. שלח ללקוח הודעת סיום קצרה וידידותית בלבד."
 

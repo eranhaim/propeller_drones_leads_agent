@@ -676,6 +676,49 @@ def push_engagement_level(
     return True  # queued or pushed -- caller should not retry
 
 
+def push_not_relevant(
+    lead: Lead,
+    note: Optional[str] = None,
+    *,
+    session: Optional[Session] = None,
+) -> bool:
+    """Durably queue the configured terminal ``not relevant`` CRM status.
+
+    This path intentionally does no synchronous LeadMe lookup: it is called
+    from an inbound WhatsApp turn and must never delay the reply. The retry
+    queue handles unavailable cookies, LeadMe's supplier-sync race, and
+    restarts. A fresh inbound message clears the local relevance flag and
+    resumes normal engagement classification.
+    """
+    settings = get_settings()
+    status_id = (settings.leadme_status_not_relevant or "").strip()
+    if not status_id.isdigit():
+        logger.error(
+            "[LeadMe] cannot mark lead {} not relevant: "
+            "LEADME_STATUS_NOT_RELEVANT is not a numeric configured status",
+            lead.phone,
+        )
+        return False
+    if settings.leadme_test_mode or _is_test_phone(lead.phone):
+        logger.info(
+            "[LeadMe TEST_MODE] recording not-relevant state for {}",
+            lead.phone,
+        )
+        return True
+    if (settings.leadme_insert_mode or "").strip().lower() == "never":
+        logger.info("[LeadMe] insert_mode=never, skipping not-relevant for {}", lead.phone)
+        return True
+
+    from app.crm import leadme_queue
+
+    logger.info(
+        "[LeadMe] queueing not-relevant status for {} status={} reason={!r}",
+        lead.phone, status_id, note,
+    )
+    leadme_queue.enqueue_status(lead, status_id, session=session)
+    return True
+
+
 def push_lead_cancellation(lead: Lead, reason: Optional[str] = None) -> bool:
     """Mark a previously-scheduled call as cancelled in LeadMe.
 

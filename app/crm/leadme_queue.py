@@ -214,6 +214,29 @@ def enqueue_ctwa_tag(
     _enqueue(lead, item, merge_fn=_merge_ctwa_tag, session=session)
 
 
+def _merge_status(existing: list[dict], new_item: dict) -> list[dict]:
+    """Replace queued engagement with one terminal CRM status.
+
+    A lead who explicitly opted out must not later be moved back to an
+    engagement level by a stale retry. CTWA attribution is independent and
+    remains queued because it describes source, not relevance.
+    """
+    kept = [item for item in existing if item.get("kind") == "ctwa_tag"]
+    kept.append(new_item)
+    return kept
+
+
+def enqueue_status(
+    lead: Lead,
+    status_id: str,
+    *,
+    session: Optional[Session] = None,
+) -> None:
+    """Queue an explicit configured LeadMe status without blocking a reply."""
+    item = {"kind": "status", "status_id": str(status_id)}
+    _enqueue(lead, item, merge_fn=_merge_status, session=session)
+
+
 def _enqueue(lead: Lead, item: dict, merge_fn, session: Optional[Session]) -> None:
     def _do(sess: Session, target: Lead) -> None:
         md = dict(target.lead_metadata or {})
@@ -337,6 +360,9 @@ def _try_drain_via_v3(
         # Still not in LeadMe -- leave for next tick.
         return False
 
+    if (lead.lead_metadata or {}).get("leadme_relevance") == "not_relevant":
+        pending = [item for item in pending if item.get("kind") != "engagement"]
+
     # Re-read metadata to get the latest leadme_last_level -- it may have
     # been updated by a successful direct push while this item sat in queue.
     current_md = dict(lead.lead_metadata or {})
@@ -346,7 +372,16 @@ def _try_drain_via_v3(
     remaining: list[dict] = []
     for item in pending:
         kind = item.get("kind")
-        if kind == "engagement":
+        if kind == "status":
+            status_id = str(item.get("status_id") or "").strip()
+            if status_id and update_lead_status(lead_id, int(status_id)):
+                logger.info(
+                    "[leadme-queue v3] DRAINED status lead {} phone={} status={}",
+                    lead.id, phone, status_id,
+                )
+            else:
+                remaining.append(item)
+        elif kind == "engagement":
             level = int(item.get("level") or 2)
             # Guard: don't downgrade. If a higher-engagement level was
             # already pushed successfully (directly, not via queue), skip
@@ -425,6 +460,11 @@ def _process_lead(sess: Session, lead: Lead, now: datetime) -> None:
     pending = list(md.get("leadme_push_pending") or [])
     if not pending:
         return
+    if md.get("leadme_relevance") == "not_relevant":
+        pending = [item for item in pending if item.get("kind") != "engagement"]
+        if not pending:
+            _clear_pending(lead, [])
+            return
     if not _is_due(md, now):
         return
 
@@ -582,7 +622,20 @@ def _process_lead(sess: Session, lead: Lead, now: datetime) -> None:
     for item in pending:
         kind = item.get("kind")
         try:
-            if kind == "engagement":
+            if kind == "status":
+                status_id = str(item.get("status_id") or "").strip()
+                ok = bool(status_id) and _admin_change_status(
+                    client, lc_id, status_id,
+                )
+                if ok:
+                    logger.info(
+                        "[leadme-queue] DRAINED status lead {} phone={} "
+                        "lc_id={} status={}",
+                        lead.id, lead.phone, lc_id, status_id,
+                    )
+                else:
+                    remaining.append(item)
+            elif kind == "engagement":
                 level = int(item.get("level") or 2)
                 slot = item.get("slot")
                 status_id = _status_id_for_level(level)

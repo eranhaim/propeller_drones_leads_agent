@@ -121,13 +121,20 @@ class Settings(BaseSettings):
     leadme_status_level_1: str = Field("", alias="LEADME_STATUS_LEVEL_1")
     leadme_status_level_2: str = Field("", alias="LEADME_STATUS_LEVEL_2")
     leadme_status_level_3: str = Field("", alias="LEADME_STATUS_LEVEL_3")
+    # Existing Propeller LeadMe status "לא רלוונטי". This remains configurable
+    # because status relationship IDs are account-specific.
+    leadme_status_not_relevant: str = Field(
+        "2392", alias="LEADME_STATUS_NOT_RELEVANT",
+    )
 
     # Admin UI (HTTP Basic auth for /admin routes)
     admin_user: str = Field("", alias="ADMIN_USER")
     admin_password: str = Field("", alias="ADMIN_PASSWORD")
 
     # Follow-up nudges (wake-up messages for silent leads)
-    followup_enabled: bool = Field(True, alias="FOLLOWUP_ENABLED")
+    # Proactive WhatsApp outreach is opt-in. Inbound replies and LeadMe
+    # webhook openers are not controlled by this setting.
+    followup_enabled: bool = Field(False, alias="FOLLOWUP_ENABLED")
     followup_interval_minutes: int = Field(30, alias="FOLLOWUP_INTERVAL_MINUTES")
     followup_first_hours: int = Field(24, alias="FOLLOWUP_FIRST_HOURS")
     followup_second_hours: int = Field(48, alias="FOLLOWUP_SECOND_HOURS")

@@ -14,6 +14,7 @@ from app.crm.leadme_client import (
     push_engagement_level,
     push_lead,
     push_lead_cancellation,
+    push_not_relevant,
 )
 from app.db.models import Lead
 
@@ -42,6 +43,16 @@ def mark_engaged_no_book(lead: Lead, note: Optional[str] = None) -> bool:
 def mark_no_reply(lead: Lead, note: Optional[str] = None) -> bool:
     """Engagement Level 3: lead never replied to the opener."""
     return push_engagement_level(lead, level=3, note=note)
+
+
+def mark_not_relevant(
+    lead: Lead,
+    note: Optional[str] = None,
+    *,
+    session: Optional[Session] = None,
+) -> bool:
+    """Set the documented LeadMe ``not relevant`` terminal status."""
+    return push_not_relevant(lead, note=note, session=session)
 
 
 def cancel_ready_for_call(lead: Lead, reason: Optional[str] = None) -> bool:

@@ -10,7 +10,9 @@ from app.crm.leadme_queue import (
     _is_expired,
     _merge_ctwa_tag,
     _merge_engagement,
+    _merge_status,
 )
+from app.agent.graph import _is_refusal
 from app.webhook.server import _normalize_phone
 
 
@@ -50,6 +52,22 @@ class LeadMeQueueTests(unittest.TestCase):
         item = {"kind": "ctwa_tag", "campaign": "עודד"}
         self.assertEqual(_merge_ctwa_tag([item], item), [item])
 
+    def test_not_relevant_status_supersedes_pending_engagement(self) -> None:
+        merged = _merge_status(
+            [
+                {"kind": "engagement", "level": 2},
+                {"kind": "ctwa_tag", "campaign": "מאסטר"},
+            ],
+            {"kind": "status", "status_id": "2392"},
+        )
+        self.assertEqual(
+            merged,
+            [
+                {"kind": "ctwa_tag", "campaign": "מאסטר"},
+                {"kind": "status", "status_id": "2392"},
+            ],
+        )
+
     def test_due_and_expiry_use_timezone_aware_timestamps(self) -> None:
         now = datetime.now(timezone.utc)
         self.assertTrue(
@@ -75,6 +93,15 @@ class LeadMeQueueTests(unittest.TestCase):
                 now,
             )
         )
+
+
+class RelevanceGuardTests(unittest.TestCase):
+    def test_short_explicit_opt_out_is_detected(self) -> None:
+        self.assertTrue(_is_refusal("לא רלוונטי, תודה"))
+        self.assertTrue(_is_refusal("תסירו אותי"))
+
+    def test_redirect_is_not_treated_as_opt_out(self) -> None:
+        self.assertFalse(_is_refusal("לא מעוניין בקורס אלא בשירותי מיפוי לחברה"))
 
 
 if __name__ == "__main__":

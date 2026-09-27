@@ -406,6 +406,12 @@ def _log_unanswered_user_messages(session) -> None:
 def run_once() -> None:
     """One pass: pick eligible leads and send nudges. Safe to call from
     a scheduler tick or a manual admin command."""
+    if not get_settings().followup_enabled:
+        logger.info(
+            "[followup] proactive outbound disabled; skipping generic, "
+            "video, and webinar follow-ups",
+        )
+        return
     if _is_within_quiet_hours():
         logger.debug("[followup] within quiet hours, skipping tick")
         return

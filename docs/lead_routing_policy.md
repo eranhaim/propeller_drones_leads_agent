@@ -15,6 +15,7 @@ promise a human callback until a valid call window has been captured.
 | `preferred_call_slot` | `9-12`, `12-15`, `15-18`, `any` | Code validates before persistence | Reject all free-form times, cities, names, and industries. |
 | `funnel_stage` | `new`, `engaged`, `warm`, `ready_for_call`, `handed_off` | Agent/code | `handed_off` only after `schedule_call` succeeds locally. |
 | LeadMe level | `1` booked, `2` replied, `3` opener/no reply | CRM integration | Lower number is a stronger engagement level and must never be downgraded. |
+| `leadme_relevance` | `not_relevant` or absent | Deterministic inbound refusal detector | An explicit short opt-out queues LeadMe's configured `לא רלוונטי` status and suppresses stale engagement retries. |
 
 ## Routing rules
 
@@ -57,6 +58,14 @@ promise a human callback until a valid call window has been captured.
 - A stale GreenAPI receive loop terminates the worker so Docker restarts it.
   Health is `503` while the poller is stale, allowing the Compose healthcheck
   to recover a wedged process.
+
+## Proactive outreach
+
+`FOLLOWUP_ENABLED=false` is the safe default and disables every
+scheduler-initiated WhatsApp message: generic nudges, video follow-ups, and
+webinar follow-ups. It does not affect replies to inbound messages, LeadMe
+webhook openers, or operator/admin sends. Re-enable it only with explicit
+customer approval.
 
 ## Knowledge-source maintenance
 
