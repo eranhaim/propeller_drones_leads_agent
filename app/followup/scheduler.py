@@ -751,6 +751,18 @@ def run_in_background_thread() -> None:
     except Exception:
         logger.exception("[scheduler] FAILED to register leadme_queue_drain job")
 
+    # LeadMe leak detection is read-only monitoring, not customer outreach.
+    # Keep it active even while proactive WhatsApp messaging is disabled.
+    scheduler.add_job(
+        _campaign_leak_canary,
+        trigger="interval",
+        minutes=max(15, settings.followup_interval_minutes),
+        id="leadme_leak_canary",
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(ISRAEL_TZ) + timedelta(minutes=2),
+    )
+
     # --- Followup-only jobs (skipped when FOLLOWUP_ENABLED=false) ---
 
     if not settings.followup_enabled:
@@ -764,19 +776,6 @@ def run_in_background_thread() -> None:
             max_instances=1,
             coalesce=True,
             next_run_time=datetime.now(ISRAEL_TZ) + timedelta(minutes=1),
-        )
-        # Canary: watch LeadMe campaign 12277 ("הוסרו מ-Whatsapp") for any
-        # unexpected growth. If the bot ever leaks a lead into it again, this
-        # tick will log a loud ERROR that shows up in monitoring so we catch
-        # a regression the same day instead of via a customer complaint.
-        scheduler.add_job(
-            _campaign_leak_canary,
-            trigger="interval",
-            minutes=max(15, settings.followup_interval_minutes),
-            id="leadme_leak_canary",
-            max_instances=1,
-            coalesce=True,
-            next_run_time=datetime.now(ISRAEL_TZ) + timedelta(minutes=2),
         )
     # Session-health probe. Fires every 30 min, forces a fresh check
     # (bypasses the 30s admin-UI cache), and logs an ERROR whenever
