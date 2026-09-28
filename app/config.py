@@ -81,6 +81,13 @@ class Settings(BaseSettings):
         "אתר הבית,דף נחיתה,homepage,landing page",
         alias="LEADME_WEBSITE_FORM_SOURCES",
     )
+    # LeadMe's external-interface payload for the website form currently
+    # carries the campaign name but omits the source label. Keep that explicit
+    # mapping narrow so other LeadMe sources remain CRM-only.
+    leadme_website_form_campaigns_raw: str = Field(
+        "מתעניינים אקדמיה",
+        alias="LEADME_WEBSITE_FORM_CAMPAIGNS",
+    )
     # Exact source labels that Roy defined as high-priority before a bot
     # conversation: website home page, incoming call, and landing page.
     # LeadMe must forward one of these labels in a source field for the
@@ -253,6 +260,14 @@ class Settings(BaseSettings):
             source.strip()
             for source in self.leadme_website_form_sources_raw.split(",")
             if source.strip()
+        ]
+
+    @property
+    def leadme_website_form_campaigns(self) -> List[str]:
+        return [
+            campaign.strip()
+            for campaign in self.leadme_website_form_campaigns_raw.split(",")
+            if campaign.strip()
         ]
 
     @field_validator("log_level")

@@ -143,6 +143,11 @@ def _normalize_phone(raw: str) -> str:
     return digits
 
 
+def _is_valid_whatsapp_phone(phone: str) -> bool:
+    """Accept only Israeli mobile numbers that GreenAPI can address."""
+    return bool(re.fullmatch(r"9725\d{8}", phone))
+
+
 def _extract_custom_fields(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Pull out clf_XXXXX custom fields LeadMe forwards for the campaign
     (Propeller's on-form questions -- drone experience, course pick, ...).
@@ -211,8 +216,6 @@ async def leadme_webhook(secret: str, request: Request) -> JSONResponse:
             raw_payload = dict(form)
     except Exception as e:  # noqa: BLE001
         logger.exception("Failed to parse webhook body: {}", e)
-        body = (await request.body())[:400]
-        logger.error("raw body preview: {!r}", body)
         raise HTTPException(status_code=400, detail="invalid body")
 
     payload = _flatten_payload(raw_payload)
@@ -221,11 +224,9 @@ async def leadme_webhook(secret: str, request: Request) -> JSONResponse:
 
     raw_phone = _first(payload, PHONE_KEYS)
     phone = _normalize_phone(raw_phone)
-    if not phone:
-        logger.error("[LeadMe webhook] no phone in payload, ignoring. keys={}",
-                     list(payload.keys()))
-        return JSONResponse({"status": "ignored", "reason": "no phone"},
-                            status_code=200)
+    if not _is_valid_whatsapp_phone(phone):
+        logger.warning("[LeadMe webhook] rejected invalid phone; keys={}", list(payload.keys()))
+        raise HTTPException(status_code=422, detail="invalid phone")
 
     # Assemble a display name from available fields.
     name = _first(payload, NAME_KEYS)
@@ -239,6 +240,9 @@ async def leadme_webhook(secret: str, request: Request) -> JSONResponse:
     campaign_id = _first(payload, CAMPAIGN_KEYS)
     leadme_lead_id = _first(payload, LEAD_ID_KEYS)
     source = _first(payload, SOURCE_KEYS)
+    if not source and not campaign_id:
+        logger.warning("[LeadMe webhook] rejected payload without source or campaign")
+        raise HTTPException(status_code=422, detail="missing source or campaign")
 
     metadata: Dict[str, Any] = {
         "leadme_campaign_id": campaign_id,
@@ -251,22 +255,22 @@ async def leadme_webhook(secret: str, request: Request) -> JSONResponse:
     # Drop empties to keep the JSON tidy
     metadata = {k: v for k, v in metadata.items() if v not in (None, "")}
 
-    # Run the (potentially slow) opener in a background thread so LeadMe
-    # gets an immediate 200 and doesn't retry.
-    Thread(
-        target=handle_new_lead,
-        kwargs={
-            "phone": phone,
-            "name": name or None,
-            "metadata": metadata,
-            "campaign_id": campaign_id or None,
-        },
-        daemon=True,
-        name=f"opener-{phone}",
-    ).start()
+    # Persist and process before acknowledging the event. Returning accepted
+    # from a detached thread made database failures indistinguishable from a
+    # successful LeadMe delivery.
+    try:
+        handle_new_lead(
+            phone=phone,
+            name=name or None,
+            metadata=metadata,
+            campaign_id=campaign_id or None,
+        )
+    except Exception:
+        logger.exception("[LeadMe webhook] processing failed")
+        raise HTTPException(status_code=503, detail="processing failed")
 
     return JSONResponse(
-        {"status": "accepted", "phone": phone, "name": name},
+        {"status": "accepted"},
         status_code=200,
     )
 

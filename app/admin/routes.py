@@ -560,15 +560,16 @@ def leads_list(request: Request, _: None = Depends(_require_admin)) -> str:
     # detached after session_scope() exits so we can't touch attributes later.
     snapshot: list[dict] = []
     with session_scope() as s:
+        activity_at = func.coalesce(func.max(Message.created_at), Lead.created_at)
         rows = s.execute(
             select(
                 Lead,
                 func.count(Message.id).label("msg_count"),
-                func.max(Message.created_at).label("last_at"),
+                activity_at.label("last_at"),
             )
             .outerjoin(Message, Message.lead_id == Lead.id)
             .group_by(Lead.id)
-            .order_by(func.max(Message.created_at).desc().nullslast())
+            .order_by(activity_at.desc())
         ).all()
 
         for lead, msg_count, last_at in rows:

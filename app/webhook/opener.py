@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from loguru import logger
+from sqlalchemy import select
 from whatsapp_api_client_python.API import GreenAPI
 
 from app.config import get_settings
@@ -89,15 +90,38 @@ def _is_website_form_source(source: object) -> bool:
     return normalized in configured
 
 
+def _is_website_form_campaign(campaign_id: object) -> bool:
+    """Return whether a configured LeadMe campaign is the website form."""
+    normalized = _normalize_source(campaign_id)
+    if not normalized:
+        return False
+    configured = {
+        _normalize_source(item)
+        for item in get_settings().leadme_website_form_campaigns
+    }
+    return normalized in configured
+
+
+def _is_website_form_lead(source: object, campaign_id: object) -> bool:
+    """Identify a website form from its source, or its configured campaign."""
+    return (
+        _is_website_form_source(source)
+        or _is_website_form_campaign(campaign_id)
+    )
+
+
 def _should_send_website_form_opener(
     source: object,
+    campaign_id: object,
     metadata: Dict[str, Any],
     history: list[object],
+    is_new_lead: bool,
 ) -> bool:
     """Allow one immediate opener for a new, approved website-form lead."""
     return (
         get_settings().website_form_opener_enabled
-        and _is_website_form_source(source)
+        and _is_website_form_lead(source, campaign_id)
+        and is_new_lead
         and not metadata.get("opener_sent_at")
         and not history
     )
@@ -145,19 +169,28 @@ def handle_new_lead(
     """
     try:
         source = metadata.get("leadme_source")
-        is_level_one_source = _is_level_one_source(source)
-        is_website_form_source = _is_website_form_source(source)
+        is_website_form_source = _is_website_form_lead(source, campaign_id)
+        is_level_one_source = (
+            _is_level_one_source(source)
+            or is_website_form_source
+        )
         should_send_opener = False
+        lead_id: Optional[int] = None
 
         with session_scope() as session:
+            existing_lead = session.execute(
+                select(Lead.id)
+                .where(Lead.phone == phone)
+                .with_for_update()
+            ).scalar_one_or_none()
             lead = repository.get_or_create_lead(
                 session, phone=phone, name=name,
             )
-            # Hold the lead row lock through the send and persisted marker.
-            # A duplicate form webhook then waits and sees opener_sent_at.
+            lead_id = lead.id
+            # Hold the lead row lock through the send and persisted marker so
+            # a duplicate webhook cannot send a second opener.
             session.refresh(lead, with_for_update=True)
             existing_meta = dict(lead.lead_metadata or {})
-            already_contacted = bool(existing_meta.get("opener_sent_at"))
             history = repository.recent_messages(session, lead, limit=1)
 
             repository.update_lead_metadata(
@@ -169,19 +202,21 @@ def handle_new_lead(
                 leadme_source_is_website_form=is_website_form_source,
             )
             should_send_opener = _should_send_website_form_opener(
-                source,
+                source, campaign_id,
                 existing_meta,
                 history,
+                is_new_lead=existing_lead is None,
             )
 
             if not should_send_opener:
                 logger.info(
                     "[opener] skipping WhatsApp opener "
-                    "(phone={}, website_form_source={}, enabled={}, "
-                    "opener_sent_at={}, history_len={})",
-                    phone,
+                    "(lead_id={}, website_form_source={}, enabled={}, "
+                    "is_new={}, opener_sent_at={}, history_len={})",
+                    lead.id,
                     is_website_form_source,
                     get_settings().website_form_opener_enabled,
+                    existing_lead is None,
                     existing_meta.get("opener_sent_at"),
                     len(history),
                 )
@@ -192,7 +227,7 @@ def handle_new_lead(
                     api = _greenapi_client()
                     api.sending.sendMessage(_chat_id(phone), text)
                 except Exception:
-                    logger.exception("[opener] failed to send WhatsApp to {}", phone)
+                    logger.exception("[opener] failed to send WhatsApp for lead_id={}", lead.id)
                 else:
                     repository.add_message(session, lead, MessageRole.assistant, text)
                     repository.update_lead_metadata(
@@ -201,8 +236,8 @@ def handle_new_lead(
                         opener_campaign_id=campaign_id or "",
                     )
                     logger.info(
-                        "[opener] sent to {} (campaign={}, topic={!r})",
-                        phone, campaign_id, topic,
+                        "[opener] sent for lead_id={} (campaign={}, topic={!r})",
+                        lead.id, campaign_id, topic,
                     )
 
         # Roy's mapping: only website home, incoming-call and landing-page
@@ -225,6 +260,10 @@ def handle_new_lead(
                             note="new LeadMe webhook lead; no bot reply yet",
                         )
         except Exception:
-            logger.exception("[opener] initial LeadMe level push failed for {}", phone)
+            logger.exception(
+                "[opener] initial LeadMe level push failed for lead_id={}",
+                lead_id,
+            )
     except Exception:
-        logger.exception("[opener] unexpected error handling {}", phone)
+        logger.exception("[opener] unexpected error handling LeadMe webhook")
+        raise

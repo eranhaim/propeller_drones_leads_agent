@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from fastapi.testclient import TestClient
+
 from app.crm.leadme_queue import (
     _is_due,
     _is_expired,
@@ -16,7 +18,7 @@ from app.crm.leadme_queue import (
 )
 from app.agent.graph import _is_refusal
 from app.webhook.opener import _should_send_website_form_opener
-from app.webhook.server import _normalize_phone
+from app.webhook.server import _normalize_phone, app as webhook_app
 
 
 class PhoneNormalizationTests(unittest.TestCase):
@@ -34,6 +36,7 @@ class WebsiteFormOpenerTests(unittest.TestCase):
         self.settings = SimpleNamespace(
             website_form_opener_enabled=True,
             leadme_website_form_sources=["אתר הבית", "דף נחיתה"],
+            leadme_website_form_campaigns=["מתעניינים אקדמיה"],
         )
 
     @patch("app.webhook.opener.get_settings")
@@ -41,7 +44,22 @@ class WebsiteFormOpenerTests(unittest.TestCase):
         get_settings.return_value = self.settings
 
         self.assertTrue(
-            _should_send_website_form_opener("אתר הבית", {}, [])
+            _should_send_website_form_opener(
+                "אתר הבית", "", {}, [], is_new_lead=True,
+            )
+        )
+
+    @patch("app.webhook.opener.get_settings")
+    def test_website_campaign_without_source_gets_one_opener(
+        self,
+        get_settings,
+    ) -> None:
+        get_settings.return_value = self.settings
+
+        self.assertTrue(
+            _should_send_website_form_opener(
+                "", "מתעניינים אקדמיה", {}, [], is_new_lead=True,
+            )
         )
 
     @patch("app.webhook.opener.get_settings")
@@ -53,13 +71,21 @@ class WebsiteFormOpenerTests(unittest.TestCase):
 
         self.assertFalse(
             _should_send_website_form_opener(
-                "דף נחיתה",
+                "דף נחיתה", "",
                 {"opener_sent_at": "2026-09-28T10:00:00+00:00"},
                 [],
+                is_new_lead=True,
             )
         )
         self.assertFalse(
-            _should_send_website_form_opener("דף נחיתה", {}, [object()])
+            _should_send_website_form_opener(
+                "דף נחיתה", "", {}, [object()], is_new_lead=True,
+            )
+        )
+        self.assertFalse(
+            _should_send_website_form_opener(
+                "דף נחיתה", "", {}, [], is_new_lead=False,
+            )
         )
 
     @patch("app.webhook.opener.get_settings")
@@ -67,8 +93,61 @@ class WebsiteFormOpenerTests(unittest.TestCase):
         get_settings.return_value = self.settings
 
         self.assertFalse(
-            _should_send_website_form_opener("שיחה נכנסת", {}, [])
+            _should_send_website_form_opener(
+                "שיחה נכנסת", "", {}, [], is_new_lead=True,
+            )
         )
+
+
+class LeadMeWebhookTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.client = TestClient(webhook_app)
+        self.settings = SimpleNamespace(webhook_secret="webhook-test-secret")
+
+    @patch("app.webhook.server.handle_new_lead")
+    @patch("app.webhook.server.get_settings")
+    def test_website_campaign_payload_is_processed_before_accepting(
+        self,
+        get_settings,
+        handle_new_lead,
+    ) -> None:
+        get_settings.return_value = self.settings
+
+        response = self.client.post(
+            "/webhook/leadme/webhook-test-secret",
+            data={
+                "phone": "052-123-4567",
+                "firstname": "Test",
+                "lastname": "Lead",
+                "campaignId": "מתעניינים אקדמיה",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "accepted"})
+        handle_new_lead.assert_called_once_with(
+            phone="972521234567",
+            name="Test Lead",
+            metadata={"leadme_campaign_id": "מתעניינים אקדמיה"},
+            campaign_id="מתעניינים אקדמיה",
+        )
+
+    @patch("app.webhook.server.handle_new_lead")
+    @patch("app.webhook.server.get_settings")
+    def test_unsupported_payload_is_not_accepted(
+        self,
+        get_settings,
+        handle_new_lead,
+    ) -> None:
+        get_settings.return_value = self.settings
+
+        response = self.client.post(
+            "/webhook/leadme/webhook-test-secret",
+            data={"phone": "052-123-4567"},
+        )
+
+        self.assertEqual(response.status_code, 422)
+        handle_new_lead.assert_not_called()
 
 
 class LeadMeQueueTests(unittest.TestCase):
