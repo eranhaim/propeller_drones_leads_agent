@@ -8,14 +8,14 @@ from langchain_core.tools import tool
 from loguru import logger
 
 from app.agent.classifier import apply_classification
-from app.agent.context import current_context
+from app.agent.context import VideoSend, current_context
 from app.crm.client import (
     cancel_ready_for_call,
     mark_not_relevant as mark_not_relevant_in_crm,
     mark_ready_for_call,
 )
 from app.db import repository
-from app.db.models import FunnelStage
+from app.db.models import FunnelStage, MessageRole
 from app.rag.retriever import search_as_text
 from app.videos.catalog import get_video, recommend
 
@@ -196,7 +196,8 @@ def send_video(video_id: str, caption: Optional[str] = None) -> str:
 
     Pass the ``video_id`` from the catalog shown in the system prompt.
     ``caption`` is optional text that appears with the video (keep it very
-    short -- one sentence). Do not send the same video twice.
+    short -- one sentence). This tool sends the complete outbound message,
+    including its caption. Do not send the same video twice.
     """
     ctx = current_context()
     video = get_video(video_id)
@@ -225,12 +226,33 @@ def send_video(video_id: str, caption: Optional[str] = None) -> str:
         logger.warning("send_video called but no sender configured")
         return "שגיאה טכנית: לא ניתן לשלוח סרטונים כרגע."
 
+    sent_caption = (caption or video.title).strip()
     try:
-        ctx.send_video(video, caption)
+        ctx.send_video(video, sent_caption)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to send video")
         return f"שגיאת שליחה: {exc}"
 
+    repository.add_message(
+        ctx.session,
+        ctx.lead,
+        MessageRole.system,
+        f"נשלח סרטון: {video.title}\nכיתוב שנשלח: {sent_caption}",
+        metadata={
+            "event": "video_sent",
+            "video_id": video.id,
+            "video_title": video.title,
+            "caption": sent_caption,
+            "video_kind": video.kind,
+        },
+    )
+    ctx.video_sends_this_turn.append(
+        VideoSend(
+            video_id=video.id,
+            title=video.title,
+            caption=sent_caption,
+        )
+    )
     repository.mark_video_sent(ctx.session, ctx.lead, video.id)
 
     # Track send time so the follow-up scheduler can send a "did you watch?"
@@ -253,7 +275,11 @@ def send_video(video_id: str, caption: Optional[str] = None) -> str:
         logger.info("[send_video] video '{}' sent -> tracking for follow-up (lead {})",
                     video.id, ctx.lead.id)
 
-    return f"הסרטון '{video.title}' נשלח בהצלחה."
+    return (
+        f"הסרטון '{video.title}' נשלח בהודעה עצמאית. "
+        "אל תחזור על הכיתוב או על עצם השליחה בתשובה הסופית. "
+        "השאר את התשובה ריקה, אלא אם יש מידע חדש שאינו חוזר על הכיתוב."
+    )
 
 
 @tool

@@ -444,6 +444,17 @@ table.leads {
     margin-right: auto;
     border-bottom-left-radius: 2px;
 }
+.chat .video-event {
+    max-width: 78%; margin: 10px auto; padding: 8px 12px;
+    background: #123a46; color: #d9f7ff; border: 1px solid #1d7188;
+    border-radius: 8px; font-size: 13px;
+}
+.chat .video-event .caption {
+    display: block; margin-top: 4px; color: #b9d9e3; white-space: pre-wrap;
+}
+.chat .video-event .video-id {
+    color: #7cb4c4; font-size: 11px; direction: ltr;
+}
 .chat .bubble.nudge { border-left: 3px solid #f59e0b; }
 .chat .meta {
     display: block; font-size: 10px; color: var(--text-dim);
@@ -826,13 +837,22 @@ def lead_conversation(
         ).scalars().all())
 
         for m in msgs:
-            nudge = m.msg_metadata.get("nudge") if isinstance(m.msg_metadata, dict) else None
+            metadata = m.msg_metadata if isinstance(m.msg_metadata, dict) else {}
+            nudge = metadata.get("nudge")
+            video_event = metadata.get("event") == "video_sent"
             msg_snapshots.append({
                 "id": m.id,
-                "role": "user" if m.role == MessageRole.user else "assistant",
+                "role": (
+                    "video"
+                    if video_event
+                    else "user" if m.role == MessageRole.user else "assistant"
+                ),
                 "content": m.content or "",
                 "created_at": m.created_at,
                 "nudge": nudge,
+                "video_id": metadata.get("video_id", ""),
+                "video_title": metadata.get("video_title", ""),
+                "caption": metadata.get("caption", ""),
             })
 
     bubbles = []
@@ -850,6 +870,22 @@ def lead_conversation(
             last_day = day_key
 
         role_class = m["role"]
+        if role_class == "video":
+            caption_html = (
+                f'<span class="caption">כיתוב שנשלח: {_escape(m["caption"])}</span>'
+                if m["caption"] else ""
+            )
+            video_title = m["video_title"] or m["content"]
+            bubbles.append(f"""
+            <div class="video-event">
+              <strong>🎬 נשלח סרטון: {_escape(video_title)}</strong>
+              <span class="video-id"> · {_escape(m["video_id"])}</span>
+              {caption_html}
+              <span class="meta">בוט · {il.strftime("%H:%M")} · #{m['id']}</span>
+            </div>
+            """)
+            continue
+
         nudge = m["nudge"]
         extra = " nudge" if nudge else ""
         time_str = il.strftime("%H:%M")

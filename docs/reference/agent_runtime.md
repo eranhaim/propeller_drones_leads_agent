@@ -165,7 +165,7 @@ as an observation.
 |---|---|---|
 | `search_knowledge` | `query`, `topic?` | none (Chroma read; `topic="shop"` diverts to WooCommerce) |
 | `classify_lead` | `familiarity?`, `stage?`, `intent?`, `industry?`, `preferred_call_slot?`, `has_experience?` | writes columns + `lead_metadata` |
-| `send_video` | `video_id`, `caption?` | GreenAPI send, `videos_sent`, `video_sent_at` / `webinar_sent_at` |
+| `send_video` | `video_id`, `caption?` | GreenAPI send, one `video_sent` admin event, `videos_sent`, `video_sent_at` / `webinar_sent_at` |
 | `recommend_video` | `topics_context?` | none |
 | `schedule_call` | `summary?`, `preferred_call_slot?` | `funnel_stage=handed_off`, CRM level 1 |
 | `cancel_call` | `reason?` | clears slot, `funnel_stage=warm`, CRM cancel note |
@@ -223,7 +223,19 @@ value.
 The DB layer alone is insufficient: `videos_sent` is only committed at the end
 of the transaction, so a second call in the same turn still reads the old list.
 
-### 6.3 Post-processing pipeline
+### 6.3 Video delivery reply guard
+
+`send_video` is the only outbound delivery for media: it sends the video or
+link plus caption directly, then writes one `system` message with
+`msg_metadata.event = "video_sent"`. The admin chat renders this as a compact
+record with the title, id, and exact caption — never as media or a URL preview.
+
+After the agent returns, `_remove_video_delivery_duplicates` removes final text
+that repeats the sent caption. A final reply containing genuinely new content
+is retained. If the model returns nothing after a successful video send, the
+graph does not substitute its normal fallback reply.
+
+### 6.4 Post-processing pipeline
 
 Applied to the raw reply, in this order, in `handle_message`:
 

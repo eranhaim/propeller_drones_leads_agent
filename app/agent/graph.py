@@ -14,7 +14,7 @@ from loguru import logger
 import re
 
 from app.agent.classifier import describe_state
-from app.agent.context import AgentContext, use_context
+from app.agent.context import AgentContext, VideoSend, use_context
 from app.agent.prompts import render_system_prompt
 from app.agent.tools import ALL_TOOLS
 from app.config import get_settings
@@ -85,6 +85,39 @@ _SENTENCE_SPLIT_RE = re.compile(r"((?<=[.!?])\s+)")
 
 
 _HEBREW_CHAR_RE = re.compile(r"[\u0590-\u05FF]")
+_VIDEO_WORD_RE = re.compile(r"[\u0590-\u05FF]{2,}")
+_VIDEO_DELIVERY_RE = re.compile(
+    r"(?:שלח(?:תי|נו)|מצורף|הנה|קיבלת).{0,30}"
+    r"(?:סרטון|וובינר|קישור|וידאו)"
+)
+_VIDEO_STOP_WORDS = {
+    "את",
+    "אתה",
+    "אתם",
+    "אני",
+    "הוא",
+    "היא",
+    "זה",
+    "זאת",
+    "הזה",
+    "הזאת",
+    "של",
+    "עם",
+    "על",
+    "אל",
+    "גם",
+    "כל",
+    "לא",
+    "לי",
+    "לך",
+    "לכם",
+    "מתי",
+    "מה",
+    "אם",
+    "כי",
+    "כדי",
+    "כבר",
+}
 
 
 # Refusal phrases a lead uses to end the conversation. Measured on two months
@@ -206,6 +239,68 @@ def _strip_markdown(reply: str) -> str:
     reply = _BOLD_RE.sub(r"*\1*", reply)
     reply = _HEADING_RE.sub("", reply)
     return reply
+
+
+def _video_words(text: str) -> set[str]:
+    """Return content words used to compare a reply with a sent caption."""
+    return {
+        word
+        for word in _VIDEO_WORD_RE.findall((text or "").lower())
+        if word not in _VIDEO_STOP_WORDS
+    }
+
+
+def _is_video_delivery_duplicate(sentence: str, video_sends: list[VideoSend]) -> bool:
+    """Return True when a sentence only repeats a video delivery/caption."""
+    sentence_words = _video_words(sentence)
+    if not sentence_words:
+        return False
+
+    for sent in video_sends:
+        sent_words = _video_words(f"{sent.title} {sent.caption}")
+        shared_words = sentence_words & sent_words
+        overlap = len(shared_words) / len(sentence_words)
+        repeats_delivery = bool(_VIDEO_DELIVERY_RE.search(sentence))
+
+        # A clear "I sent you the video/webinar/link" sentence is always a
+        # duplicate after the tool has delivered it. Otherwise require most
+        # of the sentence to repeat the actual title/caption, so a genuinely
+        # new follow-up remains visible to the lead.
+        if repeats_delivery or (
+            len(sentence_words) >= 3
+            and len(shared_words) >= 2
+            and overlap >= 0.6
+        ):
+            return True
+    return False
+
+
+def _remove_video_delivery_duplicates(
+    reply: str,
+    video_sends: list[VideoSend],
+) -> str:
+    """Remove LLM text that repeats media already sent by ``send_video``."""
+    if not reply or not video_sends:
+        return reply
+
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+|\n+", reply)
+        if sentence.strip()
+    ]
+    kept = [
+        sentence
+        for sentence in sentences
+        if not _is_video_delivery_duplicate(sentence, video_sends)
+    ]
+    if len(kept) == len(sentences):
+        return reply
+
+    logger.info(
+        "[video-delivery] removed duplicate final reply after sending {}",
+        ", ".join(sent.video_id for sent in video_sends),
+    )
+    return " ".join(kept)
 
 
 @lru_cache(maxsize=1)
@@ -471,9 +566,9 @@ def handle_message(
                 repository.add_message(session, lead, MessageRole.assistant, fallback)
                 return fallback
 
-            reply = _extract_reply(result) or (
-                "רגע, אני חושב על זה... אפשר לחדד קצת מה מעניין אותך?"
-            )
+            reply = _extract_reply(result)
+            if not reply and not ctx.video_sends_this_turn:
+                reply = "רגע, אני חושב על זה... אפשר לחדד קצת מה מעניין אותך?"
 
             # Hebrew safety net: if the reply came back mostly in English
             # (or another non-Hebrew script) despite the prompt rule, run
@@ -521,10 +616,12 @@ def handle_message(
 
         reply = _strip_filler(reply)
         reply = _strip_markdown(reply)
+        reply = _remove_video_delivery_duplicates(reply, ctx.video_sends_this_turn)
 
         _enforce_booking_promise(session, lead, reply)
 
-        repository.add_message(session, lead, MessageRole.assistant, reply)
+        if reply:
+            repository.add_message(session, lead, MessageRole.assistant, reply)
         return reply
 
 

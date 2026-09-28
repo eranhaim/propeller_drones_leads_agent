@@ -18,6 +18,15 @@ from sqlalchemy.orm import Session
 from app.db.models import Lead
 
 
+@dataclass(frozen=True)
+class VideoSend:
+    """A video delivery completed during the current agent turn."""
+
+    video_id: str
+    title: str
+    caption: str
+
+
 @dataclass
 class AgentContext:
     session: Session
@@ -31,6 +40,9 @@ class AgentContext:
     # check only fires after the row is committed, so we need this in-memory
     # guard too.
     videos_sent_this_turn: Set[str] = field(default_factory=set)
+    # Successful direct media deliveries. The graph uses this to remove a
+    # duplicate LLM final reply after the tool has already sent the caption.
+    video_sends_this_turn: list[VideoSend] = field(default_factory=list)
 
 
 _current_ctx: ContextVar[Optional[AgentContext]] = ContextVar(
