@@ -30,8 +30,9 @@ from typing import Any, Dict, Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
+from starlette.middleware.sessions import SessionMiddleware
 
-from app.admin.routes import router as admin_router
+from app.admin.routes import admin_session_secret, router as admin_router
 from app.config import get_settings
 from app.webhook.opener import handle_new_lead
 
@@ -175,6 +176,14 @@ def _flatten_payload(raw: Any) -> Dict[str, Any]:
 
 
 app = FastAPI(title="Propeller Drones lead webhook", docs_url=None, redoc_url=None)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=admin_session_secret(get_settings().admin_password),
+    session_cookie="propeller_admin_session",
+    max_age=8 * 60 * 60,
+    same_site="strict",
+    https_only=True,
+)
 app.include_router(admin_router)
 
 

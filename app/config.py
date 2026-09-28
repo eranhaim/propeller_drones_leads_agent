@@ -136,8 +136,7 @@ class Settings(BaseSettings):
         "2392", alias="LEADME_STATUS_NOT_RELEVANT",
     )
 
-    # Admin UI (HTTP Basic auth for /admin routes)
-    admin_user: str = Field("", alias="ADMIN_USER")
+    # Admin UI (password-only signed session for /admin routes)
     admin_password: str = Field("", alias="ADMIN_PASSWORD")
 
     # Legacy follow-up settings. Proactive WhatsApp outreach is disabled by

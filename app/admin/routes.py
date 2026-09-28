@@ -9,8 +9,8 @@ webhook. Two pages:
                              like a WhatsApp chat (user bubbles on the
                              right, bot bubbles on the left, RTL).
 
-Auth: HTTP Basic against ADMIN_USER / ADMIN_PASSWORD from the environment.
-If either is unset the admin routes refuse to serve anything (fail-closed).
+Auth: password-only signed session against ADMIN_PASSWORD from the environment.
+If it is unset the admin routes refuse to serve anything (fail-closed).
 
 Design goals:
 - Pure server-rendered HTML (no build step, no JS framework).
@@ -25,6 +25,7 @@ import html
 import secrets
 from datetime import datetime, timezone
 from typing import Optional
+from urllib.parse import quote, urlsplit
 from zoneinfo import ZoneInfo
 
 import json
@@ -32,7 +33,6 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from sqlalchemy import func, select
 
 from app.config import get_settings
@@ -40,42 +40,154 @@ from app.db.models import Lead, Message, MessageRole
 from app.db.session import session_scope
 
 router = APIRouter(prefix="/admin", tags=["admin"])
-_basic_auth = HTTPBasic()
 IL = ZoneInfo("Asia/Jerusalem")
 
 
 # --- auth ---------------------------------------------------------------
 
 
-def _require_admin(
-    credentials: HTTPBasicCredentials = Depends(_basic_auth),
-) -> str:
-    settings = get_settings()
-    admin_user = settings.admin_user
-    admin_pass = settings.admin_password
+def admin_session_secret(admin_password: str) -> str:
+    """Derive the cookie-signing key from the only configured admin secret."""
+    import hashlib
 
-    if not admin_user or not admin_pass:
-        # Fail closed if admin creds aren't configured -- much safer than
-        # accidentally serving conversations to the internet.
+    return hashlib.sha256(
+        f"propeller-admin-session-v1:{admin_password}".encode("utf-8")
+    ).hexdigest()
+
+
+def _configured_admin_password() -> str:
+    settings = get_settings()
+    admin_password = settings.admin_password
+    if not admin_password:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Admin UI not configured (ADMIN_USER/ADMIN_PASSWORD unset).",
+            detail="Admin UI not configured (ADMIN_PASSWORD unset).",
         )
+    return admin_password
 
-    # constant-time comparison to avoid timing attacks
-    user_ok = secrets.compare_digest(
-        credentials.username.encode("utf8"), admin_user.encode("utf8")
-    )
-    pass_ok = secrets.compare_digest(
-        credentials.password.encode("utf8"), admin_pass.encode("utf8")
-    )
-    if not (user_ok and pass_ok):
+
+def _csrf_token(request: Request) -> str:
+    token = request.session.get("csrf_token")
+    if not isinstance(token, str) or not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Bad credentials",
-            headers={"WWW-Authenticate": 'Basic realm="Propeller Admin"'},
+            detail="Admin session expired.",
         )
-    return credentials.username
+    return token
+
+
+def _csrf_field(request: Request) -> str:
+    return (
+        '<input type="hidden" name="csrf_token" value="'
+        f'{_escape(_csrf_token(request))}">'
+    )
+
+
+def _require_same_origin(request: Request) -> None:
+    origin = request.headers.get("origin")
+    if not origin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Missing Origin header.",
+        )
+
+    parsed = urlsplit(origin)
+    if parsed.scheme not in {"http", "https"} or parsed.netloc != request.headers.get("host"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cross-origin admin request denied.",
+        )
+
+
+async def _require_admin(request: Request) -> None:
+    _configured_admin_password()
+    if request.session.get("admin_authenticated") is not True:
+        login_url = "/admin/login?next=" + quote(request.url.path, safe="/")
+        raise HTTPException(
+            status_code=status.HTTP_303_SEE_OTHER,
+            headers={"Location": login_url},
+        )
+
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        _require_same_origin(request)
+        supplied_token = request.headers.get("x-csrf-token")
+        if not supplied_token:
+            form = await request.form()
+            supplied_token = form.get("csrf_token")
+        if not isinstance(supplied_token, str) or not secrets.compare_digest(
+            supplied_token, _csrf_token(request)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Invalid CSRF token.",
+            )
+
+
+def _login_page(csrf_token: str, *, error: bool = False) -> str:
+    error_html = (
+        '<p class="error">הסיסמה שגויה. נסו שוב.</p>' if error else ""
+    )
+    return f"""<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>כניסה לניהול Propeller</title>
+<style>
+body {{ margin:0; min-height:100vh; display:grid; place-items:center; background:#0f172a;
+       color:#f1f5f9; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif; }}
+main {{ width:min(400px,calc(100% - 32px)); background:#1e293b; padding:32px; border:1px solid #334155;
+       border-radius:12px; box-shadow:0 20px 50px #0006; }}
+h1 {{ margin:0 0 8px; font-size:22px; }} p {{ color:#94a3b8; margin:0 0 24px; }}
+label {{ display:block; margin-bottom:8px; font-weight:600; }} input {{ width:100%; padding:11px 12px;
+       border:1px solid #475569; border-radius:7px; background:#0f172a; color:#f1f5f9; font:inherit; }}
+button {{ width:100%; margin-top:18px; padding:11px; border:0; border-radius:7px; background:#38bdf8;
+       color:#0f172a; font:inherit; font-weight:700; cursor:pointer; }} .error {{ color:#fca5a5; margin:-8px 0 16px; }}
+</style>
+</head>
+<body><main>
+  <h1>Propeller Admin</h1>
+  <p>הזינו סיסמה כדי להיכנס לממשק הניהול.</p>
+  {error_html}
+  <form method="post" action="/admin/login">
+    <input type="hidden" name="csrf_token" value="{_escape(csrf_token)}">
+    <label for="password">סיסמה</label>
+    <input id="password" name="password" type="password" required autofocus autocomplete="current-password">
+    <button type="submit">כניסה</button>
+  </form>
+</main></body></html>"""
+
+
+@router.get("/login", response_class=HTMLResponse)
+def login_form(request: Request, error: int = 0) -> HTMLResponse:
+    _configured_admin_password()
+    if request.session.get("admin_authenticated") is True:
+        return RedirectResponse(url="/admin", status_code=303)
+    csrf_token = secrets.token_urlsafe(32)
+    request.session["login_csrf_token"] = csrf_token
+    return HTMLResponse(_login_page(csrf_token, error=bool(error)))
+
+
+@router.post("/login")
+async def login(
+    request: Request,
+    password: str = Form(...),
+    csrf_token: str = Form(...),
+) -> RedirectResponse:
+    admin_password = _configured_admin_password()
+    _require_same_origin(request)
+    expected_csrf_token = request.session.get("login_csrf_token")
+    csrf_ok = isinstance(expected_csrf_token, str) and secrets.compare_digest(
+        csrf_token, expected_csrf_token
+    )
+    password_ok = secrets.compare_digest(password.encode("utf-8"), admin_password.encode("utf-8"))
+    if not (csrf_ok and password_ok):
+        return RedirectResponse(url="/admin/login?error=1", status_code=303)
+
+    request.session.clear()
+    request.session["admin_authenticated"] = True
+    request.session["csrf_token"] = secrets.token_urlsafe(32)
+    return RedirectResponse(url="/admin", status_code=303)
 
 
 # --- formatting helpers -------------------------------------------------
@@ -397,7 +509,13 @@ def _leadme_pill_html() -> str:
     )
 
 
-def _page(title: str, body: str, *, back_href: Optional[str] = None) -> str:
+def _page(
+    title: str,
+    body: str,
+    csrf_field: str,
+    *,
+    back_href: Optional[str] = None,
+) -> str:
     back_btn = (
         f'<a class="hdr-btn" href="{_escape(back_href)}">→ חזרה לרשימת הלידים</a>'
         if back_href else ""
@@ -419,7 +537,10 @@ def _page(title: str, body: str, *, back_href: Optional[str] = None) -> str:
     {back_btn}
     <a class="hdr-btn" href="/admin/simulator">סימולטור</a>
     <a class="hdr-btn" href="/admin/leadme-cookies">עוגיות LeadMe</a>
-    <a class="hdr-btn danger" href="/admin/logout">יציאה</a>
+    <form method="post" action="/admin/logout" style="margin:0">
+      {csrf_field}
+      <button class="hdr-btn danger" type="submit">יציאה</button>
+    </form>
   </div>
 </header>
 <main>{body}</main>
@@ -433,7 +554,7 @@ def _page(title: str, body: str, *, back_href: Optional[str] = None) -> str:
 
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
-def leads_list(_: str = Depends(_require_admin)) -> str:
+def leads_list(request: Request, _: None = Depends(_require_admin)) -> str:
     # Snapshot all data into plain dicts inside the session; ORM objects are
     # detached after session_scope() exits so we can't touch attributes later.
     snapshot: list[dict] = []
@@ -586,11 +707,15 @@ def leads_list(_: str = Depends(_require_admin)) -> str:
     </table>
     """
 
-    return _page(f"לידים · {total_leads}", body)
+    return _page(f"לידים · {total_leads}", body, _csrf_field(request))
 
 
 @router.get("/leads/{lead_id}", response_class=HTMLResponse)
-def lead_conversation(lead_id: int, _: str = Depends(_require_admin)) -> str:
+def lead_conversation(
+    lead_id: int,
+    request: Request,
+    _: None = Depends(_require_admin),
+) -> str:
     import json as _json
 
     lead_snapshot: dict = {}
@@ -682,6 +807,7 @@ def lead_conversation(lead_id: int, _: str = Depends(_require_admin)) -> str:
         toggle_action = f"/admin/leads/{ls['id']}/mute"
         toggle_label = "השתק בוט (אני משתלט)"
         toggle_bg = "#dc2626"
+    csrf_field = _csrf_field(request)
 
     # JS confirm: single-quotes in JS + escaped quote for the alert message
     confirm_msg = (
@@ -714,6 +840,7 @@ def lead_conversation(lead_id: int, _: str = Depends(_require_admin)) -> str:
         <dl>
           <dt>בוט</dt><dd>{bot_pill}
             <form method="post" action="{toggle_action}" style="display:inline;margin-inline-start:8px" onsubmit="return confirm('{toggle_confirm_msg}')">
+              {csrf_field}
               <button type="submit" style="background:{toggle_bg};color:white;border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">{_escape(toggle_label)}</button>
             </form>
           </dd>
@@ -740,6 +867,7 @@ def lead_conversation(lead_id: int, _: str = Depends(_require_admin)) -> str:
         </p>
         <form method="post" action="/admin/leads/{ls['id']}/delete"
               onsubmit="return confirm('{confirm_msg}');">
+          {csrf_field}
           <button type="submit"
                   style="background:#dc2626;color:white;border:none;padding:8px 14px;
                          border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">
@@ -752,6 +880,7 @@ def lead_conversation(lead_id: int, _: str = Depends(_require_admin)) -> str:
     return _page(
         f"ליד {ls['id']} · {ls['name'] or ls['phone']}",
         body,
+        csrf_field,
         back_href="/admin",
     )
 
@@ -770,13 +899,13 @@ def _set_muted(lead_id: int, muted: bool) -> None:
 
 
 @router.post("/leads/{lead_id}/mute")
-def mute_lead(lead_id: int, _: str = Depends(_require_admin)) -> RedirectResponse:
+def mute_lead(lead_id: int, _: None = Depends(_require_admin)) -> RedirectResponse:
     _set_muted(lead_id, True)
     return RedirectResponse(url=f"/admin/leads/{lead_id}", status_code=303)
 
 
 @router.post("/leads/{lead_id}/unmute")
-def unmute_lead(lead_id: int, _: str = Depends(_require_admin)) -> RedirectResponse:
+def unmute_lead(lead_id: int, _: None = Depends(_require_admin)) -> RedirectResponse:
     _set_muted(lead_id, False)
     return RedirectResponse(url=f"/admin/leads/{lead_id}", status_code=303)
 
@@ -814,8 +943,9 @@ def _fmt_iso_to_local(iso: Optional[str]) -> str:
 
 @router.get("/leadme-status", response_class=HTMLResponse)
 def leadme_status(
+    request: Request,
     force: int = 0,
-    _: str = Depends(_require_admin),
+    _: None = Depends(_require_admin),
 ) -> str:
     """LeadMe session-health page + pending push queue.
 
@@ -861,6 +991,7 @@ def leadme_status(
     </section>
     """
 
+    csrf_field = _csrf_field(request)
     queue = get_queue_snapshot()
     total = len(queue)
     abandoned_count = sum(1 for r in queue if r["abandoned"])
@@ -892,18 +1023,21 @@ def leadme_status(
             retry_form = (
                 '<form class="retry-form" method="post" '
                 f'action="/admin/leadme-status/{r["lead_id"]}/retry">'
+                f'{csrf_field}'
                 '<button class="retry-btn" type="submit">נסה שוב עכשיו</button>'
                 '</form>'
                 if not r["abandoned"] else
                 '<form class="retry-form" method="post" '
                 f'action="/admin/leadme-status/{r["lead_id"]}/retry">'
+                f'{csrf_field}'
                 '<button class="retry-btn" type="submit">שיחזור</button>'
                 '</form>'
             )
             clear_form = (
                 '<form class="retry-form" method="post" '
                 f'action="/admin/leadme-status/{r["lead_id"]}/clear" '
-                'onsubmit="return confirm(\'לנקות פריטים ממתינים לליד הזה?\')">'
+                f'onsubmit="return confirm(\'לנקות פריטים ממתינים לליד הזה?\')">'
+                f'{csrf_field}'
                 '<button class="retry-btn" type="submit">נקה</button>'
                 '</form>'
             )
@@ -952,12 +1086,12 @@ def leadme_status(
     {tunables_html}
     """
 
-    return _page("LeadMe · סטטוס וניסיונות חוזרים", body)
+    return _page("LeadMe · סטטוס וניסיונות חוזרים", body, csrf_field)
 
 
 @router.post("/leadme-status/{lead_id}/retry")
 def leadme_status_retry(
-    lead_id: int, _: str = Depends(_require_admin),
+    lead_id: int, _: None = Depends(_require_admin),
 ) -> RedirectResponse:
     """Force an immediate retry for a single lead's pending pushes.
 
@@ -1000,7 +1134,7 @@ def leadme_status_retry(
 
 @router.post("/leadme-status/{lead_id}/clear")
 def leadme_status_clear(
-    lead_id: int, _: str = Depends(_require_admin),
+    lead_id: int, _: None = Depends(_require_admin),
 ) -> RedirectResponse:
     """Wipe a lead's pending queue (operator gave up / handled manually)."""
     from loguru import logger
@@ -1026,42 +1160,14 @@ def leadme_status_clear(
     return RedirectResponse(url="/admin/leadme-status", status_code=303)
 
 
-@router.get("/logout", response_class=HTMLResponse)
-def logout() -> HTMLResponse:
-    """Force the browser to forget its HTTP Basic credentials.
-
-    HTTP Basic has no formal 'logout' — browsers cache the Authorization
-    header until they see a 401 for the same realm. The trick used here:
-    return a 401 with the same realm without validating creds. Most
-    browsers respond by clearing the cached credentials for that realm,
-    and the user gets a fresh login prompt on the next request. We wrap
-    it in a small HTML page so they see a friendly 'Logged out' screen
-    instead of a raw browser error.
-    """
-    html_body = """
-    <div dir="rtl" style="max-width:420px;margin:80px auto;text-align:center;
-                background:#1e293b;padding:32px;border-radius:12px;
-                border:1px solid #334155;color:#f1f5f9;
-                font-family:'Heebo','Assistant',sans-serif">
-      <h2 style="margin:0 0 12px 0">התנתקת מהמערכת</h2>
-      <p style="color:#94a3b8;margin:0 0 20px 0">
-        הדפדפן התבקש לשכוח את פרטי הכניסה של הניהול.
-      </p>
-      <a href="/admin/"
-         style="display:inline-block;padding:10px 18px;background:#38bdf8;
-                color:#0f172a;border-radius:6px;text-decoration:none;
-                font-weight:600">התחבר שוב</a>
-    </div>
-    """
-    return HTMLResponse(
-        content=html_body,
-        status_code=401,
-        headers={"WWW-Authenticate": 'Basic realm="Propeller Admin - logged out"'},
-    )
+@router.post("/logout")
+def logout(request: Request, _: None = Depends(_require_admin)) -> RedirectResponse:
+    request.session.clear()
+    return RedirectResponse(url="/admin/login", status_code=303)
 
 
 @router.post("/leads/{lead_id}/delete")
-def delete_lead(lead_id: int, _: str = Depends(_require_admin)) -> RedirectResponse:
+def delete_lead(lead_id: int, _: None = Depends(_require_admin)) -> RedirectResponse:
     """Hard-delete a lead and all its messages so the next inbound WhatsApp
     from that number starts a completely fresh conversation. Intended for
     manual QA of the opener/warm-up flow.
@@ -1157,10 +1263,12 @@ def _cookies_file_status() -> tuple[str, str]:
 
 @router.get("/leadme-cookies", response_class=HTMLResponse)
 def leadme_cookies_form(
-    _: str = Depends(_require_admin),
+    request: Request,
+    _: None = Depends(_require_admin),
     saved: Optional[str] = None,
     error: Optional[str] = None,
 ) -> str:
+    csrf_field = _csrf_field(request)
     badge, detail = _cookies_file_status()
     flash = ""
     if saved:
@@ -1240,6 +1348,7 @@ def leadme_cookies_form(
     <div class="muted" style="margin-top:8px;font-size:13px">{auto_help}</div>
     <form method="post" action="/admin/leadme-cookies/auto-refresh"
           style="margin-top:12px">
+      {csrf_field}
       {refresh_btn}
     </form>
   </div>
@@ -1258,6 +1367,7 @@ def leadme_cookies_form(
   </ol>
 
   <form method="post" action="/admin/leadme-cookies" style="margin-top:20px">
+    {csrf_field}
     <label style="display:block;margin-bottom:8px;font-weight:600">
       JSON של עוגיות (רשימת אובייקטים):
     </label>
@@ -1277,13 +1387,13 @@ def leadme_cookies_form(
   </form>
 </div>
 """
-    return _page("עוגיות LeadMe", body, back_href="/admin/")
+    return _page("עוגיות LeadMe", body, csrf_field, back_href="/admin/")
 
 
 @router.post("/leadme-cookies")
 def leadme_cookies_save(
     cookies_json: str = Form(...),
-    _: str = Depends(_require_admin),
+    _: None = Depends(_require_admin),
 ) -> RedirectResponse:
     from loguru import logger
     settings = get_settings()
@@ -1335,7 +1445,7 @@ def leadme_cookies_save(
 
 @router.post("/leadme-cookies/auto-refresh")
 def leadme_cookies_auto_refresh(
-    _: str = Depends(_require_admin),
+    _: None = Depends(_require_admin),
 ) -> RedirectResponse:
     """Trigger a full LeadMe login (2Captcha) and write fresh cookies.
 
@@ -1375,7 +1485,7 @@ def leadme_cookies_auto_refresh(
 
 # --- Simulator -------------------------------------------------------------
 
-def _build_simulator_page() -> str:
+def _build_simulator_page(csrf_token: str) -> str:
     sim_css = """
 .sim-layout {
     display: flex;
@@ -1559,6 +1669,7 @@ def _build_simulator_page() -> str:
 """
     js = r"""
 const SESSION_KEY = 'sim_session_id';
+const CSRF_TOKEN = '__CSRF_TOKEN__';
 
 function getOrCreateSession() {
   let sid = sessionStorage.getItem(SESSION_KEY);
@@ -1644,7 +1755,7 @@ async function sendMsg() {
   try {
     const res = await fetch('/admin/simulator/chat', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN},
       body: JSON.stringify({session_id: getOrCreateSession(), message: text})
     });
     const data = await res.json();
@@ -1663,7 +1774,7 @@ function resetChat() {
   const sid = getOrCreateSession();
   fetch('/admin/simulator/reset', {
     method: 'POST',
-    headers: {'Content-Type': 'application/json'},
+    headers: {'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN},
     body: JSON.stringify({session_id: sid})
   });
   sessionStorage.removeItem(SESSION_KEY);
@@ -1743,20 +1854,21 @@ document.getElementById('inp').addEventListener('keydown', function(e) {
         "<script>\n" + js + "\n</script>\n"
         "</body>\n</html>\n"
     )
-    return html
+    return html.replace("__CSRF_TOKEN__", csrf_token)
 
 
 @router.get("/simulator", response_class=HTMLResponse)
 async def simulator_page(
-    _: str = Depends(_require_admin),
+    request: Request,
+    _: None = Depends(_require_admin),
 ) -> HTMLResponse:
-    return HTMLResponse(_build_simulator_page())
+    return HTMLResponse(_build_simulator_page(_csrf_token(request)))
 
 
 @router.post("/simulator/chat")
 async def simulator_chat(
     req: Request,
-    _: str = Depends(_require_admin),
+    _: None = Depends(_require_admin),
 ) -> dict:
     from app.agent.graph import simulate_message
 
@@ -1773,7 +1885,7 @@ async def simulator_chat(
 @router.post("/simulator/reset")
 async def simulator_reset(
     req: Request,
-    _: str = Depends(_require_admin),
+    _: None = Depends(_require_admin),
 ) -> dict:
     from app.agent.graph import clear_simulation
 

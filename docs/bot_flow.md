@@ -55,7 +55,7 @@ flowchart TD
 
     %% ---- Follow-up + admin ----
     FUP["followup/scheduler.py<br/>APScheduler every 30m"] -->|silent leads| HDL
-    ADM["admin/routes.py<br/>/admin (basic auth)"] --> DB1
+    ADM["admin/routes.py<br/>/admin (password session)"] --> DB1
     ADM -.->|delete lead| LMDEL["crm/leadme_delete.py<br/>search-by-phone → POST deleteLeads<br/>(uses saved cookies + CSRF)"]
 
     classDef safety fill:#fff3cd,stroke:#856404
