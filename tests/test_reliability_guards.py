@@ -128,7 +128,10 @@ class LeadMeWebhookTests(unittest.TestCase):
         handle_new_lead.assert_called_once_with(
             phone="972521234567",
             name="Test Lead",
-            metadata={"leadme_campaign_id": "מתעניינים אקדמיה"},
+            metadata={
+                "leadme_campaign": "מתעניינים אקדמיה",
+                "leadme_campaign_id": "מתעניינים אקדמיה",
+            },
             campaign_id="מתעניינים אקדמיה",
         )
 

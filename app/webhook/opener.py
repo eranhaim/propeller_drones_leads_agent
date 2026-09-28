@@ -110,6 +110,37 @@ def _is_website_form_lead(source: object, campaign_id: object) -> bool:
     )
 
 
+def _has_configured_booked_call_tag(tags: object) -> bool:
+    """Only exact, configured tags may represent an already-booked call."""
+    if not isinstance(tags, (list, tuple, set)):
+        return False
+    configured = {
+        _normalize_source(tag)
+        for tag in get_settings().leadme_booked_call_tags
+    }
+    return any(_normalize_source(tag) in configured for tag in tags)
+
+
+def _initial_priority(
+    source: object,
+    campaign_id: object,
+    tags: object,
+) -> tuple[int, str]:
+    """Apply Roy's explicit webhook priority rules.
+
+    Level 2 means a meaningful WhatsApp message and is assigned only by the
+    inbound-message flow. An external webhook therefore starts at Level 1 or
+    Level 3; unknown sources and tags are deliberately safe at Level 3.
+    """
+    if _is_level_one_source(source):
+        return 1, "source_type"
+    if _is_website_form_campaign(campaign_id):
+        return 1, "campaign"
+    if _has_configured_booked_call_tag(tags):
+        return 1, "booked_call_tag"
+    return 3, "unengaged"
+
+
 def _should_send_website_form_opener(
     source: object,
     campaign_id: object,
@@ -169,13 +200,15 @@ def handle_new_lead(
     """
     try:
         source = metadata.get("leadme_source")
+        tags = metadata.get("leadme_tags", [])
         is_website_form_source = _is_website_form_lead(source, campaign_id)
-        is_level_one_source = (
-            _is_level_one_source(source)
-            or is_website_form_source
+        initial_priority, priority_reason = _initial_priority(
+            source, campaign_id, tags,
         )
+        is_level_one_source = initial_priority == 1
         should_send_opener = False
         lead_id: Optional[int] = None
+        duplicate_facebook_lead = False
 
         with session_scope() as session:
             existing_lead = session.execute(
@@ -183,10 +216,36 @@ def handle_new_lead(
                 .where(Lead.phone == phone)
                 .with_for_update()
             ).scalar_one_or_none()
+            facebook_lead_id = str(
+                metadata.get("leadme_facebook_lead_id") or ""
+            ).strip()
+            matching_facebook_lead = repository.get_lead_by_facebook_lead_id(
+                session, facebook_lead_id,
+            )
+            if (
+                matching_facebook_lead is not None
+                and (
+                    existing_lead is None
+                    or matching_facebook_lead.id != existing_lead
+                )
+            ):
+                logger.warning(
+                    "[opener] ignored Facebook Lead ID collision "
+                    "(incoming_phone={}, existing_lead_id={})",
+                    phone,
+                    matching_facebook_lead.id,
+                )
+                return
+
             lead = repository.get_or_create_lead(
                 session, phone=phone, name=name,
             )
             lead_id = lead.id
+            duplicate_facebook_lead = bool(
+                facebook_lead_id
+                and matching_facebook_lead is not None
+                and matching_facebook_lead.id == lead.id
+            )
             # Hold the lead row lock through the send and persisted marker so
             # a duplicate webhook cannot send a second opener.
             session.refresh(lead, with_for_update=True)
@@ -200,23 +259,26 @@ def handle_new_lead(
                 leadme_webhook_received_at=datetime.now(timezone.utc).isoformat(),
                 leadme_source_is_level_1=is_level_one_source,
                 leadme_source_is_website_form=is_website_form_source,
+                leadme_initial_priority=initial_priority,
+                leadme_priority_reason=priority_reason,
             )
             should_send_opener = _should_send_website_form_opener(
                 source, campaign_id,
                 existing_meta,
                 history,
-                is_new_lead=existing_lead is None,
+                is_new_lead=existing_lead is None and not duplicate_facebook_lead,
             )
 
             if not should_send_opener:
                 logger.info(
                     "[opener] skipping WhatsApp opener "
                     "(lead_id={}, website_form_source={}, enabled={}, "
-                    "is_new={}, opener_sent_at={}, history_len={})",
+                    "is_new={}, duplicate_event={}, opener_sent_at={}, history_len={})",
                     lead.id,
                     is_website_form_source,
                     get_settings().website_form_opener_enabled,
                     existing_lead is None,
+                    duplicate_facebook_lead,
                     existing_meta.get("opener_sent_at"),
                     len(history),
                 )
@@ -240,18 +302,26 @@ def handle_new_lead(
                         lead.id, campaign_id, topic,
                     )
 
+        if duplicate_facebook_lead:
+            logger.info(
+                "[opener] ignored duplicate Facebook Lead event for lead_id={}",
+                lead_id,
+            )
+            return
+
         # Roy's mapping: only website home, incoming-call and landing-page
-        # sources are L1 before a booking. Every other new webhook lead is L3
-        # until a meaningful reply upgrades it to L2.
+        # sources, configured website campaigns, and configured booked-call
+        # tags are L1. Every other new webhook lead is L3 until a meaningful
+        # reply upgrades it to L2.
         try:
             from app.crm.client import mark_no_reply, mark_ready_for_call
             with session_scope() as s3:
                 l3 = s3.query(Lead).filter_by(phone=phone).first()
                 if l3 is not None:
-                    if is_level_one_source:
+                    if initial_priority == 1:
                         mark_ready_for_call(
                             l3,
-                            note=f"priority source={source}",
+                            note=f"LeadMe webhook priority={priority_reason}",
                             session=s3,
                         )
                     else:

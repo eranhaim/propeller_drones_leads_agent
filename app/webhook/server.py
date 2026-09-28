@@ -8,10 +8,9 @@ opener via GreenAPI; other sources remain CRM-only.
 Endpoint:
     POST /webhook/leadme/{secret}
 
-Accepts either application/json or application/x-www-form-urlencoded.
-The exact field names LeadMe sends vary per external-interface config, so
-we accept many common aliases (phone / phoneNumber / phonenumber /
-tel / mobile, fullname / firstname+lastname / name, etc.).
+Accepts either application/json or application/x-www-form-urlencoded. The
+configured LeadMe fields are normalized from their casing and array variants:
+phone, firstname, lastname, campaign, tags, Facebook Lead id, and sourceType.
 
 Security: `{secret}` in the URL must match ``WEBHOOK_SECRET``. This is
 the same "shared secret in the path" pattern used by Stripe, GitHub, and
@@ -21,7 +20,6 @@ that reaches the endpoint is accepted (dev-mode only).
 
 from __future__ import annotations
 
-import re
 import time
 from threading import Lock, Thread
 from typing import Any, Dict, Optional
@@ -34,6 +32,12 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.admin.routes import admin_session_secret, router as admin_router
 from app.config import get_settings
 from app.webhook.opener import handle_new_lead
+from app.webhook.payload import (
+    flatten_payload as _flatten_payload,
+    is_valid_whatsapp_phone as _is_valid_whatsapp_phone,
+    normalize_leadme_payload,
+    normalize_phone as _normalize_phone,
+)
 
 
 _polling_lock = Lock()
@@ -90,95 +94,6 @@ def _polling_health() -> Dict[str, Any]:
     return result
 
 
-PHONE_KEYS = (
-    "phone", "phoneNumber", "phonenumber", "phone_number",
-    "tel", "telephone", "mobile", "cellphone", "cell",
-)
-NAME_KEYS = ("fullname", "full_name", "name")
-FIRST_KEYS = ("firstname", "first_name", "givenname", "given_name")
-LAST_KEYS = ("lastname", "last_name", "surname", "familyname", "family_name")
-EMAIL_KEYS = ("email", "mail", "emailAddress", "email_address")
-COMMENT_KEYS = ("comment", "comments", "note", "notes", "message")
-CAMPAIGN_KEYS = ("campaignId", "campaign_id", "campaign", "campaignid")
-LEAD_ID_KEYS = ("leadId", "lead_id", "id", "leadid")
-SOURCE_KEYS = (
-    "source", "source_name", "sourceName", "lead_source", "leadSource",
-    "origin", "origin_name", "originName",
-)
-
-
-def _first(payload: Dict[str, Any], keys) -> str:
-    for k in keys:
-        v = payload.get(k)
-        if v not in (None, ""):
-            return str(v).strip()
-    return ""
-
-
-def _normalize_phone(raw: str) -> str:
-    """Best-effort E.164-without-plus normalization for Israeli numbers.
-
-    Returns a digit-only string like ``972501234567`` suitable for building
-    a WhatsApp chat id. Handles the common "+972-058..." user-typed shape
-    where the local leading 0 wasn't stripped after adding the +972.
-    """
-    digits = re.sub(r"\D", "", raw or "")
-    if not digits:
-        return ""
-    # 00972... -> 972...
-    if digits.startswith("00972"):
-        digits = digits[2:]
-    # +972 prefix with an incorrectly-kept local leading 0: "9720XXXXXXXXX"
-    # Israeli mobiles are 9 digits after the country code (5X-XXXXXXX).
-    # So if we see 972 followed by 0, drop that 0.
-    if digits.startswith("972"):
-        rest = digits[3:]
-        if rest.startswith("0"):
-            rest = rest.lstrip("0")
-        return "972" + rest
-    if digits.startswith("0"):
-        return "972" + digits.lstrip("0")
-    if 8 <= len(digits) <= 9:
-        return "972" + digits.lstrip("0")
-    return digits
-
-
-def _is_valid_whatsapp_phone(phone: str) -> bool:
-    """Accept only Israeli mobile numbers that GreenAPI can address."""
-    return bool(re.fullmatch(r"9725\d{8}", phone))
-
-
-def _extract_custom_fields(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Pull out clf_XXXXX custom fields LeadMe forwards for the campaign
-    (Propeller's on-form questions -- drone experience, course pick, ...).
-    Also keeps any keys prefixed ``custom_`` or containing ``clf`` for
-    forward compatibility."""
-    extras: Dict[str, Any] = {}
-    for k, v in payload.items():
-        if v in (None, ""):
-            continue
-        low = k.lower()
-        if low.startswith("clf_") or low.startswith("clf[") or low.startswith("custom_"):
-            extras[k] = v
-    return extras
-
-
-def _flatten_payload(raw: Any) -> Dict[str, Any]:
-    """Handle both dict payloads and single-lead-in-list variants."""
-    if isinstance(raw, dict):
-        # LeadMe sometimes wraps under {"data": {...}} or {"lead": {...}}
-        for wrapper in ("data", "lead", "leadData"):
-            inner = raw.get(wrapper)
-            if isinstance(inner, dict):
-                merged = {**raw, **inner}
-                merged.pop(wrapper, None)
-                return merged
-        return raw
-    if isinstance(raw, list) and raw and isinstance(raw[0], dict):
-        return raw[0]
-    return {}
-
-
 app = FastAPI(title="Propeller Drones lead webhook", docs_url=None, redoc_url=None)
 app.add_middleware(
     SessionMiddleware,
@@ -213,56 +128,40 @@ async def leadme_webhook(secret: str, request: Request) -> JSONResponse:
             raw_payload = await request.json()
         else:
             form = await request.form()
-            raw_payload = dict(form)
+            raw_payload = {}
+            for key, value in form.multi_items():
+                existing = raw_payload.get(key)
+                if existing is None:
+                    raw_payload[key] = value
+                elif isinstance(existing, list):
+                    existing.append(value)
+                else:
+                    raw_payload[key] = [existing, value]
     except Exception as e:  # noqa: BLE001
         logger.exception("Failed to parse webhook body: {}", e)
         raise HTTPException(status_code=400, detail="invalid body")
 
     payload = _flatten_payload(raw_payload)
+    normalized = normalize_leadme_payload(payload)
     logger.info("[LeadMe webhook] payload keys={}", list(payload.keys()))
 
-    raw_phone = _first(payload, PHONE_KEYS)
-    phone = _normalize_phone(raw_phone)
-    if not _is_valid_whatsapp_phone(phone):
+    if not _is_valid_whatsapp_phone(normalized.phone):
         logger.warning("[LeadMe webhook] rejected invalid phone; keys={}", list(payload.keys()))
         raise HTTPException(status_code=422, detail="invalid phone")
 
-    # Assemble a display name from available fields.
-    name = _first(payload, NAME_KEYS)
-    if not name:
-        first = _first(payload, FIRST_KEYS)
-        last = _first(payload, LAST_KEYS)
-        name = f"{first} {last}".strip()
-
-    email = _first(payload, EMAIL_KEYS)
-    comment = _first(payload, COMMENT_KEYS)
-    campaign_id = _first(payload, CAMPAIGN_KEYS)
-    leadme_lead_id = _first(payload, LEAD_ID_KEYS)
-    source = _first(payload, SOURCE_KEYS)
-    if not source and not campaign_id:
+    if not normalized.source_type and not normalized.campaign:
         logger.warning("[LeadMe webhook] rejected payload without source or campaign")
         raise HTTPException(status_code=422, detail="missing source or campaign")
-
-    metadata: Dict[str, Any] = {
-        "leadme_campaign_id": campaign_id,
-        "leadme_lead_id": leadme_lead_id,
-        "leadme_source": source,
-        "leadme_raw_comment": comment,
-        "email": email,
-    }
-    metadata.update(_extract_custom_fields(payload))
-    # Drop empties to keep the JSON tidy
-    metadata = {k: v for k, v in metadata.items() if v not in (None, "")}
 
     # Persist and process before acknowledging the event. Returning accepted
     # from a detached thread made database failures indistinguishable from a
     # successful LeadMe delivery.
     try:
         handle_new_lead(
-            phone=phone,
-            name=name or None,
-            metadata=metadata,
-            campaign_id=campaign_id or None,
+            phone=normalized.phone,
+            name=normalized.name or None,
+            metadata=normalized.metadata(),
+            campaign_id=normalized.campaign or None,
         )
     except Exception:
         logger.exception("[LeadMe webhook] processing failed")

@@ -96,6 +96,11 @@ class Settings(BaseSettings):
         "אתר הבית,שיחה נכנסת,דף נחיתה,homepage,incoming call,landing page",
         alias="LEADME_LEVEL_1_SOURCES",
     )
+    # Exact LeadMe tag values that mean a call was already booked. Empty by
+    # default: never infer priority from a free-form tag without Roy naming it.
+    leadme_booked_call_tags_raw: str = Field(
+        "", alias="LEADME_BOOKED_CALL_TAGS",
+    )
 
     # LeadMe CRM - public "supplier" API
     # If LEADME_INSERT_URL is empty the client no-ops and just logs.
@@ -268,6 +273,14 @@ class Settings(BaseSettings):
             campaign.strip()
             for campaign in self.leadme_website_form_campaigns_raw.split(",")
             if campaign.strip()
+        ]
+
+    @property
+    def leadme_booked_call_tags(self) -> List[str]:
+        return [
+            tag.strip()
+            for tag in self.leadme_booked_call_tags_raw.split(",")
+            if tag.strip()
         ]
 
     @field_validator("log_level")

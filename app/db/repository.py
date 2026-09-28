@@ -40,6 +40,26 @@ def get_or_create_lead(session: Session, phone: str, name: Optional[str] = None)
     return lead
 
 
+def get_lead_by_facebook_lead_id(
+    session: Session,
+    facebook_lead_id: str,
+) -> Optional[Lead]:
+    """Return the first lead recorded for a LeadMe Facebook Lead ID."""
+    if not facebook_lead_id:
+        return None
+    stmt = (
+        select(Lead)
+        .where(
+            Lead.lead_metadata["leadme_facebook_lead_id"].as_string()
+            == facebook_lead_id
+        )
+        .order_by(Lead.id)
+        .limit(1)
+        .with_for_update()
+    )
+    return session.execute(stmt).scalar_one_or_none()
+
+
 def add_message(
     session: Session,
     lead: Lead,

@@ -150,12 +150,13 @@ The queue drain writes it when the retry succeeds.
 | `graph.handle_message` | 2 | meaningful direct WhatsApp message or later CTWA reply |
 | `tools.schedule_call` | 1 | booking confirmed |
 | `graph._enforce_booking_promise` | 1 | reply promised a call but the tool never fired |
-| `opener.handle_new_lead` | 1 | source exactly matches configured home-page, incoming-call, or landing-page label |
+| `opener.handle_new_lead` | 1 | source type exactly matches configured home-page, incoming-call, or landing-page label; configured website campaign; or configured booked-call tag |
 | `opener.handle_new_lead` | 3 | other new webhook lead with no bot engagement |
 
 Levels 2 and 3 are decided mechanically rather than by the model. Source-based
-L1 is assigned only from an explicit webhook source value. Missing or unknown
-source data is never treated as L1.
+L1 is assigned only from an explicit webhook source type, configured campaign,
+or configured booked-call tag. Missing or unknown values are stored but never
+treated as L1. Level 2 is assigned only after meaningful WhatsApp engagement.
 
 ### Slot tag
 
