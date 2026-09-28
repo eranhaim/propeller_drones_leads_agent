@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from app.crm.leadme_queue import (
     _is_due,
@@ -13,6 +15,7 @@ from app.crm.leadme_queue import (
     _merge_status,
 )
 from app.agent.graph import _is_refusal
+from app.webhook.opener import _should_send_website_form_opener
 from app.webhook.server import _normalize_phone
 
 
@@ -24,6 +27,48 @@ class PhoneNormalizationTests(unittest.TestCase):
 
     def test_rejects_empty_phone(self) -> None:
         self.assertEqual(_normalize_phone("not a phone"), "")
+
+
+class WebsiteFormOpenerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.settings = SimpleNamespace(
+            website_form_opener_enabled=True,
+            leadme_website_form_sources=["אתר הבית", "דף נחיתה"],
+        )
+
+    @patch("app.webhook.opener.get_settings")
+    def test_new_website_form_lead_gets_one_opener(self, get_settings) -> None:
+        get_settings.return_value = self.settings
+
+        self.assertTrue(
+            _should_send_website_form_opener("אתר הבית", {}, [])
+        )
+
+    @patch("app.webhook.opener.get_settings")
+    def test_duplicate_or_existing_lead_never_gets_another_opener(
+        self,
+        get_settings,
+    ) -> None:
+        get_settings.return_value = self.settings
+
+        self.assertFalse(
+            _should_send_website_form_opener(
+                "דף נחיתה",
+                {"opener_sent_at": "2026-09-28T10:00:00+00:00"},
+                [],
+            )
+        )
+        self.assertFalse(
+            _should_send_website_form_opener("דף נחיתה", {}, [object()])
+        )
+
+    @patch("app.webhook.opener.get_settings")
+    def test_non_website_priority_source_stays_crm_only(self, get_settings) -> None:
+        get_settings.return_value = self.settings
+
+        self.assertFalse(
+            _should_send_website_form_opener("שיחה נכנסת", {}, [])
+        )
 
 
 class LeadMeQueueTests(unittest.TestCase):

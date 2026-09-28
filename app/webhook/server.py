@@ -2,9 +2,8 @@
 
 Purpose: LeadMe (via its "External Interfaces" mechanism) POSTs new leads
 to this endpoint the moment they arrive on a campaign. We upsert the lead
-in our own DB and immediately send them a warm WhatsApp opener via
-GreenAPI so the user is engaged before the sales team ever picks up the
-phone.
+in our own DB. Approved website-form sources receive one warm WhatsApp
+opener via GreenAPI; other sources remain CRM-only.
 
 Endpoint:
     POST /webhook/leadme/{secret}

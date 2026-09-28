@@ -77,6 +77,32 @@ def _is_level_one_source(source: object) -> bool:
     return normalized in configured
 
 
+def _is_website_form_source(source: object) -> bool:
+    """Return whether LeadMe supplied an approved website-form source."""
+    normalized = _normalize_source(source)
+    if not normalized:
+        return False
+    configured = {
+        _normalize_source(item)
+        for item in get_settings().leadme_website_form_sources
+    }
+    return normalized in configured
+
+
+def _should_send_website_form_opener(
+    source: object,
+    metadata: Dict[str, Any],
+    history: list[object],
+) -> bool:
+    """Allow one immediate opener for a new, approved website-form lead."""
+    return (
+        get_settings().website_form_opener_enabled
+        and _is_website_form_source(source)
+        and not metadata.get("opener_sent_at")
+        and not history
+    )
+
+
 def _greenapi_client() -> GreenAPI:
     settings = get_settings()
     return GreenAPI(
@@ -114,18 +140,22 @@ def handle_new_lead(
 ) -> None:
     """Record a LeadMe lead and classify its initial CRM priority.
 
-    A LeadMe webhook does not prove WhatsApp consent. Sending an opener is
-    therefore opt-in; the default records the lead and CRM state only.
+    Only approved website-form sources receive one first-contact opener.
+    Other webhook sources remain CRM-only under Roy's no-follow-up policy.
     """
     try:
         source = metadata.get("leadme_source")
         is_level_one_source = _is_level_one_source(source)
+        is_website_form_source = _is_website_form_source(source)
         should_send_opener = False
 
         with session_scope() as session:
             lead = repository.get_or_create_lead(
                 session, phone=phone, name=name,
             )
+            # Hold the lead row lock through the send and persisted marker.
+            # A duplicate form webhook then waits and sees opener_sent_at.
+            session.refresh(lead, with_for_update=True)
             existing_meta = dict(lead.lead_metadata or {})
             already_contacted = bool(existing_meta.get("opener_sent_at"))
             history = repository.recent_messages(session, lead, limit=1)
@@ -136,19 +166,22 @@ def handle_new_lead(
                 **metadata,
                 leadme_webhook_received_at=datetime.now(timezone.utc).isoformat(),
                 leadme_source_is_level_1=is_level_one_source,
+                leadme_source_is_website_form=is_website_form_source,
             )
-            should_send_opener = (
-                get_settings().webhook_opener_enabled
-                and not already_contacted
-                and not history
+            should_send_opener = _should_send_website_form_opener(
+                source,
+                existing_meta,
+                history,
             )
 
             if not should_send_opener:
                 logger.info(
-                    "[opener] WhatsApp opener disabled or lead already engaged "
-                    "(phone={}, enabled={}, opener_sent_at={}, history_len={})",
+                    "[opener] skipping WhatsApp opener "
+                    "(phone={}, website_form_source={}, enabled={}, "
+                    "opener_sent_at={}, history_len={})",
                     phone,
-                    get_settings().webhook_opener_enabled,
+                    is_website_form_source,
+                    get_settings().website_form_opener_enabled,
                     existing_meta.get("opener_sent_at"),
                     len(history),
                 )

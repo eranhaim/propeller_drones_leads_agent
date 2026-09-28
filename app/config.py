@@ -64,10 +64,16 @@ class Settings(BaseSettings):
     # Path segment secret. LeadMe hits /webhook/leadme/{webhook_secret}
     # Empty => any request accepted (dev-mode only, do NOT run in prod).
     webhook_secret: str = Field("", alias="WEBHOOK_SECRET")
-    # LeadMe webhooks are CRM events, not WhatsApp consent. Keep their opener
-    # disabled unless the customer explicitly approves proactive outreach.
-    webhook_opener_enabled: bool = Field(
-        False, alias="WEBHOOK_OPENER_ENABLED",
+    # An immediate reply is approved only for a first website-form contact.
+    # This does not enable any scheduler-driven follow-up or remarketing.
+    website_form_opener_enabled: bool = Field(
+        True, alias="WEBSITE_FORM_OPENER_ENABLED",
+    )
+    # Exact LeadMe source labels that identify a website form. Incoming calls
+    # remain Level 1 but do not receive an automatic WhatsApp opener.
+    leadme_website_form_sources_raw: str = Field(
+        "אתר הבית,דף נחיתה,homepage,landing page",
+        alias="LEADME_WEBSITE_FORM_SOURCES",
     )
     # Exact source labels that Roy defined as high-priority before a bot
     # conversation: website home page, incoming call, and landing page.
@@ -232,6 +238,14 @@ class Settings(BaseSettings):
         return [
             source.strip()
             for source in self.leadme_level_1_sources_raw.split(",")
+            if source.strip()
+        ]
+
+    @property
+    def leadme_website_form_sources(self) -> List[str]:
+        return [
+            source.strip()
+            for source in self.leadme_website_form_sources_raw.split(",")
             if source.strip()
         ]
 
