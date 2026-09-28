@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     # Path segment secret. LeadMe hits /webhook/leadme/{webhook_secret}
     # Empty => any request accepted (dev-mode only, do NOT run in prod).
     webhook_secret: str = Field("", alias="WEBHOOK_SECRET")
+    # Public HTTPS origin used only to display the LeadMe webhook URL to a
+    # signed-in admin. It must not include the webhook path or secret.
+    webhook_public_base_url: str = Field(
+        "https://propeller.64.176.175.97.nip.io",
+        alias="WEBHOOK_PUBLIC_BASE_URL",
+    )
     # An immediate reply is approved only for a first website-form contact.
     # This does not enable any scheduler-driven follow-up or remarketing.
     website_form_opener_enabled: bool = Field(

@@ -536,6 +536,7 @@ def _page(
     {_leadme_pill_html()}
     {back_btn}
     <a class="hdr-btn" href="/admin/simulator">סימולטור</a>
+    <a class="hdr-btn" href="/admin/leadme-webhook">Webhook של LeadMe</a>
     <a class="hdr-btn" href="/admin/leadme-cookies">עוגיות LeadMe</a>
     <form method="post" action="/admin/logout" style="margin:0">
       {csrf_field}
@@ -708,6 +709,76 @@ def leads_list(request: Request, _: None = Depends(_require_admin)) -> str:
     """
 
     return _page(f"לידים · {total_leads}", body, _csrf_field(request))
+
+
+@router.get("/leadme-webhook", response_class=HTMLResponse)
+def leadme_webhook_url(
+    request: Request,
+    _: None = Depends(_require_admin),
+) -> HTMLResponse:
+    """Show the LeadMe callback URL only to a signed-in admin."""
+    settings = get_settings()
+    secret = (settings.webhook_secret or "").strip()
+    public_base_url = (settings.webhook_public_base_url or "").strip().rstrip("/")
+    if not secret or not public_base_url:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="LeadMe webhook URL is not configured.",
+        )
+
+    webhook_url = (
+        f"{public_base_url}/webhook/leadme/{quote(secret, safe='')}"
+    )
+    body = f"""
+    <section style="max-width:760px;background:var(--panel);padding:24px;
+                    border:1px solid var(--border);border-radius:10px">
+      <h2 style="margin-top:0">כתובת Webhook ל-LeadMe</h2>
+      <p style="color:var(--text-dim)">
+        הכתובת כוללת סוד גישה. העתיקו אותה ישירות ל-LeadMe ואל תשלחו אותה
+        בהודעות, במייל או במסמכים.
+      </p>
+      <label for="leadme-webhook-url" style="display:block;margin:20px 0 8px;
+             font-weight:600">כתובת ה-Webhook</label>
+      <textarea id="leadme-webhook-url" readonly aria-label="LeadMe webhook URL"
+                dir="ltr" style="width:100%;min-height:72px;resize:none;
+                background:var(--bg);color:var(--text);border:1px solid var(--border);
+                border-radius:6px;padding:10px;font-family:ui-monospace,monospace;
+                font-size:13px">{_escape(webhook_url)}</textarea>
+      <button type="button" class="hdr-btn" style="margin-top:12px;cursor:pointer"
+              onclick="copyLeadMeWebhookUrl()">העתקת כתובת</button>
+      <span id="copy-status" role="status" style="margin-inline-start:10px;
+            color:var(--text-dim)"></span>
+      <h3 style="margin:28px 0 10px">הגדרה ב-LeadMe</h3>
+      <ol style="line-height:1.9;padding-inline-start:24px">
+        <li>פתחו את <b>External Interface</b> ב-LeadMe והוסיפו ממשק חדש.</li>
+        <li>הדביקו את הכתובת המלאה בשדה הכתובת.</li>
+        <li>בחרו שיטת בקשה <b>POST</b>.</li>
+        <li>הגדירו את הממשק כ-<b>פעיל</b>.</li>
+        <li>אל תגדירו כותרת אימות: <b>ללא header</b>.</li>
+      </ol>
+    </section>
+    <script>
+    async function copyLeadMeWebhookUrl() {{
+      const field = document.getElementById('leadme-webhook-url');
+      const status = document.getElementById('copy-status');
+      try {{
+        await navigator.clipboard.writeText(field.value);
+        status.textContent = 'הכתובת הועתקה.';
+      }} catch (_) {{
+        field.select();
+        document.execCommand('copy');
+        status.textContent = 'הכתובת הועתקה.';
+      }}
+    }}
+    </script>
+    """
+    return HTMLResponse(
+        _page("LeadMe · כתובת Webhook", body, _csrf_field(request)),
+        headers={
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+        },
+    )
 
 
 @router.get("/leads/{lead_id}", response_class=HTMLResponse)

@@ -22,7 +22,13 @@ class AdminAuthenticationTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.previous_password = os.environ.get("ADMIN_PASSWORD")
+        self.previous_webhook_secret = os.environ.get("WEBHOOK_SECRET")
+        self.previous_webhook_public_base_url = os.environ.get(
+            "WEBHOOK_PUBLIC_BASE_URL"
+        )
         os.environ["ADMIN_PASSWORD"] = self.password
+        os.environ["WEBHOOK_SECRET"] = "test-webhook-secret"
+        os.environ["WEBHOOK_PUBLIC_BASE_URL"] = "https://webhook.example.test"
         get_settings.cache_clear()
 
         app = FastAPI()
@@ -57,6 +63,16 @@ class AdminAuthenticationTests(unittest.TestCase):
             os.environ.pop("ADMIN_PASSWORD", None)
         else:
             os.environ["ADMIN_PASSWORD"] = self.previous_password
+        if self.previous_webhook_secret is None:
+            os.environ.pop("WEBHOOK_SECRET", None)
+        else:
+            os.environ["WEBHOOK_SECRET"] = self.previous_webhook_secret
+        if self.previous_webhook_public_base_url is None:
+            os.environ.pop("WEBHOOK_PUBLIC_BASE_URL", None)
+        else:
+            os.environ["WEBHOOK_PUBLIC_BASE_URL"] = (
+                self.previous_webhook_public_base_url
+            )
         get_settings.cache_clear()
 
     def _login_form_token(self) -> str:
@@ -134,6 +150,42 @@ class AdminAuthenticationTests(unittest.TestCase):
             },
         )
         self.assertEqual(valid_post.json(), {"ok": True})
+
+    def test_webhook_page_denies_unauthenticated_requests_without_secret(self) -> None:
+        response = self.client.get(
+            "/admin/leadme-webhook", follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 303)
+        self.assertNotIn("test-webhook-secret", response.text)
+        self.assertNotIn("test-webhook-secret", response.headers.get("location", ""))
+
+    def test_webhook_page_shows_url_and_instructions_after_login(self) -> None:
+        self._login()
+
+        response = self.client.get("/admin/leadme-webhook")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            "https://webhook.example.test/webhook/leadme/test-webhook-secret",
+            response.text,
+        )
+        self.assertIn("External Interface", response.text)
+        self.assertIn("POST", response.text)
+        self.assertIn("פעיל", response.text)
+        self.assertIn("ללא header", response.text)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertEqual(response.headers["referrer-policy"], "no-referrer")
+
+    def test_webhook_page_fails_closed_when_secret_is_empty(self) -> None:
+        self._login()
+        os.environ["WEBHOOK_SECRET"] = ""
+        get_settings.cache_clear()
+
+        response = self.client.get("/admin/leadme-webhook")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertNotIn("test-webhook-secret", response.text)
 
     def test_every_admin_route_except_login_uses_the_guard(self) -> None:
         for route in admin_router.routes:
