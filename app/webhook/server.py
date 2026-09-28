@@ -220,7 +220,6 @@ async def leadme_webhook(secret: str, request: Request) -> JSONResponse:
 
     payload = _flatten_payload(raw_payload)
     logger.info("[LeadMe webhook] payload keys={}", list(payload.keys()))
-    logger.debug("[LeadMe webhook] full payload: {}", payload)
 
     raw_phone = _first(payload, PHONE_KEYS)
     phone = _normalize_phone(raw_phone)
