@@ -35,14 +35,24 @@ def mark_ready_for_call(
     )
 
 
-def mark_engaged_no_book(lead: Lead, note: Optional[str] = None) -> bool:
+def mark_engaged_no_book(
+    lead: Lead,
+    note: Optional[str] = None,
+    *,
+    session: Optional[Session] = None,
+) -> bool:
     """Engagement Level 2: lead replied to the bot but never booked."""
-    return push_engagement_level(lead, level=2, note=note)
+    return push_engagement_level(lead, level=2, note=note, session=session)
 
 
-def mark_no_reply(lead: Lead, note: Optional[str] = None) -> bool:
+def mark_no_reply(
+    lead: Lead,
+    note: Optional[str] = None,
+    *,
+    session: Optional[Session] = None,
+) -> bool:
     """Engagement Level 3: lead never replied to the opener."""
-    return push_engagement_level(lead, level=3, note=note)
+    return push_engagement_level(lead, level=3, note=note, session=session)
 
 
 def mark_not_relevant(

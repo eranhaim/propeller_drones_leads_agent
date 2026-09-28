@@ -64,6 +64,19 @@ class Settings(BaseSettings):
     # Path segment secret. LeadMe hits /webhook/leadme/{webhook_secret}
     # Empty => any request accepted (dev-mode only, do NOT run in prod).
     webhook_secret: str = Field("", alias="WEBHOOK_SECRET")
+    # LeadMe webhooks are CRM events, not WhatsApp consent. Keep their opener
+    # disabled unless the customer explicitly approves proactive outreach.
+    webhook_opener_enabled: bool = Field(
+        False, alias="WEBHOOK_OPENER_ENABLED",
+    )
+    # Exact source labels that Roy defined as high-priority before a bot
+    # conversation: website home page, incoming call, and landing page.
+    # LeadMe must forward one of these labels in a source field for the
+    # webhook path to assign Level 1.
+    leadme_level_1_sources_raw: str = Field(
+        "אתר הבית,שיחה נכנסת,דף נחיתה,homepage,incoming call,landing page",
+        alias="LEADME_LEVEL_1_SOURCES",
+    )
 
     # LeadMe CRM - public "supplier" API
     # If LEADME_INSERT_URL is empty the client no-ops and just logs.
@@ -112,15 +125,11 @@ class Settings(BaseSettings):
         "update-only", alias="LEADME_INSERT_MODE",
     )
 
-    # Status IDs for the 3 engagement levels the customer asked for.
-    # Level 1: booked a call with the bot.
-    # Level 2: replied to the bot but never booked.
-    # Level 3: never replied to the bot (opener only).
-    # Empty string => skip the status update for that level, but still
-    # push the engagement TAG so the sales team can filter in LeadMe.
-    leadme_status_level_1: str = Field("", alias="LEADME_STATUS_LEVEL_1")
-    leadme_status_level_2: str = Field("", alias="LEADME_STATUS_LEVEL_2")
-    leadme_status_level_3: str = Field("", alias="LEADME_STATUS_LEVEL_3")
+    # Current Propeller LeadMe status relationship IDs. Override only when
+    # Roy changes the account's statuses and verifies replacement numeric IDs.
+    leadme_status_level_1: str = Field("7326", alias="LEADME_STATUS_LEVEL_1")
+    leadme_status_level_2: str = Field("7327", alias="LEADME_STATUS_LEVEL_2")
+    leadme_status_level_3: str = Field("7328", alias="LEADME_STATUS_LEVEL_3")
     # Existing Propeller LeadMe status "לא רלוונטי". This remains configurable
     # because status relationship IDs are account-specific.
     leadme_status_not_relevant: str = Field(
@@ -217,6 +226,14 @@ class Settings(BaseSettings):
             p.strip()
             for p in self.allowed_test_phones_raw.split(",")
             if p.strip()
+        ]
+
+    @property
+    def leadme_level_1_sources(self) -> List[str]:
+        return [
+            source.strip()
+            for source in self.leadme_level_1_sources_raw.split(",")
+            if source.strip()
         ]
 
     @field_validator("log_level")

@@ -326,7 +326,6 @@ def handle_message(
     # team has no idea the lead reached out.
     push_level: Optional[int] = None  # 2 or 3, decided below
     push_not_relevant = False
-    session_was_reset = False
     with session_scope() as session:
         lead = repository.get_or_create_lead(session, phone=phone, name=sender_name)
 
@@ -339,7 +338,6 @@ def handle_message(
                 lead.id, lead.last_message_at,
             )
             repository.reset_lead_session(session, lead)
-            session_was_reset = True
 
         md_before = dict(lead.lead_metadata or {})
         # An explicit refusal is terminal in LeadMe. A later inbound message
@@ -371,6 +369,8 @@ def handle_message(
             session.flush()
             push_not_relevant = True
         already_level = md_before.get("leadme_last_level")
+        is_priority_source = bool(md_before.get("leadme_source_is_level_1"))
+        is_ctwa_first_contact = bool(md_before.get("ctwa_campaign"))
         # count existing USER messages after the current session start:
         reset_str = md_before.get("session_reset_at")
         from datetime import datetime as _dt
@@ -385,60 +385,26 @@ def handle_message(
             if m.role == MessageRole.user
             and (reset_dt is None or m.created_at > reset_dt)
         )
-        # Classification levels:
-        #   Level 3 = lead just arrived (first message, e.g. CTWA auto-text)
-        #   Level 2 = lead actually replied to the bot (second message onward)
-        #   Level 1 = lead booked a call (handled by schedule_call tool)
-        #            OR lead has auto-L1 tags (שיחה נכנסת, אתר הבית, עמוד נחיתה)
-        # push_engagement_level enforces upgrade-only rules.
+        # Roy's priority mapping:
+        #   Level 1 = booked call, or a verified home-page / incoming-call /
+        #             landing-page source (handled by the LeadMe webhook).
+        #   Level 2 = meaningful bot conversation.
+        #   Level 3 = a non-priority CTWA auto-message with no bot reply yet.
+        # A direct WhatsApp message is itself meaningful engagement, so it is
+        # Level 2 on the first turn rather than being assumed to be CTWA.
         if (
             not refused_now
             and lead.funnel_stage != FunnelStage.handed_off
             and already_level != 1
+            and not is_priority_source
         ):
             if prior_user_msgs == 0:
-                try:
-                    from app.crm.leadme_v3 import check_auto_level1
-                    if check_auto_level1(phone):
-                        push_level = 1
-                    else:
-                        push_level = 3
-                except Exception:
-                    logger.exception("[auto-L1] tag check failed for {}", phone)
-                    push_level = 3
-            elif prior_user_msgs == 1:
-                push_level = 2  # second message — lead is actually engaging
+                push_level = 3 if is_ctwa_first_contact else 2
+            else:
+                push_level = 2
 
         repository.add_message(session, lead, MessageRole.user, text)
         lead_id = lead.id
-
-    # After reset, send a fresh opener so the lead gets a proper re-greeting,
-    # then bail out — the agent should not also reply to the same message.
-    if session_was_reset:
-        try:
-            from app.webhook.opener import _render_opener, _pick_topic, _greenapi_client, _chat_id
-            with session_scope() as s_op:
-                l_op = s_op.get(Lead, lead_id)
-                if l_op is not None:
-                    meta = dict(l_op.lead_metadata or {})
-                    topic = _pick_topic(meta.get("opener_campaign_id"), meta)
-                    opener_text = _render_opener(l_op.name, topic)
-                    try:
-                        _greenapi_client().sending.sendMessage(_chat_id(phone), opener_text)
-                    except Exception:
-                        logger.exception("[session-reset] failed to send re-opener to {}", phone)
-                        opener_text = None
-                    if opener_text:
-                        repository.add_message(s_op, l_op, MessageRole.assistant, opener_text)
-                        from datetime import datetime, timezone
-                        repository.update_lead_metadata(
-                            s_op, l_op,
-                            opener_sent_at=datetime.now(timezone.utc).isoformat(),
-                        )
-                        logger.info("[session-reset] re-opener sent to {}", phone)
-        except Exception:
-            logger.exception("[session-reset] re-opener flow failed for {}", phone)
-        return ""
 
     # CRM changes use their own transaction so a CRM failure never blocks the
     # user-facing reply. An explicit opt-out wins over engagement levels.
@@ -465,9 +431,17 @@ def handle_message(
                 l_lvl = s_lvl.get(Lead, lead_id)
                 if l_lvl is not None:
                     if push_level == 3:
-                        mark_no_reply(l_lvl, note="first contact, awaiting reply")
+                        mark_no_reply(
+                            l_lvl,
+                            note="CTWA auto-message; awaiting bot reply",
+                            session=s_lvl,
+                        )
                     elif push_level == 2:
-                        mark_engaged_no_book(l_lvl, note="lead replied to bot")
+                        mark_engaged_no_book(
+                            l_lvl,
+                            note="meaningful WhatsApp engagement",
+                            session=s_lvl,
+                        )
         except Exception:
             logger.exception("[level-push] level={} failed for lead {}", push_level, lead_id)
     # ---- Transaction 2: run the agent and persist the reply. ---------------

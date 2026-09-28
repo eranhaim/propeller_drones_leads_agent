@@ -101,6 +101,10 @@ EMAIL_KEYS = ("email", "mail", "emailAddress", "email_address")
 COMMENT_KEYS = ("comment", "comments", "note", "notes", "message")
 CAMPAIGN_KEYS = ("campaignId", "campaign_id", "campaign", "campaignid")
 LEAD_ID_KEYS = ("leadId", "lead_id", "id", "leadid")
+SOURCE_KEYS = (
+    "source", "source_name", "sourceName", "lead_source", "leadSource",
+    "origin", "origin_name", "originName",
+)
 
 
 def _first(payload: Dict[str, Any], keys) -> str:
@@ -226,10 +230,12 @@ async def leadme_webhook(secret: str, request: Request) -> JSONResponse:
     comment = _first(payload, COMMENT_KEYS)
     campaign_id = _first(payload, CAMPAIGN_KEYS)
     leadme_lead_id = _first(payload, LEAD_ID_KEYS)
+    source = _first(payload, SOURCE_KEYS)
 
     metadata: Dict[str, Any] = {
         "leadme_campaign_id": campaign_id,
         "leadme_lead_id": leadme_lead_id,
+        "leadme_source": source,
         "leadme_raw_comment": comment,
         "email": email,
     }

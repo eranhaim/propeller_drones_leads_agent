@@ -137,19 +137,19 @@ def push_lead(
             "a real lead, remove the 999 prefix.",
             lead.phone,
         )
-        return True
+        return False
 
     mode = (settings.leadme_insert_mode or "update-only").strip().lower()
     if mode == "never":
         logger.info("[LeadMe] insert_mode=never, skipping push for {}",
                     lead.phone)
-        return True
+        return False
 
     if not (lead.phone or "").strip():
         logger.info(
             "[LeadMe] skipping push for lead {} -- no phone number", lead.id,
         )
-        return True
+        return False
 
     slot = (lead.lead_metadata or {}).get("preferred_call_slot")
 
@@ -223,12 +223,17 @@ def push_lead(
             return False
 
         status_val = _status_id_for_level(level)
-        ok_status = True
-        if status_val:
-            ok_status = _admin_change_status(client, lc_id, status_val)
+        if not status_val:
+            logger.error(
+                "[LeadMe] no configured status ID for level {}; refusing to "
+                "record a local delivery for phone={}",
+                level, lead.phone,
+            )
+            return False
+        ok_status = _admin_change_status(client, lc_id, status_val)
 
         ok_tag = True
-        if slot:
+        if level == 1 and slot and slot not in ("any", "none"):
             tag_lead_id = _resolve_tag_lead_id(client, lc_id)
             if tag_lead_id is None:
                 # Resolution failed (viewLead probably returned a login
@@ -255,7 +260,16 @@ def push_lead(
             lead.phone, lc_id, campaign, level, status_val or "-",
             slot, ok_status, ok_tag,
         )
-        return ok_status and ok_tag
+        if ok_status and ok_tag:
+            return True
+
+        # A resolved row can still reject a write when cookies expire or
+        # LeadMe returns a transient error. Preserve the engagement intent
+        # for the durable queue instead of falsely recording it locally.
+        leadme_queue.enqueue_engagement(
+            lead, level=level, slot=slot, note=note, session=session,
+        )
+        return True
     finally:
         try:
             client.close()
@@ -651,9 +665,9 @@ def push_engagement_level(
         tag = f"חלון · {slot}" if slot and level == 1 else None
         ok = _v3_push_level(lead.phone, level=level, tag=tag)
         if ok:
-            # Push actually landed in LeadMe -- record it.
-            md["leadme_last_level"] = int(level)
-            lead.lead_metadata = md
+            # Push actually landed in LeadMe -- record it and discard any
+            # stale queued L2/L3 item. A queued L1 is retained.
+            leadme_queue.record_confirmed_engagement(lead, level)
         else:
             # v3 failed (most likely CTWA race: lead not in LeadMe yet).
             # Enqueue for background retry. Do NOT write leadme_last_level
@@ -669,9 +683,14 @@ def push_engagement_level(
             )
     else:
         ok = push_lead(lead, note=note, level=level, session=session)
-        if ok:
-            md["leadme_last_level"] = int(level)
-            lead.lead_metadata = md
+        pending = list((lead.lead_metadata or {}).get("leadme_push_pending") or [])
+        has_pending_engagement = any(
+            item.get("kind") == "engagement" for item in pending
+        )
+        if ok and not has_pending_engagement:
+            # ``push_lead`` succeeded synchronously. If it queued instead,
+            # the queue drain writes this key only after LeadMe confirms.
+            leadme_queue.record_confirmed_engagement(lead, level)
 
     return True  # queued or pushed -- caller should not retry
 

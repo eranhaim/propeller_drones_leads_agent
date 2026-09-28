@@ -16,6 +16,7 @@ handler takes over and the full LangChain agent runs.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from loguru import logger
@@ -60,6 +61,22 @@ CAMPAIGN_TOPIC = {
 DEFAULT_TOPIC = "עולם הרחפנים"
 
 
+def _normalize_source(value: object) -> str:
+    return " ".join(str(value or "").strip().casefold().split())
+
+
+def _is_level_one_source(source: object) -> bool:
+    """Return whether LeadMe supplied one of Roy's priority sources."""
+    normalized = _normalize_source(source)
+    if not normalized:
+        return False
+    configured = {
+        _normalize_source(item)
+        for item in get_settings().leadme_level_1_sources
+    }
+    return normalized in configured
+
+
 def _greenapi_client() -> GreenAPI:
     settings = get_settings()
     return GreenAPI(
@@ -95,8 +112,16 @@ def handle_new_lead(
     metadata: Dict[str, Any],
     campaign_id: Optional[str],
 ) -> None:
-    """Upsert + opener. Safe to run on a daemon thread (own DB session)."""
+    """Record a LeadMe lead and classify its initial CRM priority.
+
+    A LeadMe webhook does not prove WhatsApp consent. Sending an opener is
+    therefore opt-in; the default records the lead and CRM state only.
+    """
     try:
+        source = metadata.get("leadme_source")
+        is_level_one_source = _is_level_one_source(source)
+        should_send_opener = False
+
         with session_scope() as session:
             lead = repository.get_or_create_lead(
                 session, phone=phone, name=name,
@@ -105,45 +130,68 @@ def handle_new_lead(
             already_contacted = bool(existing_meta.get("opener_sent_at"))
             history = repository.recent_messages(session, lead, limit=1)
 
-            repository.update_lead_metadata(session, lead, **metadata)
-
-            if already_contacted or history:
-                logger.info(
-                    "[opener] lead {} already engaged (opener_sent_at={}, "
-                    "history_len={}), skipping opener.",
-                    phone, existing_meta.get("opener_sent_at"), len(history),
-                )
-                return
-
-            topic = _pick_topic(campaign_id, {**existing_meta, **metadata})
-            text = _render_opener(name, topic)
-
-            try:
-                api = _greenapi_client()
-                api.sending.sendMessage(_chat_id(phone), text)
-            except Exception:
-                logger.exception("[opener] failed to send WhatsApp to {}", phone)
-                return
-
-            repository.add_message(session, lead, MessageRole.assistant, text)
-            from datetime import datetime, timezone
             repository.update_lead_metadata(
-                session, lead,
-                opener_sent_at=datetime.now(timezone.utc).isoformat(),
-                opener_campaign_id=campaign_id or "",
+                session,
+                lead,
+                **metadata,
+                leadme_webhook_received_at=datetime.now(timezone.utc).isoformat(),
+                leadme_source_is_level_1=is_level_one_source,
             )
-            logger.info("[opener] sent to {} (campaign={}, topic={!r})",
-                        phone, campaign_id, topic)
+            should_send_opener = (
+                get_settings().webhook_opener_enabled
+                and not already_contacted
+                and not history
+            )
 
-        # Webhook leads (website form, phone call, landing page) are
-        # already sales-ready — push Level 1 immediately.
+            if not should_send_opener:
+                logger.info(
+                    "[opener] WhatsApp opener disabled or lead already engaged "
+                    "(phone={}, enabled={}, opener_sent_at={}, history_len={})",
+                    phone,
+                    get_settings().webhook_opener_enabled,
+                    existing_meta.get("opener_sent_at"),
+                    len(history),
+                )
+            else:
+                topic = _pick_topic(campaign_id, {**existing_meta, **metadata})
+                text = _render_opener(name, topic)
+                try:
+                    api = _greenapi_client()
+                    api.sending.sendMessage(_chat_id(phone), text)
+                except Exception:
+                    logger.exception("[opener] failed to send WhatsApp to {}", phone)
+                else:
+                    repository.add_message(session, lead, MessageRole.assistant, text)
+                    repository.update_lead_metadata(
+                        session, lead,
+                        opener_sent_at=datetime.now(timezone.utc).isoformat(),
+                        opener_campaign_id=campaign_id or "",
+                    )
+                    logger.info(
+                        "[opener] sent to {} (campaign={}, topic={!r})",
+                        phone, campaign_id, topic,
+                    )
+
+        # Roy's mapping: only website home, incoming-call and landing-page
+        # sources are L1 before a booking. Every other new webhook lead is L3
+        # until a meaningful reply upgrades it to L2.
         try:
-            from app.crm.leadme_client import push_engagement_level
+            from app.crm.client import mark_no_reply, mark_ready_for_call
             with session_scope() as s3:
                 l3 = s3.query(Lead).filter_by(phone=phone).first()
                 if l3 is not None:
-                    push_engagement_level(l3, level=1, note="webhook lead, sales-ready")
+                    if is_level_one_source:
+                        mark_ready_for_call(
+                            l3,
+                            note=f"priority source={source}",
+                            session=s3,
+                        )
+                    else:
+                        mark_no_reply(
+                            l3,
+                            note="new LeadMe webhook lead; no bot reply yet",
+                        )
         except Exception:
-            logger.exception("[opener] level-1 push failed for {}", phone)
+            logger.exception("[opener] initial LeadMe level push failed for {}", phone)
     except Exception:
         logger.exception("[opener] unexpected error handling {}", phone)

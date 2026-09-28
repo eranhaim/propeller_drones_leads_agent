@@ -237,6 +237,41 @@ def enqueue_status(
     _enqueue(lead, item, merge_fn=_merge_status, session=session)
 
 
+def record_confirmed_engagement(lead: Lead, level: int) -> None:
+    """Record a level only after LeadMe confirmed its status update.
+
+    Remove queued engagement items that are now satisfied or lower priority.
+    A queued Level 1 remains when a direct Level 2 succeeded, because Level 1
+    is the more engaged state and must still be delivered.
+    """
+    md = dict(lead.lead_metadata or {})
+    existing_level = md.get("leadme_last_level")
+    existing_level_int = int(existing_level) if existing_level is not None else None
+    if existing_level_int is None or level < existing_level_int:
+        md["leadme_last_level"] = int(level)
+
+    pending = list(md.get("leadme_push_pending") or [])
+    remaining = [
+        item
+        for item in pending
+        if item.get("kind") != "engagement"
+        or int(item.get("level") or 99) < level
+    ]
+    if remaining:
+        md["leadme_push_pending"] = remaining
+    elif pending:
+        for key in (
+            "leadme_push_pending",
+            "leadme_push_next_attempt_at",
+            "leadme_push_attempts",
+            "leadme_push_queued_at",
+            "leadme_push_abandoned",
+            "leadme_push_abandoned_at",
+        ):
+            md.pop(key, None)
+    lead.lead_metadata = md
+
+
 def _enqueue(lead: Lead, item: dict, merge_fn, session: Optional[Session]) -> None:
     def _do(sess: Session, target: Lead) -> None:
         md = dict(target.lead_metadata or {})
@@ -403,10 +438,7 @@ def _try_drain_via_v3(
                 tag = f"חלון · {slot}"
                 ok_tag = add_lead_tag(lead_id, tag)
             if ok_status and ok_tag:
-                # Write leadme_last_level now that the push actually landed.
-                current_md = dict(lead.lead_metadata or {})
-                current_md["leadme_last_level"] = int(level)
-                lead.lead_metadata = current_md
+                record_confirmed_engagement(lead, level)
                 current_level_int = level
                 logger.info(
                     "[leadme-queue v3] DRAINED engagement lead {} phone={} "
@@ -595,7 +627,11 @@ def _process_lead(sess: Session, lead: Lead, now: datetime) -> None:
 
     # Resolve internal leadId lazily -- only if we have a tag to push.
     needs_tag = any(
-        (it.get("kind") == "engagement" and it.get("slot"))
+        (
+            it.get("kind") == "engagement"
+            and int(it.get("level") or 99) == 1
+            and it.get("slot") not in (None, "", "any", "none")
+        )
         or it.get("kind") == "ctwa_tag"
         for it in pending
     )
@@ -643,11 +679,16 @@ def _process_lead(sess: Session, lead: Lead, now: datetime) -> None:
                 if status_id:
                     ok_status = _admin_change_status(client, lc_id, status_id)
                 ok_tag = True
-                if slot and tag_lead_id:
+                if (
+                    level == 1
+                    and slot not in (None, "", "any", "none")
+                    and tag_lead_id
+                ):
                     ok_tag = _admin_add_tag(
                         client, tag_lead_id, f"חלון · {slot}",
                     )
                 if ok_status and ok_tag:
+                    record_confirmed_engagement(lead, level)
                     logger.info(
                         "[leadme-queue] DRAINED engagement lead {} phone={} "
                         "lc_id={} level={} slot={!r} campaign={!r}",

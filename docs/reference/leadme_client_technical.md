@@ -43,9 +43,8 @@ write `lead.lead_metadata`, so the caller must hold an open session.
 
 `True` from the three `mark_*` functions means **"accepted"**, not
 "landed in LeadMe". It covers: pushed successfully, deduplicated as a no-op,
-refused by the downgrade guard, suppressed by test mode, *or* enqueued for
-background retry. Callers must not retry on `True`, and must not treat it as
-proof the CRM changed.
+suppressed by test mode, or enqueued for background retry. Callers must not
+retry on `True`, and must not treat it as proof the CRM changed.
 
 `False` means the request was rejected outright (invalid level, no cookies on
 the cancel path). Only `cancel_ready_for_call` returns `False` for a genuine
@@ -147,18 +146,16 @@ The queue drain writes it when the retry succeeds.
 
 | Call site | Level | Condition |
 |---|---|---|
-| `graph.handle_message` | 3 | first inbound message of a session |
-| `graph.handle_message` | 1 | first message *and* `check_auto_level1(phone)` is true |
-| `graph.handle_message` | 2 | second inbound message of a session |
+| `graph.handle_message` | 3 | first non-priority CTWA auto-message |
+| `graph.handle_message` | 2 | meaningful direct WhatsApp message or later CTWA reply |
 | `tools.schedule_call` | 1 | booking confirmed |
 | `graph._enforce_booking_promise` | 1 | reply promised a call but the tool never fired |
-| `opener.handle_new_lead` | 1 | lead arrived via the CRM webhook |
+| `opener.handle_new_lead` | 1 | source exactly matches configured home-page, incoming-call, or landing-page label |
+| `opener.handle_new_lead` | 3 | other new webhook lead with no bot engagement |
 
-Levels 2 and 3 are decided mechanically from the user-message count, not by the
-model. Only level 1 has a model-driven path.
-
-`check_auto_level1` (v3 read) returns true when the lead already carries one of
-`AUTO_LEVEL1_TAGS`. Requires `LEADME_API_KEY`; returns `False` without it.
+Levels 2 and 3 are decided mechanically rather than by the model. Source-based
+L1 is assigned only from an explicit webhook source value. Missing or unknown
+source data is never treated as L1.
 
 ### Slot tag
 
