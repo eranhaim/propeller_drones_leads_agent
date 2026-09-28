@@ -140,9 +140,9 @@ class Settings(BaseSettings):
     admin_user: str = Field("", alias="ADMIN_USER")
     admin_password: str = Field("", alias="ADMIN_PASSWORD")
 
-    # Follow-up nudges (wake-up messages for silent leads)
-    # Proactive WhatsApp outreach is opt-in. Inbound replies and LeadMe
-    # webhook openers are not controlled by this setting.
+    # Legacy follow-up settings. Proactive WhatsApp outreach is disabled by
+    # product policy; these values are retained only for configuration
+    # compatibility and must not trigger messages.
     followup_enabled: bool = Field(False, alias="FOLLOWUP_ENABLED")
     followup_interval_minutes: int = Field(30, alias="FOLLOWUP_INTERVAL_MINUTES")
     followup_first_hours: int = Field(24, alias="FOLLOWUP_FIRST_HOURS")

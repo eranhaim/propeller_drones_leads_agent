@@ -43,6 +43,10 @@ from app.db.session import session_scope
 from app.names import first_name
 
 ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
+# Roy's current policy prohibits automated WhatsApp outreach. Keep the
+# implementation below for a future explicit product decision, but fail closed
+# even if a legacy environment variable is accidentally set to true.
+PROACTIVE_OUTBOUND_ENABLED = False
 
 # Belt-and-suspenders: any of these captured on a lead means "the lead
 # already committed to a call window" -- we skip nudging regardless of
@@ -404,12 +408,11 @@ def _log_unanswered_user_messages(session) -> None:
 
 
 def run_once() -> None:
-    """One pass: pick eligible leads and send nudges. Safe to call from
-    a scheduler tick or a manual admin command."""
-    if not get_settings().followup_enabled:
+    """Run proactive follow-ups only when product policy explicitly enables it."""
+    if not PROACTIVE_OUTBOUND_ENABLED:
         logger.info(
-            "[followup] proactive outbound disabled; skipping generic, "
-            "video, and webinar follow-ups",
+            "[followup] proactive outbound disabled by product policy; "
+            "skipping generic, video, and webinar follow-ups",
         )
         return
     if _is_within_quiet_hours():
@@ -763,20 +766,12 @@ def run_in_background_thread() -> None:
         next_run_time=datetime.now(ISRAEL_TZ) + timedelta(minutes=2),
     )
 
-    # --- Followup-only jobs (skipped when FOLLOWUP_ENABLED=false) ---
-
-    if not settings.followup_enabled:
-        logger.info("[followup] disabled via FOLLOWUP_ENABLED=false (queue drain still active)")
-    else:
-        scheduler.add_job(
-            run_once,
-            trigger="interval",
-            minutes=settings.followup_interval_minutes,
-            id="followup_tick",
-            max_instances=1,
-            coalesce=True,
-            next_run_time=datetime.now(ISRAEL_TZ) + timedelta(minutes=1),
-        )
+    # Proactive WhatsApp follow-ups are disabled by product policy. Keep the
+    # LeadMe queue and health jobs above active; neither sends WhatsApp.
+    logger.info(
+        "[followup] proactive outbound disabled by product policy "
+        "(queue drain still active)",
+    )
     # Session-health probe. Fires every 30 min, forces a fresh check
     # (bypasses the 30s admin-UI cache), and logs an ERROR whenever
     # the session isn't healthy. Keeps a tripwire in the docker logs
