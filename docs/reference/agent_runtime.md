@@ -248,13 +248,16 @@ Applied to the raw reply, in this order, in `handle_message`:
    content that resembles filler survives.
 3. **`_strip_markdown_links`** — `[label](url)` → `url`; `**url**` → `url`;
    `**email**` → `email`. WhatsApp renders no Markdown.
-4. **`_enforce_booking_promise`** — if the reply matches
+4. **`_remove_video_delivery_duplicates`** — removes delivery text that
+   duplicates a caption sent directly by `send_video`, while preserving new
+   follow-up content.
+5. **`_enforce_booking_promise`** — if the reply matches
    `_BOOKING_PROMISE_RE` and `funnel_stage != handed_off`: when a slot exists,
    push CRM level 1 and set `handed_off`; when no slot exists, log and do
    nothing (never push a fabricated slot).
 
 Order matters: the Hebrew retry runs inside the `use_context` block because the
-retry may itself call tools. Steps 2–4 run after it, outside.
+retry may itself call tools. Steps 2–5 run after it, outside.
 
 When you change a prompt rule that one of these mirrors, change both.
 
