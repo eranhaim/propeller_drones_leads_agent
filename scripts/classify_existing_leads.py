@@ -1,11 +1,9 @@
-"""Bulk-classify every existing lead into engagement Level 1/2/3 and push
-the classification to LeadMe.
+"""Bulk-classify existing leads into LeadMe priority Levels 1/2/3.
 
 Classification rules (deterministic, no LLM needed):
 
-- Level 1 (booked): ``funnel_stage == handed_off`` OR
-  ``preferred_call_slot`` is a valid canonical window (9-12 / 12-15 /
-  15-18 / any) — the sales team already has a slot.
+- Level 1 (sales-ready): booked call, valid call slot, or an approved
+  website / incoming-call / landing-page source recorded by the webhook.
 - Level 2 (replied, no book): has at least one ``role=user`` message in
   the DB history AND does NOT match Level 1.
 - Level 3 (never replied): 0 user messages in history.
@@ -36,24 +34,34 @@ from typing import Optional
 from loguru import logger
 from sqlalchemy import select
 
-from app.crm.leadme_client import (
-    _is_test_phone,
-    push_engagement_level,
-    push_lead,
-)
-from app.crm.leadme_delete import _build_client, get_current_status_text
+from app.crm.leadme_client import _is_test_phone, push_engagement_level, push_lead
+from app.crm.leadme_v3 import get_lead_status
 from app.db.models import FunnelStage, Lead, Message, MessageRole
 from app.db.session import session_scope
 
 
 VALID_SLOTS = {"9-12", "12-15", "15-18", "any"}
+_MANAGED_STATUS_TITLES = {
+    "חדש",
+    "חדש - רמה 1",
+    "חדש - רמה 2",
+    "חדש - רמה 3",
+}
 
 
 def _classify(lead: Lead, user_msg_count: int) -> int:
     """Return 1, 2, or 3 per the rules described in the module docstring."""
     md = lead.lead_metadata or {}
     slot = (md.get("preferred_call_slot") or "").strip().lower()
-    if lead.funnel_stage == FunnelStage.handed_off or slot in VALID_SLOTS:
+    webhook_priority = (
+        md.get("leadme_initial_priority") == 1
+        or bool(md.get("leadme_source_is_level_1"))
+    )
+    if (
+        lead.funnel_stage == FunnelStage.handed_off
+        or slot in VALID_SLOTS
+        or webhook_priority
+    ):
         return 1
     if user_msg_count > 0:
         return 2
@@ -62,7 +70,7 @@ def _classify(lead: Lead, user_msg_count: int) -> int:
 
 def _describe(lead: Lead, level: int, user_count: int) -> str:
     return (
-        f"lead={lead.id} phone={lead.phone!r} name={lead.name!r} "
+        f"lead={lead.id} "
         f"stage={lead.funnel_stage.value} user_msgs={user_count} -> Level {level}"
     )
 
@@ -82,13 +90,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="Push even if leadme_last_level already records this level.",
     )
     parser.add_argument(
-        "--only-if-still-new", action="store_true",
+        "--only-managed-statuses", action="store_true",
         help=(
-            "Before pushing, query LeadMe for the lead's current status via "
-            "the admin API. Skip any lead whose current status is NOT the "
-            "plain 'חדש' (e.g., anything a human already moved to a Level "
-            "1/2/3 status or any other status). Requires fresh cookies at "
-            "LEADME_COOKIES_PATH."
+            "Before pushing, query LeadMe v3 and skip any status outside "
+            "חדש / חדש - רמה 1 / חדש - רמה 2 / חדש - רמה 3. This preserves "
+            "sales-team statuses outside the bot-managed level flow."
         ),
     )
     args = parser.parse_args(argv)
@@ -101,14 +107,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     skipped_no_lm = 0
     pushed_ok = 0
     pushed_fail = 0
-
-    lm_client = None
-    if args.only_if_still_new:
-        lm_client = _build_client()
-        if lm_client is None:
-            print("ERROR: --only-if-still-new requires LEADME_COOKIES_PATH "
-                  "with a valid cookies file. Aborting.")
-            return 2
 
     with session_scope() as session:
         # Order oldest -> newest so LeadMe sees a stable timeline of updates.
@@ -147,22 +145,20 @@ def main(argv: Optional[list[str]] = None) -> int:
                     skipped_already += 1
                     continue
 
-            if args.only_if_still_new and lm_client is not None:
-                status_text = get_current_status_text(lead.phone, lm_client)
-                if status_text is None:
+            if args.only_managed_statuses:
+                remote_status = get_lead_status(phone=lead.phone)
+                if remote_status is None:
                     logger.warning(
-                        "[classify] no LeadMe row for phone={} -- skipping",
-                        lead.phone,
+                        "[classify] no LeadMe row -- skipping lead={}",
+                        lead.id,
                     )
                     skipped_no_lm += 1
                     continue
-                # Only push when the status is literally the default "חדש".
-                # Roy manually reclassifies to "חדש - רמה N" or other
-                # statuses (e.g., "מאגר - בדיקה", "מעוניין"), and we must
-                # never overwrite his work.
-                if status_text.strip() != "חדש":
-                    print(f"SKIP (leadme status={status_text!r}) "
-                          f"lead={lead.id} phone={lead.phone!r}")
+                if remote_status["statusTitle"].strip() not in _MANAGED_STATUS_TITLES:
+                    print(
+                        f"SKIP (LeadMe status outside managed levels) "
+                        f"lead={lead.id}"
+                    )
                     skipped_not_new += 1
                     continue
 
@@ -207,11 +203,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"pushed to LeadMe: ok={pushed_ok} failed={pushed_fail}")
     else:
         print("DRY RUN (no LeadMe pushes). Add --commit to execute.")
-    if lm_client is not None:
-        try:
-            lm_client.close()
-        except Exception:  # noqa: BLE001
-            pass
     return 0
 
 
