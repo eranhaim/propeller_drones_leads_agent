@@ -45,6 +45,26 @@ class LeadMeV3Tests(unittest.TestCase):
             json={"phone": "0521234567"},
         )
 
+    @patch("app.crm.leadme_v3.get_settings", return_value=_settings())
+    @patch("app.crm.leadme_v3.httpx.Client")
+    def test_get_lead_tags_uses_live_compatible_get(self, client_cls, _settings_mock) -> None:
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"result": True, "tags": [{"tag": "מקור: מאסטר"}]}
+        client = client_cls.return_value.__enter__.return_value
+        client.build_request.return_value = "request"
+        client.send.return_value = response
+
+        self.assertEqual(leadme_v3.get_lead_tags(123), ["מקור: מאסטר"])
+        client.build_request.assert_called_once_with(
+            "GET",
+            "https://api.leadmecms.co.il/v3/getLeadTags",
+            headers={
+                "LeadMeCMS-API-Key": "test-key",
+                "Content-Type": "application/json",
+            },
+            json={"leadId": 123},
+        )
+
     @patch("app.crm.leadme_v3.get_lead_status")
     @patch("app.crm.leadme_v3._post", return_value={"result": True})
     def test_status_write_requires_read_after_write_confirmation(

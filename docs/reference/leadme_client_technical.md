@@ -95,7 +95,7 @@ so `push_lead_cancellation` and `leadme_delete` are cookie-only.
 | `get_lead_status(phone|lead_id)` | POST | `/getLeadStatus` | `{"phone": "05XXXXXXXX"}` or `{"leadId": 123}` |
 | `update_lead_status(lead_id, status_id)` | POST | `/updateLeadStatus` | `{"leadId": …, "status": …}` |
 | `add_lead_tag(lead_id, tag)` | POST | `/addLeadTag` | `{"leadId": …, "tag": "…"}` |
-| `get_lead_tags(lead_id)` | POST | `/getLeadTags` | `{"leadId": …}` |
+| `get_lead_tags(lead_id)` | GET | `/getLeadTags` | `{"leadId": …}` |
 
 The client accepts only HTTP 200 JSON objects with `result is true`. A status
 write also re-reads `/getLeadStatus` by `leadId` and succeeds only when the
@@ -109,6 +109,11 @@ the pending intent in the durable queue. The queue writes
 Before a direct or queued engagement write, the current remote status is also
 read. If it is already a higher level, the stale lower-priority update is
 discarded without changing LeadMe.
+
+LeadMe's published v3 page currently documents `POST /getLeadTags`, but the
+live Propeller account returned HTTP 405 to POST on 2026-09-29 and accepted
+the existing GET JSON-body request. The client retains the live-compatible GET
+method and should return to POST only after a verified vendor fix.
 
 ### Phone formats
 

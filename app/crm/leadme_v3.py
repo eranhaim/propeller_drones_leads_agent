@@ -204,11 +204,29 @@ def update_lead_status(lead_id: int, status_id: int) -> bool:
 
 
 def get_lead_tags(lead_id: int) -> list[str]:
-    """Return a validated list of tags assigned to a LeadMe connection."""
+    """Return a validated list of tags assigned to a LeadMe connection.
+
+    LeadMe's published v3 document currently says POST, but the live account
+    returns 405 to that method and accepts the legacy GET JSON-body request.
+    Keep this compatibility path until LeadMe fixes the documented endpoint.
+    """
     valid_lead_id = _positive_int(lead_id)
-    if valid_lead_id is None:
+    if valid_lead_id is None or not is_v3_available():
         return []
-    data = _post("getLeadTags", {"leadId": valid_lead_id})
+    try:
+        with httpx.Client(timeout=_TIMEOUT_SECONDS) as client:
+            request = client.build_request(
+                "GET",
+                f"{_BASE}/getLeadTags",
+                headers=_headers(),
+                json={"leadId": valid_lead_id},
+            )
+            response = client.send(request)
+    except httpx.HTTPError as exc:
+        logger.warning("[leadme_v3] getLeadTags HTTP error: {}", exc)
+        return []
+
+    data = _parse_response(response, "getLeadTags")
     if data is None:
         return []
     tags = data.get("tags")

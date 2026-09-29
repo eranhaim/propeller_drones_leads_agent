@@ -89,12 +89,15 @@ the single most important thing.
 - Auth: `LeadMeCMS-API-Key` header. Store the key only in a protected
   production `.env`; never print it, commit it, or put it in browser code.
 - Supported bot endpoints: `GET /getStatuses`, `POST /getLeadStatus`,
-  `POST /updateLeadStatus`, `POST /addLeadTag`, `POST /getLeadTags`.
+  `POST /updateLeadStatus`, `POST /addLeadTag`, `GET /getLeadTags`.
 - Required confirmation: an update is successful only after a following
   `getLeadStatus` returns the requested status. A tag is successful only after
   `getLeadTags` returns the exact text. `{"result": true}` is not sufficient.
 - `404` for an unknown phone or lead is expected during the CTWA sync race:
   keep the action queued. Do not create a LeadMe row.
+- The vendor page currently says `POST /getLeadTags`; live verification on
+  2026-09-29 returned HTTP 405 to POST and succeeded with GET plus a JSON
+  body, so the client uses that working method until LeadMe corrects it.
 
 ### 2.3. Internal admin API — only for unsupported actions
 
