@@ -35,7 +35,14 @@ from loguru import logger
 from sqlalchemy import select
 
 from app.crm.leadme_client import _is_test_phone, push_engagement_level, push_lead
-from app.crm.leadme_v3 import get_lead_status
+from app.crm import leadme_queue
+from app.crm.leadme_v3 import (
+    get_lead_status,
+    is_v3_available,
+    level_for_status_id,
+    status_id_for_level,
+    update_lead_status,
+)
 from app.db.models import FunnelStage, Lead, Message, MessageRole
 from app.db.session import session_scope
 
@@ -105,8 +112,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     skipped_already = 0
     skipped_not_new = 0
     skipped_no_lm = 0
+    skipped_protected = 0
+    confirmed_same = 0
     pushed_ok = 0
     pushed_fail = 0
+
+    if args.only_managed_statuses and not is_v3_available():
+        print("ERROR: --only-managed-statuses requires LeadMe v3 API access.")
+        return 2
 
     with session_scope() as session:
         # Order oldest -> newest so LeadMe sees a stable timeline of updates.
@@ -136,15 +149,6 @@ def main(argv: Optional[list[str]] = None) -> int:
             if args.only_level and level != args.only_level:
                 continue
 
-            md = lead.lead_metadata or {}
-            already = md.get("leadme_last_level")
-            if not args.force and already is not None:
-                # Level 1 is always allowed to overwrite (booking can happen
-                # after any prior state); Levels 2/3 only if strictly higher.
-                if level != 1 and int(already) >= level:
-                    skipped_already += 1
-                    continue
-
             if args.only_managed_statuses:
                 remote_status = get_lead_status(phone=lead.phone)
                 if remote_status is None:
@@ -160,6 +164,49 @@ def main(argv: Optional[list[str]] = None) -> int:
                         f"lead={lead.id}"
                     )
                     skipped_not_new += 1
+                    continue
+                remote_level = level_for_status_id(remote_status["status"])
+                if remote_level is not None and remote_level < level:
+                    print(
+                        f"SKIP (LeadMe has higher-priority level) "
+                        f"lead={lead.id}"
+                    )
+                    skipped_protected += 1
+                    continue
+                if remote_level == level:
+                    if args.commit:
+                        leadme_queue.record_confirmed_engagement(lead, level)
+                    confirmed_same += 1
+                    continue
+
+                print(_describe(lead, level, user_count))
+                if args.commit:
+                    try:
+                        status_id = status_id_for_level(level)
+                        if (
+                            status_id is not None
+                            and update_lead_status(
+                                remote_status["leadId"], status_id,
+                            )
+                        ):
+                            leadme_queue.record_confirmed_engagement(lead, level)
+                            pushed_ok += 1
+                        else:
+                            pushed_fail += 1
+                    except Exception:
+                        logger.exception(
+                            "[classify] v3 push failed for lead {}", lead.id,
+                        )
+                        pushed_fail += 1
+                continue
+
+            md = lead.lead_metadata or {}
+            already = md.get("leadme_last_level")
+            if not args.force and already is not None:
+                # Level 1 is always allowed to overwrite (booking can happen
+                # after any prior state); Levels 2/3 only if strictly higher.
+                if level != 1 and int(already) >= level:
+                    skipped_already += 1
                     continue
 
             print(_describe(lead, level, user_count))
@@ -198,7 +245,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"skipped: test={skipped_test} muted={skipped_muted} "
           f"already-classified={skipped_already} "
           f"not-חדש-in-leadme={skipped_not_new} "
-          f"not-in-leadme={skipped_no_lm}")
+          f"not-in-leadme={skipped_no_lm} "
+          f"protected-higher-level={skipped_protected} "
+          f"already-matching={confirmed_same}")
     if args.commit:
         print(f"pushed to LeadMe: ok={pushed_ok} failed={pushed_fail}")
     else:
