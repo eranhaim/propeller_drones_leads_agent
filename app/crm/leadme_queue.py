@@ -390,16 +390,19 @@ def _try_drain_via_v3(
     """
     from app.crm.leadme_v3 import (
         add_lead_tag,
-        get_lead_id,
+        get_lead_status,
+        level_for_status_id,
         status_id_for_level,
         update_lead_status,
     )
 
     phone = lead.phone or ""
-    lead_id = get_lead_id(phone)
-    if not lead_id:
+    current_status = get_lead_status(phone=phone)
+    if current_status is None:
         # Still not in LeadMe -- leave for next tick.
         return False
+    lead_id = current_status["leadId"]
+    remote_level = level_for_status_id(current_status["status"])
 
     if (lead.lead_metadata or {}).get("leadme_relevance") == "not_relevant":
         pending = [item for item in pending if item.get("kind") != "engagement"]
@@ -424,6 +427,17 @@ def _try_drain_via_v3(
                 remaining.append(item)
         elif kind == "engagement":
             level = int(item.get("level") or 2)
+            if remote_level is not None and remote_level < level:
+                record_confirmed_engagement(lead, remote_level)
+                current_level_int = remote_level
+                logger.info(
+                    "[leadme-queue v3] SKIPPING L{} for lead {} because "
+                    "LeadMe is already L{}",
+                    level,
+                    lead.id,
+                    remote_level,
+                )
+                continue
             # Guard: don't downgrade. If a higher-engagement level was
             # already pushed successfully (directly, not via queue), skip
             # this stale queue item instead of overwriting it in LeadMe.

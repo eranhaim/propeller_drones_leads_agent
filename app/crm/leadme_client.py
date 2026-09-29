@@ -657,14 +657,31 @@ def push_engagement_level(
         return True
 
     # Try v3 API first (clean, no cookies); fall back to legacy cookie path.
-    from app.crm.leadme_v3 import push_level as _v3_push_level
-    from app.crm.leadme_v3 import is_v3_available
+    from app.crm.leadme_v3 import (
+        get_lead_status,
+        is_v3_available,
+        level_for_status_id,
+        push_level as _v3_push_level,
+    )
     from app.crm import leadme_queue
     if is_v3_available():
         slot = (lead.lead_metadata or {}).get("preferred_call_slot")
         tag = f"חלון · {slot}" if slot and level == 1 else None
-        ok = _v3_push_level(lead.phone, level=level, tag=tag)
-        if ok:
+        current_status = get_lead_status(phone=lead.phone or "")
+        current_level = (
+            level_for_status_id(current_status["status"])
+            if current_status is not None
+            else None
+        )
+        if current_level is not None and current_level < level:
+            logger.info(
+                "[LeadMe] refusing L{} for {} because LeadMe is already L{}",
+                level,
+                lead.phone,
+                current_level,
+            )
+            leadme_queue.record_confirmed_engagement(lead, current_level)
+        elif _v3_push_level(lead.phone, level=level, tag=tag):
             # Push actually landed in LeadMe -- record it and discard any
             # stale queued L2/L3 item. A queued L1 is retained.
             leadme_queue.record_confirmed_engagement(lead, level)

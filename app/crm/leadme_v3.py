@@ -268,6 +268,17 @@ def status_id_for_level(level: int) -> Optional[int]:
     return _positive_int(configured)
 
 
+def level_for_status_id(status_id: int) -> Optional[int]:
+    """Return the engagement level for a configured LeadMe status ID."""
+    valid_status_id = _positive_int(status_id)
+    if valid_status_id is None:
+        return None
+    for level in (1, 2, 3):
+        if status_id_for_level(level) == valid_status_id:
+            return level
+    return None
+
+
 def push_level(phone: str, level: int, tag: Optional[str] = None) -> bool:
     """Resolve a lead, write its configured level, and verify every write."""
     if not is_v3_available():

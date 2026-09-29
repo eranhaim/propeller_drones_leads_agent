@@ -106,6 +106,9 @@ alone is never delivery confirmation.
 `404` lookup failures and incomplete responses return `None`; the caller keeps
 the pending intent in the durable queue. The queue writes
 `leadme_last_level` only after a verified status write.
+Before a direct or queued engagement write, the current remote status is also
+read. If it is already a higher level, the stale lower-priority update is
+discarded without changing LeadMe.
 
 ### Phone formats
 

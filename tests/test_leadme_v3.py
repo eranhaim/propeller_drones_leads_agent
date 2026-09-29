@@ -82,6 +82,8 @@ class LeadMeV3Tests(unittest.TestCase):
     def test_level_ids_come_from_configuration(self, _settings_mock) -> None:
         self.assertEqual(leadme_v3.status_id_for_level(1), 7326)
         self.assertEqual(leadme_v3.status_id_for_level(3), 7328)
+        self.assertEqual(leadme_v3.level_for_status_id(7327), 2)
+        self.assertIsNone(leadme_v3.level_for_status_id(1))
 
 
 if __name__ == "__main__":
