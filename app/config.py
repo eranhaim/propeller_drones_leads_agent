@@ -149,15 +149,15 @@ class Settings(BaseSettings):
         "update-only", alias="LEADME_INSERT_MODE",
     )
 
-    # Current Propeller LeadMe status relationship IDs. Override only when
-    # Roy changes the account's statuses and verifies replacement numeric IDs.
-    leadme_status_level_1: str = Field("7326", alias="LEADME_STATUS_LEVEL_1")
-    leadme_status_level_2: str = Field("7327", alias="LEADME_STATUS_LEVEL_2")
-    leadme_status_level_3: str = Field("7328", alias="LEADME_STATUS_LEVEL_3")
-    # Existing Propeller LeadMe status "לא רלוונטי". This remains configurable
-    # because status relationship IDs are account-specific.
+    # LeadMe status IDs are account-specific and must come from v3
+    # ``getStatuses``. Keep code defaults empty so a copied deployment never
+    # writes Propeller's IDs into another account.
+    leadme_status_level_1: str = Field("", alias="LEADME_STATUS_LEVEL_1")
+    leadme_status_level_2: str = Field("", alias="LEADME_STATUS_LEVEL_2")
+    leadme_status_level_3: str = Field("", alias="LEADME_STATUS_LEVEL_3")
+    # Keep this empty until LeadMe has an exact approved terminal status.
     leadme_status_not_relevant: str = Field(
-        "2392", alias="LEADME_STATUS_NOT_RELEVANT",
+        "", alias="LEADME_STATUS_NOT_RELEVANT",
     )
 
     # Admin UI (password-only signed session for /admin routes)
@@ -187,6 +187,11 @@ class Settings(BaseSettings):
     # race under 5 minutes typical, large enough to not hammer LeadMe.
     leadme_queue_interval_minutes: int = Field(
         3, alias="LEADME_QUEUE_INTERVAL_MINUTES",
+    )
+    # Cap each scheduler tick so a recovered API drains existing work
+    # gradually instead of issuing an unbounded burst of CRM writes.
+    leadme_queue_batch_size: int = Field(
+        10, alias="LEADME_QUEUE_BATCH_SIZE",
     )
 
     # Master switch for the LeadMe push retry queue. Set to false to

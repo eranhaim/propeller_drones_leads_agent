@@ -658,9 +658,9 @@ def push_engagement_level(
 
     # Try v3 API first (clean, no cookies); fall back to legacy cookie path.
     from app.crm.leadme_v3 import push_level as _v3_push_level
+    from app.crm.leadme_v3 import is_v3_available
     from app.crm import leadme_queue
-    settings = get_settings()
-    if settings.leadme_api_key:
+    if is_v3_available():
         slot = (lead.lead_metadata or {}).get("preferred_call_slot")
         tag = f"חלון · {slot}" if slot and level == 1 else None
         ok = _v3_push_level(lead.phone, level=level, tag=tag)

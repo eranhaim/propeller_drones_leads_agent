@@ -108,15 +108,14 @@ def _push_ctwa_tag(lead_id: int, phone: str, campaign: str) -> None:
         from app.crm import leadme_queue
         from app.db.models import Lead as _Lead
         from app.db.session import session_scope
-        from app.config import get_settings as _get_settings
         import re as _re
 
         # Fast path: if v3 API key is set, try directly via REST -- no cookies needed.
         # This avoids a race condition where the cookie-path enqueue and the
         # engagement enqueue both open separate sessions and clobber each other's
         # metadata writes.
-        if _get_settings().leadme_api_key:
-            from app.crm.leadme_v3 import get_lead_id, add_lead_tag
+        from app.crm.leadme_v3 import add_lead_tag, get_lead_id, is_v3_available
+        if is_v3_available():
             lead_id_v3 = get_lead_id(phone)
             if lead_id_v3:
                 ok = add_lead_tag(lead_id_v3, f"מקור: {campaign}")

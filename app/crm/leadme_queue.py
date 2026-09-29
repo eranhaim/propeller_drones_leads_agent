@@ -72,6 +72,7 @@ from loguru import logger
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.db.models import Lead
 from app.db.session import session_scope
 
@@ -387,7 +388,12 @@ def _try_drain_via_v3(
     False if v3 also can't find the lead yet (caller should fall back to
     cookie path or retry later).
     """
-    from app.crm.leadme_v3 import get_lead_id, update_lead_status, add_lead_tag, LEVEL_STATUS_ID
+    from app.crm.leadme_v3 import (
+        add_lead_tag,
+        get_lead_id,
+        status_id_for_level,
+        update_lead_status,
+    )
 
     phone = lead.phone or ""
     lead_id = get_lead_id(phone)
@@ -429,7 +435,7 @@ def _try_drain_via_v3(
                 )
                 continue
             slot = item.get("slot")
-            status_id = LEVEL_STATUS_ID.get(level)
+            status_id = status_id_for_level(level)
             ok_status = True
             if status_id:
                 ok_status = update_lead_status(lead_id, status_id)
@@ -524,8 +530,8 @@ def _process_lead(sess: Session, lead: Lead, now: datetime) -> None:
     # When v3 is configured we NEVER fall through to the cookie-based admin
     # path — that path can hang for minutes on a dead LeadMe site, blocking
     # APScheduler's single-instance slot and starving the whole bot.
-    from app.config import get_settings as _get_settings
-    if _get_settings().leadme_api_key:
+    from app.crm.leadme_v3 import is_v3_available
+    if is_v3_available():
         try:
             _drained = _try_drain_via_v3(sess, lead, md, pending, now)
         except Exception:
@@ -767,10 +773,16 @@ def retry_pending_pushes() -> None:
     if not due_ids:
         logger.info("[leadme-queue] tick: no pending items")
         return
-    logger.info("[leadme-queue] tick: draining {} lead(s)", len(due_ids))
+    batch_size = max(1, get_settings().leadme_queue_batch_size)
+    batch_ids = due_ids[:batch_size]
+    logger.info(
+        "[leadme-queue] tick: draining {} of {} pending lead(s)",
+        len(batch_ids),
+        len(due_ids),
+    )
 
     # Phase 2: process each lead in its own session with a lock timeout.
-    for lead_id in due_ids:
+    for lead_id in batch_ids:
         try:
             with session_scope() as sess:
                 # Set a 10-second lock timeout so we don't deadlock with

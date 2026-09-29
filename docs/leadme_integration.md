@@ -36,11 +36,10 @@ here.
    campaign, LeadMe silently creates a duplicate row in the supplier's
    default campaign (`id=12277` = `הוסרו מ-Whatsapp`, i.e. the "trash"
    bucket). The customer will notice, we will apologize.
-2. **All bot-side writes go through the internal admin endpoints** with
-   session cookies (see §3). Concretely:
-   - Change status pill → `POST /app/leads/changeLeadsStatus`
-   - Attach a tag       → `POST /app/ajax/addLeadTag`
-   - Delete a lead      → `POST /app/ajax/deleteLeads`
+2. **Use v3 for supported bot writes.** Status and tag changes use the
+   official API-key endpoints and are read-after-write verified. Keep the
+   internal admin session only for unsupported actions such as delete and
+   status reset (see §3).
 3. **We never create LeadMe rows from the bot.** The only way a new
    lead should appear in LeadMe is through the customer's own website
    form → LeadMe supplier flow. If `push_lead` can't find a matching
@@ -62,10 +61,10 @@ here.
 
 ---
 
-## 2. Two API surfaces – what to use when
+## 2. API surfaces – what to use when
 
-LeadMe exposes two very different HTTP surfaces. Understanding which is
-which is the single most important thing.
+LeadMe exposes three distinct HTTP surfaces. Understanding which is which is
+the single most important thing.
 
 ### 2.1. Public "supplier" API — DO NOT USE for bot writes
 
@@ -84,7 +83,20 @@ which is the single most important thing.
   from an external source that legitimately owns the lead. Never from
   the bot's live push path.
 
-### 2.2. Internal admin API — USE THIS
+### 2.2. Official v3 API — use for verified status and tag writes
+
+- Base: `https://api.leadmecms.co.il/v3`
+- Auth: `LeadMeCMS-API-Key` header. Store the key only in a protected
+  production `.env`; never print it, commit it, or put it in browser code.
+- Supported bot endpoints: `GET /getStatuses`, `POST /getLeadStatus`,
+  `POST /updateLeadStatus`, `POST /addLeadTag`, `POST /getLeadTags`.
+- Required confirmation: an update is successful only after a following
+  `getLeadStatus` returns the requested status. A tag is successful only after
+  `getLeadTags` returns the exact text. `{"result": true}` is not sufficient.
+- `404` for an unknown phone or lead is expected during the CTWA sync race:
+  keep the action queued. Do not create a LeadMe row.
+
+### 2.3. Internal admin API — only for unsupported actions
 
 - Base: `https://www.leadmecms.co.il` (note: `www.`, not `api.`).
 - Auth: cookies (`PHPSESSID`, `csrf_cookie_name`) from a logged-in
@@ -305,7 +317,8 @@ name. LeadMe silently ignores status *names* if you send them via any
 write endpoint. To discover the mapping, open any campaign page,
 Right-Click → View Source, find the `dialog_changeStatus` block and
 extract every `<a class="... changeStatusPuBtn" rel="<id>">Label</a>`.
-Current mapping for the Propeller account (as of 2026-07):
+Current mapping for the Propeller account, read through v3 `getStatuses` on
+2026-09-29:
 
 | Status label (Hebrew)                | Numeric ID |
 |--------------------------------------|-----------:|
@@ -325,11 +338,11 @@ Current mapping for the Propeller account (as of 2026-07):
 | לקוח קיים                            | 609        |
 | לא נסגר – כללי / 2 טון / מגמה / ביזנס / 25 ק"ג / חנות | 5821 / 7220 / 7221 / 7229 / 7222 / 5841 |
 | הסרה מרשימות תפוצה                  | 6570       |
-| לא רלוונטי                          | 2392       |
+| לא מתאים לנו                        | 2392       |
 
-These IDs are per-account. If Roy adds a new status, re-run
-`scripts/leadme-recon/get_status_ids.py` (or scrape any campaign page's
-HTML) to refresh the mapping.
+There is currently no exact `לא רלוונטי` status title in this account; do not
+configure an automatic terminal-status write until Roy selects a title. Status
+IDs are per-account. Re-run v3 `getStatuses` after any LeadMe status change.
 
 The engagement-level IDs (7326/7327/7328) live in `.env` as
 `LEADME_STATUS_LEVEL_1/2/3`. Everything else is used ad-hoc in

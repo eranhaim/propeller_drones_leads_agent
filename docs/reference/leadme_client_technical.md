@@ -91,18 +91,21 @@ so `push_lead_cancellation` and `leadme_delete` are cookie-only.
 
 | Function | Method | Path | Body |
 |---|---|---|---|
-| `get_lead_id(phone)` | GET | `/getLeadStatus` | `{"phone": "05XXXXXXXX"}` |
+| `get_statuses()` | GET | `/getStatuses` | — |
+| `get_lead_status(phone|lead_id)` | POST | `/getLeadStatus` | `{"phone": "05XXXXXXXX"}` or `{"leadId": 123}` |
 | `update_lead_status(lead_id, status_id)` | POST | `/updateLeadStatus` | `{"leadId": …, "status": …}` |
 | `add_lead_tag(lead_id, tag)` | POST | `/addLeadTag` | `{"leadId": …, "tag": "…"}` |
-| `get_lead_tags(lead_id)` | GET | `/getLeadTags` | `{"leadId": …}` |
+| `get_lead_tags(lead_id)` | POST | `/getLeadTags` | `{"leadId": …}` |
 
-Two GETs carry a JSON body, which `httpx` will not do through the normal
-`client.get()` API — hence `build_request` + `send` in `leadme_v3.py`. Keep that
-shape.
+The client accepts only HTTP 200 JSON objects with `result is true`. A status
+write also re-reads `/getLeadStatus` by `leadId` and succeeds only when the
+returned `status` equals the requested ID. A tag write re-reads
+`/getLeadTags` and succeeds only when the exact tag is present. `result:true`
+alone is never delivery confirmation.
 
-Every function returns `None` / `False` / `[]` on any failure and logs; none
-raise. Success is `data["result"]` being truthy — **not** the HTTP status. A
-`200` with `result: false` is a failure.
+`404` lookup failures and incomplete responses return `None`; the caller keeps
+the pending intent in the durable queue. The queue writes
+`leadme_last_level` only after a verified status write.
 
 ### Phone formats
 
@@ -119,9 +122,9 @@ lower means further along.**
 
 | Level | v3 status id | Meaning in the CRM |
 |---|---|---|
-| 1 | `7326` | booked |
-| 2 | `7327` | replied |
-| 3 | `7328` | no reply |
+| 1 | `LEADME_STATUS_LEVEL_1` | booked |
+| 2 | `LEADME_STATUS_LEVEL_2` | replied |
+| 3 | `LEADME_STATUS_LEVEL_3` | no reply |
 
 `push_engagement_level(lead, level, note=None, slot=None)` enforces
 upgrade-only transitions:
@@ -283,17 +286,19 @@ bind-mounted). They can also be pasted through `/admin/leadme-cookies`.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `LEADME_API_KEY` | empty | v3 REST key; when set, selects the v3 transport |
+| `LEADME_API_KEY` | empty | v3 REST key; keep only in protected deployment `.env` |
+| `LEADME_V3_ENABLED` | `true` | explicit v3 transport switch |
 | `LEADME_ADMIN_BASE` | `https://www.leadmecms.co.il` | admin host |
 | `LEADME_COOKIES_PATH` | `data/leadme_cookies.json` | session cookies; empty disables admin writes |
 | `LEADME_INSERT_MODE` | `update-only` | write mode, §6 |
 | `LEADME_TEST_MODE` | `false` | suppress all writes |
 | `LEADME_QUEUE_INTERVAL_MINUTES` | 3 | queue drain cadence |
+| `LEADME_QUEUE_BATCH_SIZE` | 10 | maximum pending leads processed per drain tick |
 | `LEADME_AUTO_REFRESH_ENABLED` | `false` | cookie auto-refresh master switch |
 | `LEADME_LOGIN_EMAIL` / `_PASSWORD` | empty | dedicated bot account |
 | `LEADME_CAPTCHA_API_KEY` | empty | 2Captcha key |
 | `LEADME_AUTO_REFRESH_INTERVAL_HOURS` | 12 | must stay under the 24 h CSRF expiry |
-| `LEADME_STATUS_LEVEL_1/2/3` | empty | admin-path status ids; empty pushes only the tag |
+| `LEADME_STATUS_LEVEL_1/2/3` | empty | account-specific IDs from `getStatuses`; empty refuses that level write |
 
 `LEADME_INSERT_URL` / `LEADME_UPDATE_URL` / `LEADME_STATUS_ID` /
 `LEADME_SOURCE_LABEL` configure the legacy supplier API and are unused under

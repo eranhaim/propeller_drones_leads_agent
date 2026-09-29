@@ -1,19 +1,7 @@
-"""LeadMe v3 API client.
-
-Replaces the old cookie-based admin endpoints with the official REST API.
-
-Configured via:
-    LEADME_API_KEY -- API key from LeadMe CMS settings
-
-Status IDs:
-    7326 -- חדש - רמה 1 (booked a call)
-    7327 -- חדש - רמה 2 (replied to bot, no booking)
-    7328 -- חדש - רמה 3 (no reply at all)
-"""
+"""Official LeadMe v3 client for verified status and tag writes."""
 
 from __future__ import annotations
 
-import json as _json
 from typing import Any, Optional
 
 import httpx
@@ -21,230 +9,277 @@ from loguru import logger
 
 from app.config import get_settings
 
+
 _BASE = "https://api.leadmecms.co.il/v3"
-
-
-def _parse_json_response(resp: httpx.Response) -> dict[str, Any]:
-    """Parse LeadMe's response body, tolerating PHP notice HTML prefixes.
-
-    LeadMe's production PHP config runs with ``display_errors=on``, so
-    non-fatal notices (e.g. "Trying to get property of non-object" from
-    ``runCampaignAutomation``) get prepended to the JSON response as an
-    HTML ``<div>`` block. HTTP is still 200 and the actual write DID
-    happen server-side, but ``resp.json()`` raises ``JSONDecodeError``.
-
-    We look for the first ``{"result"`` marker and parse from there.
-    Falls back to the normal parser (which will raise) if that marker
-    isn't found -- so genuinely broken responses still surface loudly.
-    """
-    text = resp.text
-    idx = text.find('{"result"')
-    if idx == -1:
-        return resp.json()  # will raise JSONDecodeError -- fine, no marker
-    if idx > 0:
-        logger.debug(
-            "[leadme_v3] stripped {} chars of PHP-notice HTML prefix from "
-            "response before JSON payload", idx,
-        )
-    return _json.loads(text[idx:])
-
-LEVEL_STATUS_ID = {
-    1: 7326,  # קבע שיחה
-    2: 7327,  # ענה לבוט
-    3: 7328,  # לא ענה
-}
+_TIMEOUT_SECONDS = 8.0
+_WARNED_DISABLED: dict[str, bool] = {"value": False}
 
 
 def _is_v3_enabled() -> bool:
-    """Kill switch. When LeadMe's backend returns PHP error HTML instead
-    of JSON, every v3 call throws JSONDecodeError; that alone isn't fatal
-    but at high concurrency (message handler + queue drainer) it starves
-    the httpx connection pool and hangs the polling thread. Setting
-    LEADME_V3_ENABLED=false makes every call a fast no-op so the bot
-    keeps chatting with customers while LeadMe fixes their side.
-
-    Logs at INFO level ONCE per process (module-level cache) to avoid
-    spamming when the switch is off.
-    """
+    """Return the v3 kill switch and log its disabled state once."""
     enabled = get_settings().leadme_v3_enabled
     if not enabled and not _WARNED_DISABLED["value"]:
-        logger.warning(
-            "[leadme_v3] LEADME_V3_ENABLED=false -- all v3 calls will "
-            "no-op. Turn back on when LeadMe API is healthy."
-        )
+        logger.warning("[leadme_v3] LEADME_V3_ENABLED=false; v3 writes are disabled")
         _WARNED_DISABLED["value"] = True
     return enabled
 
 
-_WARNED_DISABLED: dict = {"value": False}
+def is_v3_available() -> bool:
+    """Return whether v3 has both its key and explicit enable switch."""
+    return _is_v3_enabled() and bool(get_settings().leadme_api_key.strip())
 
 
-def _headers() -> dict:
+def _headers() -> dict[str, str]:
     return {
         "LeadMeCMS-API-Key": get_settings().leadme_api_key,
         "Content-Type": "application/json",
     }
 
 
-def _normalize_phone(phone: str) -> str:
-    """Normalize phone to format LeadMe expects.
+def _parse_response(resp: httpx.Response, endpoint: str) -> Optional[dict[str, Any]]:
+    """Return a documented successful JSON response, or ``None``."""
+    if resp.status_code != 200:
+        logger.warning("[leadme_v3] {} returned HTTP {}", endpoint, resp.status_code)
+        return None
+    try:
+        data = resp.json()
+    except ValueError:
+        logger.warning("[leadme_v3] {} returned non-JSON", endpoint)
+        return None
+    if not isinstance(data, dict):
+        logger.warning("[leadme_v3] {} returned a non-object JSON body", endpoint)
+        return None
+    if data.get("result") is not True:
+        logger.warning(
+            "[leadme_v3] {} rejected request: {}",
+            endpoint,
+            data.get("message"),
+        )
+        return None
+    return data
 
-    Our DB stores phones as '972524859220' (no +).
-    LeadMe accepts '0524859220' or '+972524859220'.
-    """
-    p = phone.strip().lstrip("+")
-    if p.startswith("972"):
-        p = "0" + p[3:]
-    return p
+
+def _positive_int(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    try:
+        value_int = int(value)
+    except (TypeError, ValueError):
+        return None
+    return value_int if value_int > 0 else None
+
+
+def _post(endpoint: str, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Call a documented v3 POST endpoint with validated JSON."""
+    if not is_v3_available():
+        return None
+    try:
+        with httpx.Client(timeout=_TIMEOUT_SECONDS) as client:
+            response = client.post(
+                f"{_BASE}/{endpoint}",
+                headers=_headers(),
+                json=payload,
+            )
+    except httpx.HTTPError as exc:
+        logger.warning("[leadme_v3] {} HTTP error: {}", endpoint, exc)
+        return None
+    return _parse_response(response, endpoint)
+
+
+def _normalize_phone(phone: str) -> str:
+    """Normalize the app's E.164-ish Israeli phone to LeadMe local form."""
+    normalized = phone.strip().lstrip("+")
+    if normalized.startswith("972"):
+        return "0" + normalized[3:]
+    return normalized
+
+
+def get_statuses() -> Optional[dict[int, str]]:
+    """Return the account's validated status-id-to-title mapping."""
+    if not is_v3_available():
+        return None
+    try:
+        with httpx.Client(timeout=_TIMEOUT_SECONDS) as client:
+            response = client.get(
+                f"{_BASE}/getStatuses",
+                headers={"LeadMeCMS-API-Key": get_settings().leadme_api_key},
+            )
+    except httpx.HTTPError as exc:
+        logger.warning("[leadme_v3] getStatuses HTTP error: {}", exc)
+        return None
+
+    data = _parse_response(response, "getStatuses")
+    statuses = data.get("statuses") if data else None
+    if not isinstance(statuses, list):
+        logger.warning("[leadme_v3] getStatuses response has no status list")
+        return None
+
+    mapping: dict[int, str] = {}
+    for item in statuses:
+        if not isinstance(item, dict):
+            logger.warning("[leadme_v3] getStatuses contains an invalid status")
+            return None
+        status_id = _positive_int(item.get("id"))
+        title = item.get("title")
+        if status_id is None or not isinstance(title, str) or not title.strip():
+            logger.warning("[leadme_v3] getStatuses contains an incomplete status")
+            return None
+        if status_id in mapping:
+            logger.warning("[leadme_v3] getStatuses contains duplicate id={}", status_id)
+            return None
+        mapping[status_id] = title.strip()
+    return mapping
+
+
+def get_lead_status(
+    *, phone: Optional[str] = None, lead_id: Optional[int] = None
+) -> Optional[dict[str, Any]]:
+    """Return a validated status record by phone or LeadMe connection ID."""
+    if bool(phone) == bool(lead_id):
+        logger.warning("[leadme_v3] getLeadStatus requires exactly one identifier")
+        return None
+
+    if phone:
+        normalized = _normalize_phone(phone)
+        if not normalized:
+            return None
+        payload: dict[str, Any] = {"phone": normalized}
+    else:
+        valid_lead_id = _positive_int(lead_id)
+        if valid_lead_id is None:
+            return None
+        payload = {"leadId": valid_lead_id}
+
+    data = _post("getLeadStatus", payload)
+    if data is None:
+        return None
+
+    result_lead_id = _positive_int(data.get("leadId"))
+    status_id = _positive_int(data.get("status"))
+    status_title = data.get("statusTitle")
+    if result_lead_id is None or status_id is None or not isinstance(status_title, str):
+        logger.warning("[leadme_v3] getLeadStatus response is incomplete")
+        return None
+    return {
+        "leadId": result_lead_id,
+        "crmLeadId": _positive_int(data.get("crmLeadId")),
+        "status": status_id,
+        "statusTitle": status_title,
+    }
 
 
 def get_lead_id(phone: str) -> Optional[int]:
-    """Look up a lead by phone and return its leadId, or None if not found."""
-    if not _is_v3_enabled():
-        return None
-    normalized = _normalize_phone(phone)
-    try:
-        with httpx.Client(timeout=8.0) as client:
-            req = client.build_request(
-                "GET",
-                f"{_BASE}/getLeadStatus",
-                headers=_headers(),
-                json={"phone": normalized},
-            )
-            resp = client.send(req)
-        data = _parse_json_response(resp)
-        if data.get("result"):
-            return data.get("leadId")
-        logger.warning("[leadme_v3] getLeadStatus failed for {}: {}", normalized, data.get("message"))
-        return None
-    except Exception:
-        logger.exception("[leadme_v3] getLeadStatus raised for phone={}", normalized)
-        return None
+    """Look up and return a LeadMe connection ID by phone."""
+    status = get_lead_status(phone=phone)
+    return status["leadId"] if status else None
 
 
 def update_lead_status(lead_id: int, status_id: int) -> bool:
-    """Update lead status by leadId. Returns True on success."""
-    if not _is_v3_enabled():
+    """Set a status and verify it with a fresh ``getLeadStatus`` read."""
+    valid_lead_id = _positive_int(lead_id)
+    valid_status_id = _positive_int(status_id)
+    if valid_lead_id is None or valid_status_id is None:
+        logger.warning("[leadme_v3] updateLeadStatus got an invalid identifier")
         return False
-    try:
-        with httpx.Client(timeout=8.0) as client:
-            resp = client.post(
-                f"{_BASE}/updateLeadStatus",
-                headers=_headers(),
-                json={"leadId": lead_id, "status": status_id},
-            )
-        data = _parse_json_response(resp)
-        if not data.get("result"):
-            logger.error("[leadme_v3] updateLeadStatus failed: leadId={} status={} msg={}",
-                         lead_id, status_id, data.get("message"))
-            return False
-        logger.info("[leadme_v3] status updated: leadId={} status={}", lead_id, status_id)
-        return True
-    except Exception:
-        logger.exception("[leadme_v3] updateLeadStatus raised: leadId={}", lead_id)
+    if _post(
+        "updateLeadStatus",
+        {"leadId": valid_lead_id, "status": valid_status_id},
+    ) is None:
         return False
 
-
-def add_lead_tag(lead_id: int, tag: str) -> bool:
-    """Add a tag to a lead. Returns True on success."""
-    if not _is_v3_enabled():
+    confirmed = get_lead_status(lead_id=valid_lead_id)
+    if confirmed is None or confirmed["status"] != valid_status_id:
+        logger.warning(
+            "[leadme_v3] updateLeadStatus was not confirmed for leadId={} status={}",
+            valid_lead_id,
+            valid_status_id,
+        )
         return False
-    try:
-        with httpx.Client(timeout=8.0) as client:
-            resp = client.post(
-                f"{_BASE}/addLeadTag",
-                headers=_headers(),
-                json={"leadId": lead_id, "tag": tag},
-            )
-        data = _parse_json_response(resp)
-        if data.get("result"):
-            logger.info("[leadme_v3] tag added: leadId={} tag={!r}", lead_id, tag)
-            return True
-        logger.error("[leadme_v3] addLeadTag failed: leadId={} tag={!r} msg={}",
-                     lead_id, tag, data.get("message"))
-        return False
-    except Exception:
-        logger.exception("[leadme_v3] addLeadTag raised: leadId={}", lead_id)
-        return False
+    logger.info(
+        "[leadme_v3] confirmed status update: leadId={} status={}",
+        valid_lead_id,
+        valid_status_id,
+    )
+    return True
 
 
 def get_lead_tags(lead_id: int) -> list[str]:
-    """Return a list of tag strings for the given leadId."""
-    if not _is_v3_enabled():
+    """Return a validated list of tags assigned to a LeadMe connection."""
+    valid_lead_id = _positive_int(lead_id)
+    if valid_lead_id is None:
         return []
-    try:
-        with httpx.Client(timeout=8.0) as client:
-            req = client.build_request(
-                "GET",
-                f"{_BASE}/getLeadTags",
-                headers=_headers(),
-                json={"leadId": lead_id},
-            )
-            resp = client.send(req)
-        data = _parse_json_response(resp)
-        if data.get("result"):
-            return [t["tag"] for t in (data.get("tags") or []) if "tag" in t]
+    data = _post("getLeadTags", {"leadId": valid_lead_id})
+    if data is None:
         return []
-    except Exception:
-        logger.exception("[leadme_v3] getLeadTags raised for leadId={}", lead_id)
+    tags = data.get("tags")
+    if not isinstance(tags, list):
+        logger.warning("[leadme_v3] getLeadTags response has no tag list")
         return []
 
+    values: list[str] = []
+    for item in tags:
+        if not isinstance(item, dict) or not isinstance(item.get("tag"), str):
+            logger.warning("[leadme_v3] getLeadTags contains an invalid tag")
+            return []
+        values.append(item["tag"])
+    return values
 
-# Tags that indicate the lead is already sales-ready and should be
-# classified as Level 1 immediately (no need to wait for bot booking).
-AUTO_LEVEL1_TAGS = frozenset({
-    "שיחה נכנסת",
-    "אתר הבית",
-    "עמוד נחיתה",
-})
+
+def add_lead_tag(lead_id: int, tag: str) -> bool:
+    """Add a tag and confirm it with a fresh ``getLeadTags`` read."""
+    valid_lead_id = _positive_int(lead_id)
+    tag = tag.strip()
+    if valid_lead_id is None or not tag:
+        return False
+    if _post("addLeadTag", {"leadId": valid_lead_id, "tag": tag}) is None:
+        return False
+    if tag not in get_lead_tags(valid_lead_id):
+        logger.warning(
+            "[leadme_v3] addLeadTag was not confirmed for leadId={} tag={!r}",
+            valid_lead_id,
+            tag,
+        )
+        return False
+    logger.info("[leadme_v3] confirmed tag add: leadId={} tag={!r}", valid_lead_id, tag)
+    return True
+
+
+AUTO_LEVEL1_TAGS = frozenset({"שיחה נכנסת", "אתר הבית", "עמוד נחיתה"})
 
 
 def check_auto_level1(phone: str) -> bool:
-    """Check if a lead has tags that make it auto-Level-1.
-
-    Returns True if the lead has any of the AUTO_LEVEL1_TAGS.
-    Returns False if the lead isn't found or has no matching tags.
-    """
-    if not _is_v3_enabled():
-        return False
-    if not get_settings().leadme_api_key:
+    """Return whether the lead has a tag that marks it Level 1."""
+    if not is_v3_available():
         return False
     lead_id = get_lead_id(phone)
     if not lead_id:
         return False
-    tags = get_lead_tags(lead_id)
-    matching = AUTO_LEVEL1_TAGS & set(tags)
-    if matching:
-        logger.info("[leadme_v3] lead {} has auto-L1 tags: {}", phone, matching)
-        return True
-    return False
+    return bool(AUTO_LEVEL1_TAGS & set(get_lead_tags(lead_id)))
+
+
+def status_id_for_level(level: int) -> Optional[int]:
+    """Return the deployment-configured status ID for an engagement level."""
+    settings = get_settings()
+    configured = {
+        1: settings.leadme_status_level_1,
+        2: settings.leadme_status_level_2,
+        3: settings.leadme_status_level_3,
+    }.get(level, "")
+    return _positive_int(configured)
 
 
 def push_level(phone: str, level: int, tag: Optional[str] = None) -> bool:
-    """Main entry point: look up lead by phone, set engagement level status,
-    and optionally add a tag.
-
-    level: 1 = booked call, 2 = replied, 3 = no reply
-    """
-    if not _is_v3_enabled():
+    """Resolve a lead, write its configured level, and verify every write."""
+    if not is_v3_available():
         return False
-    if not get_settings().leadme_api_key:
-        logger.debug("[leadme_v3] LEADME_API_KEY not set, skipping push")
+    status_id = status_id_for_level(level)
+    if status_id is None:
+        logger.error("[leadme_v3] no configured status for level={}", level)
         return False
-
-    status_id = LEVEL_STATUS_ID.get(level)
-    if not status_id:
-        logger.error("[leadme_v3] unknown level={}", level)
-        return False
-
     lead_id = get_lead_id(phone)
-    if not lead_id:
-        logger.warning("[leadme_v3] lead not found in LeadMe for phone={}", phone)
+    if lead_id is None:
+        logger.info("[leadme_v3] lead not found for a status update")
         return False
-
-    ok = update_lead_status(lead_id, status_id)
-
-    if tag:
-        add_lead_tag(lead_id, tag)
-
-    return ok
+    if not update_lead_status(lead_id, status_id):
+        return False
+    return not tag or add_lead_tag(lead_id, tag)
