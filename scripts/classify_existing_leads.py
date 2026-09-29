@@ -37,11 +37,11 @@ from sqlalchemy import select
 from app.crm.leadme_client import _is_test_phone, push_engagement_level, push_lead
 from app.crm import leadme_queue
 from app.crm.leadme_v3 import (
+    add_lead_tag,
     get_lead_status,
     is_v3_available,
     level_for_status_id,
-    status_id_for_level,
-    update_lead_status,
+    push_level,
 )
 from app.db.models import FunnelStage, Lead, Message, MessageRole
 from app.db.session import session_scope
@@ -166,6 +166,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                     skipped_not_new += 1
                     continue
                 remote_level = level_for_status_id(remote_status["status"])
+                slot = (lead.lead_metadata or {}).get("preferred_call_slot")
+                tag = f"חלון · {slot}" if level == 1 and slot else None
                 if remote_level is not None and remote_level < level:
                     print(
                         f"SKIP (LeadMe has higher-priority level) "
@@ -175,6 +177,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                     continue
                 if remote_level == level:
                     if args.commit:
+                        if tag and not add_lead_tag(remote_status["leadId"], tag):
+                            pushed_fail += 1
+                            continue
                         leadme_queue.record_confirmed_engagement(lead, level)
                     confirmed_same += 1
                     continue
@@ -182,13 +187,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 print(_describe(lead, level, user_count))
                 if args.commit:
                     try:
-                        status_id = status_id_for_level(level)
-                        if (
-                            status_id is not None
-                            and update_lead_status(
-                                remote_status["leadId"], status_id,
-                            )
-                        ):
+                        if push_level(lead.phone, level, tag):
                             leadme_queue.record_confirmed_engagement(lead, level)
                             pushed_ok += 1
                         else:
