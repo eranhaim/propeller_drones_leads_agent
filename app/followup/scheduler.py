@@ -43,10 +43,6 @@ from app.db.session import session_scope
 from app.names import first_name
 
 ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
-# Roy's current policy prohibits automated WhatsApp outreach. Keep the
-# implementation below for a future explicit product decision, but fail closed
-# even if a legacy environment variable is accidentally set to true.
-PROACTIVE_OUTBOUND_ENABLED = False
 
 # Belt-and-suspenders: any of these captured on a lead means "the lead
 # already committed to a call window" -- we skip nudging regardless of
@@ -408,10 +404,10 @@ def _log_unanswered_user_messages(session) -> None:
 
 
 def run_once() -> None:
-    """Run proactive follow-ups only when product policy explicitly enables it."""
-    if not PROACTIVE_OUTBOUND_ENABLED:
+    """Run proactive follow-ups only when explicitly enabled by config."""
+    if not get_settings().followup_nudges_enabled:
         logger.info(
-            "[followup] proactive outbound disabled by product policy; "
+            "[followup] nudges disabled (FOLLOWUP_NUDGES_ENABLED=false); "
             "skipping generic, video, and webinar follow-ups",
         )
         return
@@ -766,12 +762,29 @@ def run_in_background_thread() -> None:
         next_run_time=datetime.now(ISRAEL_TZ) + timedelta(minutes=2),
     )
 
-    # Proactive WhatsApp follow-ups are disabled by product policy. Keep the
-    # LeadMe queue and health jobs above active; neither sends WhatsApp.
-    logger.info(
-        "[followup] proactive outbound disabled by product policy "
-        "(queue drain still active)",
-    )
+    # Proactive WhatsApp follow-up nudges. Controlled by one reversible flag,
+    # paused by default (Omer, Sep 2026). Inbound replies, LeadMe pushes and
+    # the queue drain above are unaffected either way.
+    if settings.followup_nudges_enabled:
+        scheduler.add_job(
+            run_once,
+            trigger="interval",
+            minutes=settings.followup_interval_minutes,
+            id="followup_nudges",
+            max_instances=1,
+            coalesce=True,
+            next_run_time=datetime.now(ISRAEL_TZ) + timedelta(minutes=1),
+        )
+        logger.info(
+            "[followup] nudge job registered (FOLLOWUP_NUDGES_ENABLED=true, "
+            "every {}min)",
+            settings.followup_interval_minutes,
+        )
+    else:
+        logger.info(
+            "[followup] nudges PAUSED (FOLLOWUP_NUDGES_ENABLED=false); "
+            "inbound replies + LeadMe queue unaffected",
+        )
     # Session-health probe. Fires every 30 min, forces a fresh check
     # (bypasses the 30s admin-UI cache), and logs an ERROR whenever
     # the session isn't healthy. Keeps a tripwire in the docker logs

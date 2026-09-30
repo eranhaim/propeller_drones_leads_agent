@@ -168,6 +168,10 @@ class Settings(BaseSettings):
     # product policy; these values are retained only for configuration
     # compatibility and must not trigger messages.
     followup_enabled: bool = Field(False, alias="FOLLOWUP_ENABLED")
+    # Single reversible switch for proactive nudges to quiet leads. Paused by
+    # default (Omer, Sep 2026). The bot always replies to inbound messages
+    # regardless of this flag; it only gates the scheduler's nudge job.
+    followup_nudges_enabled: bool = Field(False, alias="FOLLOWUP_NUDGES_ENABLED")
     followup_interval_minutes: int = Field(30, alias="FOLLOWUP_INTERVAL_MINUTES")
     followup_first_hours: int = Field(24, alias="FOLLOWUP_FIRST_HOURS")
     followup_second_hours: int = Field(48, alias="FOLLOWUP_SECOND_HOURS")
