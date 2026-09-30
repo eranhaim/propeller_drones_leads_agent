@@ -427,36 +427,43 @@ def _try_drain_via_v3(
                 remaining.append(item)
         elif kind == "engagement":
             level = int(item.get("level") or 2)
+            slot = item.get("slot")
+            # The call-window tag is independent of the engagement level: a
+            # booked lead carries its window even when LeadMe already holds a
+            # higher (lower-numbered) level, so add it before the downgrade
+            # guards below.
+            ok_tag = True
+            if slot and slot not in ("any", "none"):
+                ok_tag = add_lead_tag(lead_id, f"חלון · {slot}")
             if remote_level is not None and remote_level < level:
-                record_confirmed_engagement(lead, remote_level)
-                current_level_int = remote_level
                 logger.info(
-                    "[leadme-queue v3] SKIPPING L{} for lead {} because "
+                    "[leadme-queue v3] SKIPPING L{} status for lead {} because "
                     "LeadMe is already L{}",
-                    level,
-                    lead.id,
-                    remote_level,
+                    level, lead.id, remote_level,
                 )
+                if ok_tag:
+                    record_confirmed_engagement(lead, remote_level)
+                    current_level_int = remote_level
+                    continue
+                remaining.append(item)
                 continue
             # Guard: don't downgrade. If a higher-engagement level was
             # already pushed successfully (directly, not via queue), skip
             # this stale queue item instead of overwriting it in LeadMe.
             if current_level_int is not None and current_level_int < level:
                 logger.info(
-                    "[leadme-queue v3] SKIPPING stale level={} for lead {} "
+                    "[leadme-queue v3] SKIPPING stale level={} status for lead {} "
                     "(already at level={})",
                     level, lead.id, current_level_int,
                 )
+                if ok_tag:
+                    continue
+                remaining.append(item)
                 continue
-            slot = item.get("slot")
             status_id = status_id_for_level(level)
             ok_status = True
             if status_id:
                 ok_status = update_lead_status(lead_id, status_id)
-            ok_tag = True
-            if slot and slot not in ("any", "none"):
-                tag = f"חלון · {slot}"
-                ok_tag = add_lead_tag(lead_id, tag)
             if ok_status and ok_tag:
                 record_confirmed_engagement(lead, level)
                 current_level_int = level
@@ -649,7 +656,6 @@ def _process_lead(sess: Session, lead: Lead, now: datetime) -> None:
     needs_tag = any(
         (
             it.get("kind") == "engagement"
-            and int(it.get("level") or 99) == 1
             and it.get("slot") not in (None, "", "any", "none")
         )
         or it.get("kind") == "ctwa_tag"
@@ -699,11 +705,9 @@ def _process_lead(sess: Session, lead: Lead, now: datetime) -> None:
                 if status_id:
                     ok_status = _admin_change_status(client, lc_id, status_id)
                 ok_tag = True
-                if (
-                    level == 1
-                    and slot not in (None, "", "any", "none")
-                    and tag_lead_id
-                ):
+                if slot not in (None, "", "any", "none") and tag_lead_id:
+                    # Window tag is independent of the level: a booked lead
+                    # is usually L2 now, but still carries its call window.
                     ok_tag = _admin_add_tag(
                         client, tag_lead_id, f"חלון · {slot}",
                     )

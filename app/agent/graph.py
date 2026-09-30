@@ -18,7 +18,8 @@ from app.agent.context import AgentContext, VideoSend, use_context
 from app.agent.prompts import render_system_prompt
 from app.agent.tools import ALL_TOOLS
 from app.config import get_settings
-from app.crm.client import mark_ready_for_call
+from app.crm.client import mark_call_window, mark_engaged_no_book, mark_ready_for_call
+from app.crm.levels import compute_engagement_level, is_content_consumed, is_organic_source
 from app.db import repository
 from app.db.models import FunnelStage, FamiliarityLevel, Lead, MessageRole
 from app.db.session import session_scope
@@ -419,7 +420,7 @@ def handle_message(
     # If the agent invocation crashes below, we still have a durable record
     # of the user's message in the DB. Losing the message means the sales
     # team has no idea the lead reached out.
-    push_level: Optional[int] = None  # 2 or 3, decided below
+    push_level: Optional[int] = None  # 1, 2 or 3, decided below
     push_not_relevant = False
     with session_scope() as session:
         lead = repository.get_or_create_lead(session, phone=phone, name=sender_name)
@@ -464,7 +465,6 @@ def handle_message(
             session.flush()
             push_not_relevant = True
         already_level = md_before.get("leadme_last_level")
-        is_priority_source = bool(md_before.get("leadme_source_is_level_1"))
         is_ctwa_first_contact = bool(md_before.get("ctwa_campaign"))
         # count existing USER messages after the current session start:
         reset_str = md_before.get("session_reset_at")
@@ -480,21 +480,28 @@ def handle_message(
             if m.role == MessageRole.user
             and (reset_dt is None or m.created_at > reset_dt)
         )
-        # Roy's priority mapping:
-        #   Level 1 = booked call, or a verified home-page / incoming-call /
-        #             landing-page source (handled by the LeadMe webhook).
-        #   Level 2 = meaningful bot conversation.
-        #   Level 3 = a non-priority CTWA auto-message with no bot reply yet.
+        # Omer's priority mapping:
+        #   Level 1 = organic source, or the lead consumed our content
+        #             (a video/webinar was sent and they are replying now).
+        #   Level 2 = any other meaningful bot conversation.
+        #   Level 3 = a non-organic CTWA auto-message with no bot reply yet.
         # A direct WhatsApp message is itself meaningful engagement, so it is
         # Level 2 on the first turn rather than being assumed to be CTWA.
+        organic = is_organic_source(lead)
+        # Content was sent in a PRIOR turn; the lead is replying now, so a
+        # recorded send timestamp means the content was consumed.
+        content_consumed = bool(
+            md_before.get("webinar_sent_at") or md_before.get("video_sent_at")
+        )
         if (
             not refused_now
             and lead.funnel_stage != FunnelStage.handed_off
             and already_level != 1
-            and not is_priority_source
         ):
-            if prior_user_msgs == 0:
-                push_level = 3 if is_ctwa_first_contact else 2
+            if organic or content_consumed:
+                push_level = 1
+            elif prior_user_msgs == 0 and is_ctwa_first_contact:
+                push_level = 3
             else:
                 push_level = 2
 
@@ -521,11 +528,17 @@ def handle_message(
 
     if push_level is not None:
         try:
-            from app.crm.client import mark_engaged_no_book, mark_no_reply
+            from app.crm.client import mark_no_reply
             with session_scope() as s_lvl:
                 l_lvl = s_lvl.get(Lead, lead_id)
                 if l_lvl is not None:
-                    if push_level == 3:
+                    if push_level == 1:
+                        mark_ready_for_call(
+                            l_lvl,
+                            note="hot lead (organic/content consumed)",
+                            session=s_lvl,
+                        )
+                    elif push_level == 3:
                         mark_no_reply(
                             l_lvl,
                             note="CTWA auto-message; awaiting bot reply",
@@ -662,27 +675,39 @@ def _enforce_booking_promise(session, lead: Lead, reply: str) -> None:
             lead.id,
         )
 
+    # Booking alone is not L1: push the computed level (>= 2) and attach the
+    # call-window tag independently so a booked L2 lead still carries it.
+    level = compute_engagement_level(
+        lead,
+        user_replied=True,
+        organic=is_organic_source(lead),
+        content_consumed=is_content_consumed(lead),
+    )
     try:
-        ok = mark_ready_for_call(
-            lead,
-            note=f"safety-net auto-push (slot={slot})",
-            session=session,
-        )
+        if level == 1:
+            ok = mark_ready_for_call(
+                lead, note=f"safety-net auto-push (slot={slot})", session=session,
+            )
+        else:
+            ok = mark_engaged_no_book(
+                lead, note=f"safety-net auto-push (slot={slot})", session=session,
+            )
+        mark_call_window(lead, slot, session=session)
         if ok:
             repository.update_funnel_stage(session, lead, FunnelStage.handed_off)
             logger.info(
-                "[booking-safety-net] Auto-pushed lead {} to LeadMe; stage -> handed_off",
-                lead.id,
+                "[booking-safety-net] Auto-pushed lead {} to LeadMe (L{}); "
+                "stage -> handed_off", lead.id, level,
             )
         else:
             logger.error(
-                "[booking-safety-net] mark_ready_for_call returned False for lead {} "
+                "[booking-safety-net] engagement push returned False for lead {} "
                 "-- lead was promised a call but LeadMe push failed",
                 lead.id,
             )
     except Exception:
         logger.exception(
-            "[booking-safety-net] mark_ready_for_call raised for lead {} "
+            "[booking-safety-net] engagement push raised for lead {} "
             "-- lead was promised a call but LeadMe push failed",
             lead.id,
         )

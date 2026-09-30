@@ -61,32 +61,29 @@ class ConfiguredFieldPayloadTests(unittest.TestCase):
 class WebhookPriorityTests(unittest.TestCase):
     def setUp(self) -> None:
         self.settings = SimpleNamespace(
-            leadme_level_1_sources=["אתר הבית", "שיחה נכנסת", "דף נחיתה"],
-            leadme_website_form_sources=["אתר הבית", "דף נחיתה"],
-            leadme_website_form_campaigns=["מתעניינים אקדמיה"],
-            leadme_booked_call_tags=["תואמה שיחה"],
+            leadme_organic_sources=[
+                "אורגני", "organic", "שיחה נכנסת", "incoming call",
+            ],
+            leadme_organic_campaigns=["12293"],
         )
 
-    @patch("app.webhook.opener.get_settings")
-    def test_only_explicit_source_campaign_or_booked_tag_is_level_one(
+    @patch("app.crm.levels.get_settings")
+    def test_only_organic_source_or_campaign_is_level_one(
         self,
         get_settings,
     ) -> None:
         get_settings.return_value = self.settings
 
-        self.assertEqual(_initial_priority("שיחה נכנסת", "", []), (1, "source_type"))
+        # Organic source (inbound office call) and organic campaign are L1.
+        self.assertEqual(_initial_priority("שיחה נכנסת", ""), (1, "organic"))
+        self.assertEqual(_initial_priority("", "12293"), (1, "organic"))
+
+        # Website form, paid campaign, and unknown sources are NOT L1.
+        self.assertEqual(_initial_priority("אתר הבית", ""), (3, "unengaged"))
         self.assertEqual(
-            _initial_priority("", "מתעניינים אקדמיה", []),
-            (1, "campaign"),
+            _initial_priority("", "מתעניינים אקדמיה"), (3, "unengaged"),
         )
-        self.assertEqual(
-            _initial_priority("", "", ["תואמה שיחה"]),
-            (1, "booked_call_tag"),
-        )
-        self.assertEqual(
-            _initial_priority("Facebook", "אחר", ["אורח"]),
-            (3, "unengaged"),
-        )
+        self.assertEqual(_initial_priority("Facebook", "אחר"), (3, "unengaged"))
 
 
 if __name__ == "__main__":

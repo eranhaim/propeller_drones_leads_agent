@@ -1,12 +1,18 @@
 """Bulk-classify existing leads into LeadMe priority Levels 1/2/3.
 
-Classification rules (deterministic, no LLM needed):
+Classification is the shared rule in ``app.crm.levels.compute_engagement_level``
+(the same one the live pipeline uses), so the bulk run and real-time flow can
+never diverge:
 
-- Level 1 (sales-ready): booked call, valid call slot, or an approved
-  website / incoming-call / landing-page source recorded by the webhook.
-- Level 2 (replied, no book): has at least one ``role=user`` message in
-  the DB history AND does NOT match Level 1.
-- Level 3 (never replied): 0 user messages in history.
+- Level 1 (hottest): organic source/campaign, OR the bot sent content and the
+  lead replied afterwards.
+- Level 2 (replied, not L1): at least one ``role=user`` message. Includes a
+  booked call after only shallow engagement.
+- Level 3 (never replied): 0 user messages and not organic.
+
+The call-window tag (``חלון · <slot>``) is attached only for booked leads
+(``funnel_stage == handed_off`` with a slot) via ``mark_call_window`` -- the
+single owner of that tag -- independent of the engagement level.
 
 The push uses ``push_engagement_level`` which is idempotent per
 (lead, level). Runs the SAME code path a live lead would hit — so tags,
@@ -34,10 +40,15 @@ from typing import Optional
 from loguru import logger
 from sqlalchemy import select
 
+from app.crm.client import mark_call_window
 from app.crm.leadme_client import _is_test_phone, push_engagement_level, push_lead
 from app.crm import leadme_queue
+from app.crm.levels import (
+    compute_engagement_level,
+    is_content_consumed,
+    is_organic_source,
+)
 from app.crm.leadme_v3 import (
-    add_lead_tag,
     get_lead_status,
     is_v3_available,
     level_for_status_id,
@@ -47,32 +58,12 @@ from app.db.models import FunnelStage, Lead, Message, MessageRole
 from app.db.session import session_scope
 
 
-VALID_SLOTS = {"9-12", "12-15", "15-18", "any"}
 _MANAGED_STATUS_TITLES = {
     "חדש",
     "חדש - רמה 1",
     "חדש - רמה 2",
     "חדש - רמה 3",
 }
-
-
-def _classify(lead: Lead, user_msg_count: int) -> int:
-    """Return 1, 2, or 3 per the rules described in the module docstring."""
-    md = lead.lead_metadata or {}
-    slot = (md.get("preferred_call_slot") or "").strip().lower()
-    webhook_priority = (
-        md.get("leadme_initial_priority") == 1
-        or bool(md.get("leadme_source_is_level_1"))
-    )
-    if (
-        lead.funnel_stage == FunnelStage.handed_off
-        or slot in VALID_SLOTS
-        or webhook_priority
-    ):
-        return 1
-    if user_msg_count > 0:
-        return 2
-    return 3
 
 
 def _describe(lead: Lead, level: int, user_count: int) -> str:
@@ -143,11 +134,25 @@ def main(argv: Optional[list[str]] = None) -> int:
             ).unique().scalars().all()
             user_count = len(user_count)
 
-            level = _classify(lead, user_count)
+            level = compute_engagement_level(
+                lead,
+                user_replied=user_count > 0,
+                organic=is_organic_source(lead),
+                content_consumed=is_content_consumed(lead),
+            )
             counts[level] += 1
 
             if args.only_level and level != args.only_level:
                 continue
+
+            # The call-window tag is a booking concern, not a level concern:
+            # attach it only for a booked lead that has a real slot.
+            slot = (lead.lead_metadata or {}).get("preferred_call_slot")
+            want_window_tag = (
+                lead.funnel_stage == FunnelStage.handed_off
+                and bool(slot)
+                and slot not in ("any", "none")
+            )
 
             if args.only_managed_statuses:
                 remote_status = get_lead_status(phone=lead.phone)
@@ -166,29 +171,32 @@ def main(argv: Optional[list[str]] = None) -> int:
                     skipped_not_new += 1
                     continue
                 remote_level = level_for_status_id(remote_status["status"])
-                slot = (lead.lead_metadata or {}).get("preferred_call_slot")
-                tag = f"חלון · {slot}" if level == 1 and slot else None
                 if remote_level is not None and remote_level < level:
                     print(
                         f"SKIP (LeadMe has higher-priority level) "
                         f"lead={lead.id}"
                     )
                     skipped_protected += 1
+                    # A booked lead still carries its window tag even when its
+                    # status is already more engaged than the computed level.
+                    if args.commit and want_window_tag:
+                        mark_call_window(lead, slot)
                     continue
                 if remote_level == level:
                     if args.commit:
-                        if tag and not add_lead_tag(remote_status["leadId"], tag):
-                            pushed_fail += 1
-                            continue
                         leadme_queue.record_confirmed_engagement(lead, level)
+                        if want_window_tag:
+                            mark_call_window(lead, slot)
                     confirmed_same += 1
                     continue
 
                 print(_describe(lead, level, user_count))
                 if args.commit:
                     try:
-                        if push_level(lead.phone, level, tag):
+                        if push_level(lead.phone, level):
                             leadme_queue.record_confirmed_engagement(lead, level)
+                            if want_window_tag:
+                                mark_call_window(lead, slot)
                             pushed_ok += 1
                         else:
                             pushed_fail += 1
@@ -235,6 +243,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                     pushed_fail += 1
                     continue
                 if ok:
+                    if want_window_tag:
+                        mark_call_window(lead, slot)
                     pushed_ok += 1
                 else:
                     pushed_fail += 1

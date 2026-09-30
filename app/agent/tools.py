@@ -11,9 +11,12 @@ from app.agent.classifier import apply_classification
 from app.agent.context import VideoSend, current_context
 from app.crm.client import (
     cancel_ready_for_call,
+    mark_call_window,
+    mark_engaged_no_book,
     mark_not_relevant as mark_not_relevant_in_crm,
     mark_ready_for_call,
 )
+from app.crm.levels import compute_engagement_level, is_content_consumed, is_organic_source
 from app.db import repository
 from app.db.models import FunnelStage, MessageRole
 from app.rag.retriever import search_as_text
@@ -389,20 +392,36 @@ def schedule_call(
     if summary:
         note_parts.append(f"summary={summary}")
 
+    # Booking alone is not Level 1. Push the COMPUTED level (>= 2 unless the
+    # lead is also organic or content-consumed) and attach the call-window tag
+    # independently so a booked L2 lead still carries its window.
+    level = compute_engagement_level(
+        ctx.lead,
+        user_replied=True,
+        organic=is_organic_source(ctx.lead),
+        content_consumed=is_content_consumed(ctx.lead),
+    )
+
     # Wrap the CRM push -- we do NOT want to break the user-facing handoff
     # message if LeadMe is momentarily down, but we DO want the failure to
     # be loud in the logs so we can retry manually.
-    logger.info("[schedule_call] calling mark_ready_for_call with slot={!r}", slot)
+    logger.info(
+        "[schedule_call] pushing engagement L{} with slot={!r} for lead {}",
+        level, slot, ctx.lead.id,
+    )
     try:
         # The tool runs inside the agent transaction. Reuse it for the
         # durable-queue fallback; opening a second session for this lead
         # would wait forever on the row lock held by this one.
-        ok = mark_ready_for_call(
-            ctx.lead,
-            note=" | ".join(note_parts),
-            slot=slot,
-            session=ctx.session,
-        )
+        if level == 1:
+            ok = mark_ready_for_call(
+                ctx.lead, note=" | ".join(note_parts), session=ctx.session,
+            )
+        else:
+            ok = mark_engaged_no_book(
+                ctx.lead, note=" | ".join(note_parts), session=ctx.session,
+            )
+        mark_call_window(ctx.lead, slot, session=ctx.session)
         if ok:
             logger.info("schedule_call: LeadMe push succeeded for lead {}",
                         ctx.lead.id)

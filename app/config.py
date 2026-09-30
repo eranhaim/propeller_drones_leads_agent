@@ -88,18 +88,19 @@ class Settings(BaseSettings):
         "מתעניינים אקדמיה",
         alias="LEADME_WEBSITE_FORM_CAMPAIGNS",
     )
-    # Exact source labels that Roy defined as high-priority before a bot
-    # conversation: website home page, incoming call, and landing page.
-    # LeadMe must forward one of these labels in a source field for the
-    # webhook path to assign Level 1.
-    leadme_level_1_sources_raw: str = Field(
-        "אתר הבית,שיחה נכנסת,דף נחיתה,homepage,incoming call,landing page",
-        alias="LEADME_LEVEL_1_SOURCES",
+    # Sources that mark a lead as organic (Level 1). Organic means the lead
+    # came to us directly rather than through a paid ad: an inbound office
+    # call or an explicitly organic lead source. Matched casefold against
+    # lead_metadata['leadme_source'].
+    leadme_organic_sources_raw: str = Field(
+        "אורגני,organic,שיחה נכנסת,incoming call",
+        alias="LEADME_ORGANIC_SOURCES",
     )
-    # Exact LeadMe tag values that mean a call was already booked. Empty by
-    # default: never infer priority from a free-form tag without Roy naming it.
-    leadme_booked_call_tags_raw: str = Field(
-        "", alias="LEADME_BOOKED_CALL_TAGS",
+    # Campaigns that mark a lead as organic (Level 1). Matched casefold
+    # against lead_metadata['leadme_campaign_id']. Default is the campaign
+    # labelled "organic leads" in opener.CAMPAIGN_TOPIC.
+    leadme_organic_campaigns_raw: str = Field(
+        "12293", alias="LEADME_ORGANIC_CAMPAIGNS",
     )
 
     # LeadMe CRM - public "supplier" API
@@ -257,11 +258,19 @@ class Settings(BaseSettings):
         ]
 
     @property
-    def leadme_level_1_sources(self) -> List[str]:
+    def leadme_organic_sources(self) -> List[str]:
         return [
             source.strip()
-            for source in self.leadme_level_1_sources_raw.split(",")
+            for source in self.leadme_organic_sources_raw.split(",")
             if source.strip()
+        ]
+
+    @property
+    def leadme_organic_campaigns(self) -> List[str]:
+        return [
+            campaign.strip()
+            for campaign in self.leadme_organic_campaigns_raw.split(",")
+            if campaign.strip()
         ]
 
     @property
@@ -278,14 +287,6 @@ class Settings(BaseSettings):
             campaign.strip()
             for campaign in self.leadme_website_form_campaigns_raw.split(",")
             if campaign.strip()
-        ]
-
-    @property
-    def leadme_booked_call_tags(self) -> List[str]:
-        return [
-            tag.strip()
-            for tag in self.leadme_booked_call_tags_raw.split(",")
-            if tag.strip()
         ]
 
     @field_validator("log_level")

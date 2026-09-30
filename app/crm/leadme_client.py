@@ -113,11 +113,11 @@ def push_lead(
        scheduler tick will drain the queue.
 
     ``level`` picks the engagement status:
-        1 = booked, 2 = replied but no booking, 3 = never replied.
+        1 = organic/content-consumed, 2 = replied, 3 = never replied.
 
-    The slot to tag (``חלון · <slot>``) is read from
-    ``lead.lead_metadata['preferred_call_slot']``. Only pushed for
-    level=1 (bookings); levels 2/3 don't carry a slot.
+    This function writes the status only. The ``חלון · <slot>`` tag is owned
+    by :func:`push_call_window_tag`; on a queued fallback the slot is carried
+    on the pending item so the queue re-adds the tag when it drains.
     """
     import re as _re
     from app.crm.leadme_delete import _build_client, get_row_by_phone
@@ -232,40 +232,19 @@ def push_lead(
             return False
         ok_status = _admin_change_status(client, lc_id, status_val)
 
-        ok_tag = True
-        if level == 1 and slot and slot not in ("any", "none"):
-            tag_lead_id = _resolve_tag_lead_id(client, lc_id)
-            if tag_lead_id is None:
-                # Resolution failed (viewLead probably returned a login
-                # page). Pushing the tag against lc_id silently
-                # succeeds but never lands -- so queue instead of
-                # firing into the void.
-                logger.warning(
-                    "[LeadMe] slot tag pending: could not resolve internal "
-                    "leadId for phone={} lc_id={} slot={!r}; queueing for "
-                    "later retry", lead.phone, lc_id, slot,
-                )
-                leadme_queue.enqueue_engagement(
-                    lead, level=level, slot=slot, note=note, session=session,
-                )
-                ok_tag = False
-            else:
-                ok_tag = _admin_add_tag(
-                    client, tag_lead_id, f"חלון · {slot}",
-                )
-
         logger.info(
             "[LeadMe admin] pushed lead {} lc_id={} campaign={!r} "
-            "level={} status={} slot={!r} (status_ok={}, tag_ok={})",
+            "level={} status={} slot={!r} (status_ok={})",
             lead.phone, lc_id, campaign, level, status_val or "-",
-            slot, ok_status, ok_tag,
+            slot, ok_status,
         )
-        if ok_status and ok_tag:
+        if ok_status:
             return True
 
         # A resolved row can still reject a write when cookies expire or
         # LeadMe returns a transient error. Preserve the engagement intent
-        # for the durable queue instead of falsely recording it locally.
+        # (and slot, so the queue re-adds the window tag) for the durable
+        # queue instead of falsely recording it locally.
         leadme_queue.enqueue_engagement(
             lead, level=level, slot=slot, note=note, session=session,
         )
@@ -572,47 +551,35 @@ def push_engagement_level(
     lead: Lead,
     level: int,
     note: Optional[str] = None,
-    slot: Optional[str] = None,  # kept for API compat, slot is read from metadata
     *,
     session: Optional[Session] = None,
 ) -> bool:
     """Convenience wrapper: push an engagement level (1/2/3) to LeadMe.
 
-    ``slot`` is accepted for API back-compat but IGNORED: the effective
-    slot is always read from ``lead.lead_metadata['preferred_call_slot']``
-    (that's the source of truth after ``schedule_call`` persists it).
-    Pass slots via :func:`app.db.repository.update_lead_metadata` before
-    calling this.
+    The call-window tag is NOT handled here -- it is a separate concern owned
+    by :func:`push_call_window_tag`. This keeps the tag independent of the
+    level so a booked lead still gets tagged even when the status push is a
+    same-level no-op.
 
     Level semantics (numerically LOWER = more engaged):
-        1 = booked a call.
-        2 = replied to the bot.
+        1 = organic or content-consumed (hottest).
+        2 = replied to the bot (includes a booked call after shallow chat).
         3 = never replied to the opener.
 
     Transitions we allow (engagement can only INCREASE over time):
 
-        Any -> 1 (booked): always allowed. Book might happen after any
-                           prior state, including cancel+rebook.
+        Any -> 1 : always allowed.
         3   -> 2 (silent lead replied): allowed. The bulk classifier
                            pushes Level 3 at scale, then a live reply
                            must upgrade to Level 2.
         None -> 2 / 3    : allowed (first-time classification).
         Same level        : no-op, idempotent.
-        1 -> 2 / 3        : REFUSED (never downgrade a booked lead).
+        1 -> 2 / 3        : REFUSED (never downgrade an L1 lead).
         2 -> 3            : REFUSED (a lead who replied isn't "silent").
     """
     if level not in (1, 2, 3):
         logger.warning("[LeadMe] ignoring invalid engagement level {}", level)
         return False
-    # Deliberately accept the parameter and log if someone passed a
-    # slot expecting it to be honored -- silent shadowing was a real
-    # bug we hit before this cleanup.
-    if slot:
-        logger.debug(
-            "[LeadMe] push_engagement_level(slot={!r}) argument is IGNORED "
-            "-- slot must be persisted via update_lead_metadata first.",
-            slot,
-        )
 
     md = dict(lead.lead_metadata or {})
     already = md.get("leadme_last_level")
@@ -666,7 +633,6 @@ def push_engagement_level(
     from app.crm import leadme_queue
     if is_v3_available():
         slot = (lead.lead_metadata or {}).get("preferred_call_slot")
-        tag = f"חלון · {slot}" if slot and level == 1 else None
         current_status = get_lead_status(phone=lead.phone or "")
         current_level = (
             level_for_status_id(current_status["status"])
@@ -681,7 +647,7 @@ def push_engagement_level(
                 current_level,
             )
             leadme_queue.record_confirmed_engagement(lead, current_level)
-        elif _v3_push_level(lead.phone, level=level, tag=tag):
+        elif _v3_push_level(lead.phone, level=level):
             # Push actually landed in LeadMe -- record it and discard any
             # stale queued L2/L3 item. A queued L1 is retained.
             leadme_queue.record_confirmed_engagement(lead, level)
@@ -710,6 +676,63 @@ def push_engagement_level(
             leadme_queue.record_confirmed_engagement(lead, level)
 
     return True  # queued or pushed -- caller should not retry
+
+
+def push_call_window_tag(
+    lead: Lead,
+    slot: Optional[str],
+    *,
+    session: Optional[Session] = None,
+) -> bool:
+    """Attach the ``חלון · <slot>`` tag to a booked lead via the v3 API.
+
+    Sole owner of the direct (immediate) call-window tag. Independent of the
+    engagement level so a booked L2 lead is tagged even when its status push
+    is a same-level no-op. ``add_lead_tag`` is idempotent (it verifies the tag
+    landed), so re-tagging is safe.
+
+    Logs and continues on failure: a booked lead is already in LeadMe, so a
+    missed tag is cosmetic, never a lost lead. When the lead is not yet visible
+    in LeadMe (CTWA race), the queued engagement item carries the slot and the
+    queue re-adds the tag on drain. ``session`` is unused (v3 is sessionless)
+    and kept only for signature parity with the caller-facing ``mark_*`` API.
+    """
+    from app.crm.leadme_v3 import add_lead_tag, get_lead_id, is_v3_available
+
+    settings = get_settings()
+    slot = (slot or "").strip()
+    if not slot or slot in ("any", "none"):
+        return False
+    if not (lead.phone or "").strip():
+        return False
+    if settings.leadme_test_mode or _is_test_phone(lead.phone):
+        logger.info(
+            "[LeadMe TEST_MODE] skipping call-window tag for {} (slot={})",
+            lead.phone, slot,
+        )
+        return True
+    if not is_v3_available():
+        logger.warning(
+            "[LeadMe] v3 unavailable; call-window tag for {} deferred to queue",
+            lead.phone,
+        )
+        return False
+
+    lead_id = get_lead_id(lead.phone)
+    if lead_id is None:
+        logger.warning(
+            "[LeadMe] lead {} not visible in LeadMe yet; call-window tag "
+            "deferred to queue (slot={})", lead.phone, slot,
+        )
+        return False
+
+    tag = f"חלון · {slot}"
+    ok = add_lead_tag(lead_id, tag)
+    if not ok:
+        logger.warning(
+            "[LeadMe] call-window tag failed for {} tag={!r}", lead.phone, tag,
+        )
+    return ok
 
 
 def push_not_relevant(

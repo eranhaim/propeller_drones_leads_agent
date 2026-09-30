@@ -24,6 +24,7 @@ from sqlalchemy import select
 from whatsapp_api_client_python.API import GreenAPI
 
 from app.config import get_settings
+from app.crm.levels import is_organic
 from app.db import repository
 from app.db.models import Lead, MessageRole
 from app.db.session import session_scope
@@ -66,18 +67,6 @@ def _normalize_source(value: object) -> str:
     return " ".join(str(value or "").strip().casefold().split())
 
 
-def _is_level_one_source(source: object) -> bool:
-    """Return whether LeadMe supplied one of Roy's priority sources."""
-    normalized = _normalize_source(source)
-    if not normalized:
-        return False
-    configured = {
-        _normalize_source(item)
-        for item in get_settings().leadme_level_1_sources
-    }
-    return normalized in configured
-
-
 def _is_website_form_source(source: object) -> bool:
     """Return whether LeadMe supplied an approved website-form source."""
     normalized = _normalize_source(source)
@@ -110,34 +99,15 @@ def _is_website_form_lead(source: object, campaign_id: object) -> bool:
     )
 
 
-def _has_configured_booked_call_tag(tags: object) -> bool:
-    """Only exact, configured tags may represent an already-booked call."""
-    if not isinstance(tags, (list, tuple, set)):
-        return False
-    configured = {
-        _normalize_source(tag)
-        for tag in get_settings().leadme_booked_call_tags
-    }
-    return any(_normalize_source(tag) in configured for tag in tags)
+def _initial_priority(source: object, campaign_id: object) -> tuple[int, str]:
+    """Classify a fresh webhook lead into an initial engagement level.
 
-
-def _initial_priority(
-    source: object,
-    campaign_id: object,
-    tags: object,
-) -> tuple[int, str]:
-    """Apply Roy's explicit webhook priority rules.
-
-    Level 2 means a meaningful WhatsApp message and is assigned only by the
-    inbound-message flow. An external webhook therefore starts at Level 1 or
-    Level 3; unknown sources and tags are deliberately safe at Level 3.
+    Only an organic source or campaign is Level 1 before any conversation.
+    Everything else (website form, landing page, paid campaigns) starts at
+    Level 3; a meaningful WhatsApp reply later upgrades it to Level 2.
     """
-    if _is_level_one_source(source):
-        return 1, "source_type"
-    if _is_website_form_campaign(campaign_id):
-        return 1, "campaign"
-    if _has_configured_booked_call_tag(tags):
-        return 1, "booked_call_tag"
+    if is_organic(source, campaign_id):
+        return 1, "organic"
     return 3, "unengaged"
 
 
@@ -200,11 +170,8 @@ def handle_new_lead(
     """
     try:
         source = metadata.get("leadme_source")
-        tags = metadata.get("leadme_tags", [])
         is_website_form_source = _is_website_form_lead(source, campaign_id)
-        initial_priority, priority_reason = _initial_priority(
-            source, campaign_id, tags,
-        )
+        initial_priority, priority_reason = _initial_priority(source, campaign_id)
         is_level_one_source = initial_priority == 1
         should_send_opener = False
         lead_id: Optional[int] = None
@@ -309,10 +276,11 @@ def handle_new_lead(
             )
             return
 
-        # Roy's mapping: only website home, incoming-call and landing-page
-        # sources, configured website campaigns, and configured booked-call
-        # tags are L1. Every other new webhook lead is L3 until a meaningful
-        # reply upgrades it to L2.
+        # Omer's mapping: only an organic source or campaign is L1 before a
+        # conversation. Website-form, landing-page and paid campaigns are L3
+        # until a meaningful reply upgrades them to L2. push_engagement_level
+        # is upgrade-only, so re-pushing L3 for a returning lead never
+        # downgrades an existing L1/L2 -- the re-entry guard.
         try:
             from app.crm.client import mark_no_reply, mark_ready_for_call
             with session_scope() as s3:
