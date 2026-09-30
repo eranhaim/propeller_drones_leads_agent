@@ -16,14 +16,14 @@ import re
 from app.agent.classifier import describe_state
 from app.agent.context import AgentContext, VideoSend, use_context
 from app.agent.prompts import render_system_prompt
-from app.agent.tools import ALL_TOOLS
+from app.agent.tools import ALL_TOOLS, deliver_video
 from app.config import get_settings
 from app.crm.client import mark_call_window, mark_engaged_no_book, mark_ready_for_call
 from app.crm.levels import compute_engagement_level, is_content_consumed, is_organic_source
 from app.db import repository
 from app.db.models import FunnelStage, FamiliarityLevel, Lead, MessageRole
 from app.db.session import session_scope
-from app.videos.catalog import Video
+from app.videos.catalog import Video, recommend
 
 
 HISTORY_LIMIT = 30
@@ -90,6 +90,16 @@ _VIDEO_WORD_RE = re.compile(r"[\u0590-\u05FF]{2,}")
 _VIDEO_DELIVERY_RE = re.compile(
     r"(?:שלח(?:תי|נו)|מצורף|הנה|קיבלת).{0,30}"
     r"(?:סרטון|וובינר|קישור|וידאו)"
+)
+# The LLM often writes "I'll send you a video/webinar" but never calls
+# send_video, so the lead is promised media that never arrives. If the final
+# reply promises a video and none was sent this turn, the safety net below
+# delivers one. Send verbs (future or "here is") near a media noun; a bare
+# "we have a video on X" (no send verb) is informational and won't match.
+_VIDEO_PROMISE_RE = re.compile(
+    r"(?:אשלח|נשלח|שולח(?:ת)?|אעביר|מעביר(?:ה)?|אשתף|אצרף|שלחתי|שלחנו|הנה|מצורף)"
+    r".{0,30}"
+    r"(?:סרטון|וובינר|וידאו|קליפ|הדרכה|הרצאה)"
 )
 _VIDEO_STOP_WORDS = {
     "את",
@@ -629,6 +639,7 @@ def handle_message(
 
         reply = _strip_filler(reply)
         reply = _strip_markdown(reply)
+        _enforce_video_promise(session, lead, ctx, reply)
         reply = _remove_video_delivery_duplicates(reply, ctx.video_sends_this_turn)
 
         _enforce_booking_promise(session, lead, reply)
@@ -710,6 +721,54 @@ def _enforce_booking_promise(session, lead: Lead, reply: str) -> None:
             "[booking-safety-net] engagement push raised for lead {} "
             "-- lead was promised a call but LeadMe push failed",
             lead.id,
+        )
+
+
+def _enforce_video_promise(session, lead: Lead, ctx: AgentContext, reply: str) -> None:
+    """If the reply promises a video but none was sent, send one.
+
+    Prompt-only guardrails are not enough: the LLM often tells a lead "I'll
+    send you a video/webinar" and never calls ``send_video``, so the lead is
+    left waiting for media that never arrives. This is a belt-and-suspenders
+    safety net, mirroring ``_enforce_booking_promise``. If the outgoing text
+    promises a video and the agent didn't actually send one this turn, we pick
+    the best unsent video and deliver it here. Loud logging either way so we
+    can measure how often the LLM is being sloppy.
+    """
+    if ctx.video_sends_this_turn:
+        return
+    if not _VIDEO_PROMISE_RE.search(reply or ""):
+        return
+    if ctx.send_video is None:
+        logger.warning(
+            "[video-safety-net] lead {} was promised a video but no sender is "
+            "configured -- cannot deliver", lead.id,
+        )
+        return
+
+    exclude = list(lead.videos_sent or []) + list(ctx.videos_sent_this_turn)
+    video = recommend(
+        familiarity=lead.familiarity_level.value,
+        topics_context=[reply],
+        exclude_ids=exclude,
+    )
+    if video is None:
+        logger.warning(
+            "[video-safety-net] lead {} was promised a video but no unsent "
+            "video is available (excluded={})", lead.id, exclude,
+        )
+        return
+
+    logger.warning(
+        "[video-safety-net] reply for lead {} promises a video but send_video "
+        "never fired; delivering {!r}", lead.id, video.id,
+    )
+    try:
+        deliver_video(ctx, video, None)
+    except Exception:
+        logger.exception(
+            "[video-safety-net] failed to deliver promised video {!r} to lead {}",
+            video.id, lead.id,
         )
 
 

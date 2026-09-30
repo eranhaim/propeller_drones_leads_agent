@@ -8,7 +8,7 @@ from langchain_core.tools import tool
 from loguru import logger
 
 from app.agent.classifier import apply_classification
-from app.agent.context import VideoSend, current_context
+from app.agent.context import AgentContext, VideoSend, current_context
 from app.crm.client import (
     cancel_ready_for_call,
     mark_call_window,
@@ -20,7 +20,7 @@ from app.crm.levels import compute_engagement_level, is_content_consumed, is_org
 from app.db import repository
 from app.db.models import FunnelStage, MessageRole
 from app.rag.retriever import search_as_text
-from app.videos.catalog import get_video, recommend
+from app.videos.catalog import Video, get_video, recommend
 
 
 # Canonical set of call-window values LeadMe / our sales team recognise.
@@ -193,48 +193,19 @@ def classify_lead(
     return summary
 
 
-@tool
-def send_video(video_id: str, caption: Optional[str] = None) -> str:
-    """Send a video to the lead via WhatsApp.
+def deliver_video(
+    ctx: AgentContext, video: Video, caption: Optional[str] = None
+) -> None:
+    """Send one video and record it everywhere the rest of the system expects.
 
-    Pass the ``video_id`` from the catalog shown in the system prompt.
-    ``caption`` is optional text that appears with the video (keep it very
-    short -- one sentence). This tool sends the complete outbound message,
-    including its caption. Do not send the same video twice.
+    Shared by the ``send_video`` tool and the post-processing safety net that
+    catches a video the LLM promised but never actually sent. Callers must have
+    already checked that the video wasn't sent before and that ``ctx.send_video``
+    is set. Raises on send failure so the caller can decide how to surface it.
     """
-    ctx = current_context()
-    video = get_video(video_id)
-    if video is None:
-        return f"שגיאה: אין סרטון עם id={video_id} בקטלוג."
-
-    if video.id in (ctx.lead.videos_sent or []):
-        return f"הסרטון {video_id} כבר נשלח ללקוח -- לא נשלח שוב."
-
-    # In-turn dedup: if the LLM tries to send the same video twice within
-    # the same agent turn, the second call is rejected before touching
-    # GreenAPI. This catches the "sent Oded's video twice" bug the customer
-    # flagged, since the DB commit for videos_sent only happens after the
-    # first send returns.
-    if video.id in ctx.videos_sent_this_turn:
-        logger.warning(
-            "[send_video] IN-TURN DUPLICATE blocked: lead {} tried to send "
-            "video {!r} twice in one reply", ctx.lead.id, video.id,
-        )
-        return (
-            f"הסרטון {video_id} כבר נשלח בהודעה הנוכחית -- אל תשלח אותו שוב."
-        )
-    ctx.videos_sent_this_turn.add(video.id)
-
-    if ctx.send_video is None:
-        logger.warning("send_video called but no sender configured")
-        return "שגיאה טכנית: לא ניתן לשלוח סרטונים כרגע."
-
     sent_caption = (caption or video.title).strip()
-    try:
-        ctx.send_video(video, sent_caption)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("Failed to send video")
-        return f"שגיאת שליחה: {exc}"
+    ctx.videos_sent_this_turn.add(video.id)
+    ctx.send_video(video, sent_caption)
 
     repository.add_message(
         ctx.session,
@@ -277,6 +248,48 @@ def send_video(video_id: str, caption: Optional[str] = None) -> str:
         )
         logger.info("[send_video] video '{}' sent -> tracking for follow-up (lead {})",
                     video.id, ctx.lead.id)
+
+
+@tool
+def send_video(video_id: str, caption: Optional[str] = None) -> str:
+    """Send a video to the lead via WhatsApp.
+
+    Pass the ``video_id`` from the catalog shown in the system prompt.
+    ``caption`` is optional text that appears with the video (keep it very
+    short -- one sentence). This tool sends the complete outbound message,
+    including its caption. Do not send the same video twice.
+    """
+    ctx = current_context()
+    video = get_video(video_id)
+    if video is None:
+        return f"שגיאה: אין סרטון עם id={video_id} בקטלוג."
+
+    if video.id in (ctx.lead.videos_sent or []):
+        return f"הסרטון {video_id} כבר נשלח ללקוח -- לא נשלח שוב."
+
+    # In-turn dedup: if the LLM tries to send the same video twice within
+    # the same agent turn, the second call is rejected before touching
+    # GreenAPI. This catches the "sent Oded's video twice" bug the customer
+    # flagged, since the DB commit for videos_sent only happens after the
+    # first send returns.
+    if video.id in ctx.videos_sent_this_turn:
+        logger.warning(
+            "[send_video] IN-TURN DUPLICATE blocked: lead {} tried to send "
+            "video {!r} twice in one reply", ctx.lead.id, video.id,
+        )
+        return (
+            f"הסרטון {video_id} כבר נשלח בהודעה הנוכחית -- אל תשלח אותו שוב."
+        )
+
+    if ctx.send_video is None:
+        logger.warning("send_video called but no sender configured")
+        return "שגיאה טכנית: לא ניתן לשלוח סרטונים כרגע."
+
+    try:
+        deliver_video(ctx, video, caption)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to send video")
+        return f"שגיאת שליחה: {exc}"
 
     return (
         f"הסרטון '{video.title}' נשלח בהודעה עצמאית. "
