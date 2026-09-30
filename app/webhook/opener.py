@@ -276,17 +276,28 @@ def handle_new_lead(
             )
             return
 
-        # Omer's mapping: only an organic source or campaign is L1 before a
-        # conversation. Website-form, landing-page and paid campaigns are L3
-        # until a meaningful reply upgrades them to L2. push_engagement_level
-        # is upgrade-only, so re-pushing L3 for a returning lead never
-        # downgrades an existing L1/L2 -- the re-entry guard.
+        # Level mapping on webhook intake:
+        #   * Re-entry (Omer): a lead ALREADY known to us who leaves their
+        #     details AGAIN is a hot signal -- actively bump to L1. A duplicate
+        #     Facebook-lead event returned early above, so an existing row here
+        #     means a genuine second submission, not a repeated webhook.
+        #   * Otherwise only an organic source/campaign is L1; website-form,
+        #     landing-page and paid campaigns are L3 until a reply upgrades them.
+        # push_engagement_level is upgrade-only, so none of these ever
+        # downgrade an existing higher level.
+        is_reentry = existing_lead is not None
         try:
             from app.crm.client import mark_no_reply, mark_ready_for_call
             with session_scope() as s3:
                 l3 = s3.query(Lead).filter_by(phone=phone).first()
                 if l3 is not None:
-                    if initial_priority == 1:
+                    if is_reentry:
+                        mark_ready_for_call(
+                            l3,
+                            note="LeadMe webhook re-entry (known lead re-submitted)",
+                            session=s3,
+                        )
+                    elif initial_priority == 1:
                         mark_ready_for_call(
                             l3,
                             note=f"LeadMe webhook priority={priority_reason}",
