@@ -84,6 +84,21 @@ class LeadMeClassificationTests(unittest.TestCase):
         self.assertEqual((decision.level, decision.reason), (2, "meaningful_reply"))
 
     @patch("app.crm.levels.get_settings")
+    def test_reentry_ignores_messages_before_session_reset(self, get_settings) -> None:
+        get_settings.return_value = self.settings
+        now = datetime.now(timezone.utc)
+        decision = classify_engagement(
+            _lead(
+                metadata={
+                    "ctwa_campaign": "עודד",
+                    "session_reset_at": now.isoformat(),
+                },
+                messages=[_user_message(now - timedelta(days=8))],
+            )
+        )
+        self.assertEqual((decision.level, decision.reason), (3, "ctwa_no_reply"))
+
+    @patch("app.crm.levels.get_settings")
     def test_explicit_disinterest_is_not_a_numeric_level(self, get_settings) -> None:
         get_settings.return_value = self.settings
         decision = classify_engagement(

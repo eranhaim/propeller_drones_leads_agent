@@ -121,6 +121,23 @@ def _has_meaningful_reply(lead: Lead, messages: list[Message]) -> bool:
     return True
 
 
+def _messages_in_current_session(lead: Lead, messages: list[Message]) -> list[Message]:
+    reset_at = _parse_iso((lead.lead_metadata or {}).get("session_reset_at"))
+    if reset_at is None:
+        return messages
+    current_messages: list[Message] = []
+    for message in messages:
+        created_at = message.created_at
+        if created_at is None:
+            current_messages.append(message)
+            continue
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        if created_at > reset_at:
+            current_messages.append(message)
+    return current_messages
+
+
 def classify_engagement(
     lead: Lead,
     messages: Optional[Iterable[Message]] = None,
@@ -134,7 +151,10 @@ def classify_engagement(
     if is_confirmed_booking(lead):
         return EngagementDecision(1, "booked_call")
 
-    lead_messages = list(messages if messages is not None else (lead.messages or []))
+    lead_messages = _messages_in_current_session(
+        lead,
+        list(messages if messages is not None else (lead.messages or [])),
+    )
     if _has_meaningful_reply(lead, lead_messages):
         if has_content_reply(lead, lead_messages):
             return EngagementDecision(2, "content_reply")
