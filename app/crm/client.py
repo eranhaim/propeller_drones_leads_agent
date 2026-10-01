@@ -28,9 +28,8 @@ def mark_ready_for_call(
 ) -> bool:
     """Push engagement Level 1 (hottest) to the external CRM (LeadMe).
 
-    Level 1 means organic or content-consumed. Idempotent per lead. Booking
-    a call does not imply Level 1 -- the call-window tag is a separate concern
-    handled by :func:`mark_call_window`.
+    Level 1 means a configured priority source or a bot-confirmed booking.
+    Idempotent per lead.
     """
     return push_engagement_level(lead, level=1, note=note, session=session)
 
@@ -41,7 +40,7 @@ def mark_engaged_no_book(
     *,
     session: Optional[Session] = None,
 ) -> bool:
-    """Engagement Level 2: lead replied to the bot but never booked."""
+    """Engagement Level 2: meaningful reply without an L1 criterion."""
     return push_engagement_level(lead, level=2, note=note, session=session)
 
 

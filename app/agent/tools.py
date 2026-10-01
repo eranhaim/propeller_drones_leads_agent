@@ -16,7 +16,7 @@ from app.crm.client import (
     mark_not_relevant as mark_not_relevant_in_crm,
     mark_ready_for_call,
 )
-from app.crm.levels import compute_engagement_level, is_content_consumed, is_organic_source
+from app.crm.levels import classify_engagement
 from app.db import repository
 from app.db.models import FunnelStage, MessageRole
 from app.rag.retriever import search_as_text
@@ -393,6 +393,11 @@ def schedule_call(
         )
 
     repository.update_funnel_stage(ctx.session, ctx.lead, FunnelStage.handed_off)
+    repository.update_lead_metadata(
+        ctx.session,
+        ctx.lead,
+        leadme_booking_confirmed=True,
+    )
 
     md = ctx.lead.lead_metadata or {}
     note_parts = [
@@ -405,15 +410,7 @@ def schedule_call(
     if summary:
         note_parts.append(f"summary={summary}")
 
-    # Booking alone is not Level 1. Push the COMPUTED level (>= 2 unless the
-    # lead is also organic or content-consumed) and attach the call-window tag
-    # independently so a booked L2 lead still carries its window.
-    level = compute_engagement_level(
-        ctx.lead,
-        user_replied=True,
-        organic=is_organic_source(ctx.lead),
-        content_consumed=is_content_consumed(ctx.lead),
-    )
+    level = classify_engagement(ctx.lead).level
 
     # Wrap the CRM push -- we do NOT want to break the user-facing handoff
     # message if LeadMe is momentarily down, but we DO want the failure to
@@ -512,6 +509,7 @@ def cancel_call(reason: Optional[str] = None) -> str:
     # Must pop the key directly -- update_lead_metadata filters None values.
     md = dict(ctx.lead.lead_metadata or {})
     md.pop("preferred_call_slot", None)
+    md.pop("leadme_booking_confirmed", None)
     ctx.lead.lead_metadata = md
     ctx.session.flush()
     repository.update_funnel_stage(ctx.session, ctx.lead, FunnelStage.warm)

@@ -88,19 +88,16 @@ class Settings(BaseSettings):
         "מתעניינים אקדמיה",
         alias="LEADME_WEBSITE_FORM_CAMPAIGNS",
     )
-    # Sources that mark a lead as organic (Level 1). Organic means the lead
-    # came to us directly rather than through a paid ad: an inbound office
-    # call or an explicitly organic lead source. Matched casefold against
-    # lead_metadata['leadme_source'].
-    leadme_organic_sources_raw: str = Field(
-        "אורגני,organic,שיחה נכנסת,incoming call",
-        alias="LEADME_ORGANIC_SOURCES",
+    # Exact LeadMe source labels and campaigns that classify a new lead as
+    # Level 1. The customer-approved mapping is home site / incoming call /
+    # landing page, not a broad "organic" heuristic.
+    leadme_level_1_sources_raw: str = Field(
+        "אתר הבית,שיחה נכנסת,דף נחיתה,homepage,incoming call,landing page",
+        alias="LEADME_LEVEL_1_SOURCES",
     )
-    # Campaigns that mark a lead as organic (Level 1). Matched casefold
-    # against lead_metadata['leadme_campaign_id']. Default is the campaign
-    # labelled "organic leads" in opener.CAMPAIGN_TOPIC.
-    leadme_organic_campaigns_raw: str = Field(
-        "12293", alias="LEADME_ORGANIC_CAMPAIGNS",
+    leadme_level_1_campaigns_raw: str = Field(
+        "מתעניינים אקדמיה",
+        alias="LEADME_LEVEL_1_CAMPAIGNS",
     )
 
     # LeadMe CRM - public "supplier" API
@@ -262,18 +259,18 @@ class Settings(BaseSettings):
         ]
 
     @property
-    def leadme_organic_sources(self) -> List[str]:
+    def leadme_level_1_sources(self) -> List[str]:
         return [
             source.strip()
-            for source in self.leadme_organic_sources_raw.split(",")
+            for source in self.leadme_level_1_sources_raw.split(",")
             if source.strip()
         ]
 
     @property
-    def leadme_organic_campaigns(self) -> List[str]:
+    def leadme_level_1_campaigns(self) -> List[str]:
         return [
             campaign.strip()
-            for campaign in self.leadme_organic_campaigns_raw.split(",")
+            for campaign in self.leadme_level_1_campaigns_raw.split(",")
             if campaign.strip()
         ]
 

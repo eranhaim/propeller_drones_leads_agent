@@ -1,31 +1,34 @@
-"""Shared engagement-level classifier (LeadMe Level 1/2/3).
+"""Shared LeadMe classification rules.
 
-Single source of truth for the L1/L2/L3 rule. Used by the webhook opener,
-the reply handler, the booking flow, and the bulk reclassification script.
-
-Rules (Omer, 2026-09-29):
-    L1 = organic source OR consumed our content. Content-consumed means the
-         bot sent a video/webinar AND the lead replied after receiving it.
-    L2 = replied to the bot but not L1. Includes booking a call after only
-         shallow engagement, price-askers, generic interest, and paid-source
-         leads who engaged.
-    L3 = not organic and never gave a meaningful reply.
-
-Booking a call is NOT L1 by itself: a booked lead is L2 unless they are also
-organic or have consumed content.
+Customer-confirmed mapping:
+    L1 = a lead from an explicitly configured priority source, or a bot-
+         confirmed booked call.
+    L2 = a meaningful WhatsApp reply that is not L1.
+    L3 = no meaningful WhatsApp reply.
+    not-interested = an explicit opt-out; it is outside L1/L2/L3.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Optional
+from dataclasses import dataclass
+from typing import Iterable, Optional
 
 from app.config import get_settings
-from app.db.models import Lead, MessageRole
+from app.db.models import FunnelStage, Lead, Message, MessageRole
 
 
 def _normalize(value: object) -> str:
     return " ".join(str(value or "").strip().casefold().split())
+
+
+@dataclass(frozen=True)
+class EngagementDecision:
+    level: Optional[int]
+    reason: str
+
+
+_VALID_BOOKING_SLOTS = {"9-12", "12-15", "15-18", "any"}
 
 
 def _parse_iso(value: object) -> Optional[datetime]:
@@ -41,35 +44,36 @@ def _parse_iso(value: object) -> Optional[datetime]:
     return parsed
 
 
-def is_organic(source: object, campaign_id: object) -> bool:
-    """Return whether a LeadMe source or campaign is organic."""
+def is_priority_source(source: object, campaign_id: object) -> bool:
+    """Return whether the exact configured LeadMe source or campaign is L1."""
     settings = get_settings()
     normalized_source = _normalize(source)
     if normalized_source and normalized_source in {
-        _normalize(item) for item in settings.leadme_organic_sources
+        _normalize(item) for item in settings.leadme_level_1_sources
     }:
         return True
     normalized_campaign = _normalize(campaign_id)
     if normalized_campaign and normalized_campaign in {
-        _normalize(item) for item in settings.leadme_organic_campaigns
+        _normalize(item) for item in settings.leadme_level_1_campaigns
     }:
         return True
     return False
 
 
-def is_organic_source(lead: Lead) -> bool:
-    """Return whether the lead's recorded LeadMe source/campaign is organic."""
+def is_priority_source_lead(lead: Lead) -> bool:
+    """Return whether the lead's recorded LeadMe source or campaign is L1."""
     md = lead.lead_metadata or {}
-    return is_organic(md.get("leadme_source"), md.get("leadme_campaign_id"))
+    return is_priority_source(
+        md.get("leadme_source"),
+        md.get("leadme_campaign_id"),
+    )
 
 
-def is_content_consumed(lead: Lead) -> bool:
-    """Return whether the bot sent content and the lead replied afterwards.
+def has_content_reply(lead: Lead, messages: Iterable[Message]) -> bool:
+    """Return whether the lead replied after the bot delivered content.
 
-    Content is a video or webinar send, timestamped in ``lead_metadata`` by
-    ``send_video`` (``webinar_sent_at`` / ``video_sent_at``). Consumed means
-    at least one ``role=user`` message arrived after the earliest content
-    send. Requires ``lead.messages`` to be loaded.
+    This is a useful reason for L2, not an L1 criterion. The customer
+    explicitly reserves L1 for a priority source or a booked call.
     """
     md = lead.lead_metadata or {}
     sent_times = [
@@ -83,7 +87,7 @@ def is_content_consumed(lead: Lead) -> bool:
     if not sent_times:
         return False
     content_sent_at = min(sent_times)
-    for message in lead.messages or []:
+    for message in messages:
         if message.role != MessageRole.user:
             continue
         created_at = message.created_at
@@ -96,25 +100,45 @@ def is_content_consumed(lead: Lead) -> bool:
     return False
 
 
-def compute_engagement_level(
-    lead: Lead,
-    *,
-    user_replied: bool,
-    content_consumed: Optional[bool] = None,
-    organic: Optional[bool] = None,
-) -> int:
-    """Return the engagement level (1/2/3) for a lead.
+def is_confirmed_booking(lead: Lead) -> bool:
+    """Return whether the bot recorded a sales-call booking for this lead."""
+    md = lead.lead_metadata or {}
+    if md.get("leadme_booking_confirmed") is True:
+        return True
+    slot = _normalize(md.get("preferred_call_slot"))
+    return lead.funnel_stage == FunnelStage.handed_off and slot in _VALID_BOOKING_SLOTS
 
-    ``organic`` and ``content_consumed`` default to the module helpers when
-    left as ``None``. L1 if organic or content consumed; else L2 if the lead
-    replied; else L3.
-    """
-    if organic is None:
-        organic = is_organic_source(lead)
-    if content_consumed is None:
-        content_consumed = is_content_consumed(lead)
-    if organic or content_consumed:
-        return 1
-    if user_replied:
-        return 2
-    return 3
+
+def _has_meaningful_reply(lead: Lead, messages: list[Message]) -> bool:
+    user_messages = [message for message in messages if message.role == MessageRole.user]
+    if not user_messages:
+        return False
+
+    # Meta click-to-WhatsApp ads arrive as the lead's first WhatsApp message.
+    # The first detected campaign text is an ad prefill, not a human reply.
+    if (lead.lead_metadata or {}).get("ctwa_campaign") and len(user_messages) == 1:
+        return False
+    return True
+
+
+def classify_engagement(
+    lead: Lead,
+    messages: Optional[Iterable[Message]] = None,
+) -> EngagementDecision:
+    """Return the sole deterministic classification decision for a lead."""
+    md = lead.lead_metadata or {}
+    if md.get("leadme_relevance") == "not_relevant":
+        return EngagementDecision(None, "explicit_not_interested")
+    if is_priority_source_lead(lead):
+        return EngagementDecision(1, "priority_source")
+    if is_confirmed_booking(lead):
+        return EngagementDecision(1, "booked_call")
+
+    lead_messages = list(messages if messages is not None else (lead.messages or []))
+    if _has_meaningful_reply(lead, lead_messages):
+        if has_content_reply(lead, lead_messages):
+            return EngagementDecision(2, "content_reply")
+        return EngagementDecision(2, "meaningful_reply")
+    if (lead.lead_metadata or {}).get("ctwa_campaign"):
+        return EngagementDecision(3, "ctwa_no_reply")
+    return EngagementDecision(3, "no_reply")

@@ -24,7 +24,7 @@ from sqlalchemy import select
 from whatsapp_api_client_python.API import GreenAPI
 
 from app.config import get_settings
-from app.crm.levels import is_organic
+from app.crm.levels import is_priority_source
 from app.db import repository
 from app.db.models import Lead, MessageRole
 from app.db.session import session_scope
@@ -102,12 +102,12 @@ def _is_website_form_lead(source: object, campaign_id: object) -> bool:
 def _initial_priority(source: object, campaign_id: object) -> tuple[int, str]:
     """Classify a fresh webhook lead into an initial engagement level.
 
-    Only an organic source or campaign is Level 1 before any conversation.
-    Everything else (website form, landing page, paid campaigns) starts at
-    Level 3; a meaningful WhatsApp reply later upgrades it to Level 2.
+    Home-site, incoming-call, and landing-page sources (or their explicit
+    campaign mapping) are L1. All other webhook leads start at L3 until a
+    meaningful WhatsApp reply moves them to L2 or the bot confirms a booking.
     """
-    if is_organic(source, campaign_id):
-        return 1, "organic"
+    if is_priority_source(source, campaign_id):
+        return 1, "priority_source"
     return 3, "unengaged"
 
 
@@ -276,28 +276,15 @@ def handle_new_lead(
             )
             return
 
-        # Level mapping on webhook intake:
-        #   * Re-entry (Omer): a lead ALREADY known to us who leaves their
-        #     details AGAIN is a hot signal -- actively bump to L1. A duplicate
-        #     Facebook-lead event returned early above, so an existing row here
-        #     means a genuine second submission, not a repeated webhook.
-        #   * Otherwise only an organic source/campaign is L1; website-form,
-        #     landing-page and paid campaigns are L3 until a reply upgrades them.
-        # push_engagement_level is upgrade-only, so none of these ever
-        # downgrade an existing higher level.
-        is_reentry = existing_lead is not None
+        # Re-submitting a form is not itself one of the customer-approved L1
+        # criteria. The source and a confirmed booking determine L1; every
+        # other webhook lead stays L3 until it meaningfully engages.
         try:
             from app.crm.client import mark_no_reply, mark_ready_for_call
             with session_scope() as s3:
                 l3 = s3.query(Lead).filter_by(phone=phone).first()
                 if l3 is not None:
-                    if is_reentry:
-                        mark_ready_for_call(
-                            l3,
-                            note="LeadMe webhook re-entry (known lead re-submitted)",
-                            session=s3,
-                        )
-                    elif initial_priority == 1:
+                    if initial_priority == 1:
                         mark_ready_for_call(
                             l3,
                             note=f"LeadMe webhook priority={priority_reason}",

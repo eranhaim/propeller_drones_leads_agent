@@ -1,14 +1,13 @@
 """Bulk-classify existing leads into LeadMe priority Levels 1/2/3.
 
-Classification is the shared rule in ``app.crm.levels.compute_engagement_level``
+Classification is the shared rule in ``app.crm.levels.classify_engagement``
 (the same one the live pipeline uses), so the bulk run and real-time flow can
 never diverge:
 
-- Level 1 (hottest): organic source/campaign, OR the bot sent content and the
-  lead replied afterwards.
-- Level 2 (replied, not L1): at least one ``role=user`` message. Includes a
-  booked call after only shallow engagement.
-- Level 3 (never replied): 0 user messages and not organic.
+- Level 1 (hottest): configured priority source/campaign, OR bot-confirmed
+  booking.
+- Level 2 (replied, not L1): meaningful WhatsApp reply.
+- Level 3 (never replied): no meaningful WhatsApp reply.
 
 The call-window tag (``חלון · <slot>``) is attached only for booked leads
 (``funnel_stage == handed_off`` with a slot) via ``mark_call_window`` -- the
@@ -43,11 +42,7 @@ from sqlalchemy import select
 from app.crm.client import mark_call_window
 from app.crm.leadme_client import _is_test_phone, push_engagement_level, push_lead
 from app.crm import leadme_queue
-from app.crm.levels import (
-    compute_engagement_level,
-    is_content_consumed,
-    is_organic_source,
-)
+from app.crm.levels import classify_engagement
 from app.crm.leadme_v3 import (
     get_lead_status,
     is_v3_available,
@@ -134,12 +129,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             ).unique().scalars().all()
             user_count = len(user_count)
 
-            level = compute_engagement_level(
-                lead,
-                user_replied=user_count > 0,
-                organic=is_organic_source(lead),
-                content_consumed=is_content_consumed(lead),
-            )
+            decision = classify_engagement(lead, lead.messages)
+            if decision.level is None:
+                skipped_not_new += 1
+                continue
+            level = decision.level
             counts[level] += 1
 
             if args.only_level and level != args.only_level:

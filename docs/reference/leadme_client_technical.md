@@ -130,9 +130,9 @@ lower means further along.**
 
 | Level | v3 status id | Meaning in the CRM |
 |---|---|---|
-| 1 | `LEADME_STATUS_LEVEL_1` | booked |
-| 2 | `LEADME_STATUS_LEVEL_2` | replied |
-| 3 | `LEADME_STATUS_LEVEL_3` | no reply |
+| 1 | `LEADME_STATUS_LEVEL_1` | configured priority source or bot-confirmed booking |
+| 2 | `LEADME_STATUS_LEVEL_2` | meaningful reply without an L1 criterion |
+| 3 | `LEADME_STATUS_LEVEL_3` | no meaningful reply |
 
 `push_engagement_level(lead, level, note=None, slot=None)` enforces
 upgrade-only transitions:
@@ -157,17 +157,18 @@ The queue drain writes it when the retry succeeds.
 
 | Call site | Level | Condition |
 |---|---|---|
-| `graph.handle_message` | 3 | first non-priority CTWA auto-message |
+| `graph.handle_message` | 3 | CTWA prefill or other lead without a meaningful reply |
 | `graph.handle_message` | 2 | meaningful direct WhatsApp message or later CTWA reply |
 | `tools.schedule_call` | 1 | booking confirmed |
 | `graph._enforce_booking_promise` | 1 | reply promised a call but the tool never fired |
 | `opener.handle_new_lead` | 1 | source type exactly matches configured home-page, incoming-call, or landing-page label; configured website campaign; or configured booked-call tag |
 | `opener.handle_new_lead` | 3 | other new webhook lead with no bot engagement |
 
-Levels 2 and 3 are decided mechanically rather than by the model. Source-based
-L1 is assigned only from an explicit webhook source type, configured campaign,
-or configured booked-call tag. Missing or unknown values are stored but never
-treated as L1. Level 2 is assigned only after meaningful WhatsApp engagement.
+All levels are decided mechanically rather than by the model. Source-based L1
+is assigned only from an explicit configured webhook source or campaign;
+booking is the other L1 criterion. Missing or unknown values are stored but
+never treated as L1. A content reply is L2 unless the lead is booked or from a
+configured priority source.
 
 ### Slot tag
 
@@ -307,6 +308,7 @@ bind-mounted). They can also be pasted through `/admin/leadme-cookies`.
 | `LEADME_CAPTCHA_API_KEY` | empty | 2Captcha key |
 | `LEADME_AUTO_REFRESH_INTERVAL_HOURS` | 12 | must stay under the 24 h CSRF expiry |
 | `LEADME_STATUS_LEVEL_1/2/3` | empty | account-specific IDs from `getStatuses`; empty refuses that level write |
+| `LEADME_LEVEL_1_SOURCES/CAMPAIGNS` | customer mapping | exact source or campaign values that classify a lead as L1 |
 
 `LEADME_INSERT_URL` / `LEADME_UPDATE_URL` / `LEADME_STATUS_ID` /
 `LEADME_SOURCE_LABEL` configure the legacy supplier API and are unused under

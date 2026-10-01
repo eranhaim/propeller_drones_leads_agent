@@ -19,7 +19,7 @@ from app.agent.prompts import render_system_prompt
 from app.agent.tools import ALL_TOOLS, deliver_video
 from app.config import get_settings
 from app.crm.client import mark_call_window, mark_engaged_no_book, mark_ready_for_call
-from app.crm.levels import compute_engagement_level, is_content_consumed, is_organic_source
+from app.crm.levels import classify_engagement
 from app.db import repository
 from app.db.models import FunnelStage, FamiliarityLevel, Lead, MessageRole
 from app.db.session import session_scope
@@ -430,7 +430,6 @@ def handle_message(
     # If the agent invocation crashes below, we still have a durable record
     # of the user's message in the DB. Losing the message means the sales
     # team has no idea the lead reached out.
-    push_level: Optional[int] = None  # 1, 2 or 3, decided below
     push_not_relevant = False
     with session_scope() as session:
         lead = repository.get_or_create_lead(session, phone=phone, name=sender_name)
@@ -474,47 +473,6 @@ def handle_message(
             lead.lead_metadata = md_before
             session.flush()
             push_not_relevant = True
-        already_level = md_before.get("leadme_last_level")
-        is_ctwa_first_contact = bool(md_before.get("ctwa_campaign"))
-        # count existing USER messages after the current session start:
-        reset_str = md_before.get("session_reset_at")
-        from datetime import datetime as _dt
-        reset_dt = None
-        if reset_str:
-            try:
-                reset_dt = _dt.fromisoformat(reset_str)
-            except ValueError:
-                pass
-        prior_user_msgs = sum(
-            1 for m in (lead.messages or [])
-            if m.role == MessageRole.user
-            and (reset_dt is None or m.created_at > reset_dt)
-        )
-        # Omer's priority mapping:
-        #   Level 1 = organic source, or the lead consumed our content
-        #             (a video/webinar was sent and they are replying now).
-        #   Level 2 = any other meaningful bot conversation.
-        #   Level 3 = a non-organic CTWA auto-message with no bot reply yet.
-        # A direct WhatsApp message is itself meaningful engagement, so it is
-        # Level 2 on the first turn rather than being assumed to be CTWA.
-        organic = is_organic_source(lead)
-        # Content was sent in a PRIOR turn; the lead is replying now, so a
-        # recorded send timestamp means the content was consumed.
-        content_consumed = bool(
-            md_before.get("webinar_sent_at") or md_before.get("video_sent_at")
-        )
-        if (
-            not refused_now
-            and lead.funnel_stage != FunnelStage.handed_off
-            and already_level != 1
-        ):
-            if organic or content_consumed:
-                push_level = 1
-            elif prior_user_msgs == 0 and is_ctwa_first_contact:
-                push_level = 3
-            else:
-                push_level = 2
-
         repository.add_message(session, lead, MessageRole.user, text)
         lead_id = lead.id
 
@@ -536,32 +494,33 @@ def handle_message(
                 "[not-relevant] LeadMe status queue failed for lead {}", lead_id,
             )
 
-    if push_level is not None:
+    if not refused_now:
         try:
-            from app.crm.client import mark_no_reply
             with session_scope() as s_lvl:
                 l_lvl = s_lvl.get(Lead, lead_id)
                 if l_lvl is not None:
-                    if push_level == 1:
+                    decision = classify_engagement(l_lvl)
+                    if decision.level == 1:
                         mark_ready_for_call(
                             l_lvl,
-                            note="hot lead (organic/content consumed)",
+                            note=f"classification={decision.reason}",
                             session=s_lvl,
                         )
-                    elif push_level == 3:
-                        mark_no_reply(
-                            l_lvl,
-                            note="CTWA auto-message; awaiting bot reply",
-                            session=s_lvl,
-                        )
-                    elif push_level == 2:
+                    elif decision.level == 2:
                         mark_engaged_no_book(
                             l_lvl,
-                            note="meaningful WhatsApp engagement",
+                            note=f"classification={decision.reason}",
+                            session=s_lvl,
+                        )
+                    elif decision.level == 3:
+                        from app.crm.client import mark_no_reply
+                        mark_no_reply(
+                            l_lvl,
+                            note=f"classification={decision.reason}",
                             session=s_lvl,
                         )
         except Exception:
-            logger.exception("[level-push] level={} failed for lead {}", push_level, lead_id)
+            logger.exception("[level-push] classification push failed for lead {}", lead_id)
     # ---- Transaction 2: run the agent and persist the reply. ---------------
     with session_scope() as session:
         lead = session.get(Lead, lead_id)
@@ -686,16 +645,14 @@ def _enforce_booking_promise(session, lead: Lead, reply: str) -> None:
             lead.id,
         )
 
-    # Booking alone is not L1: push the computed level (>= 2) and attach the
-    # call-window tag independently so a booked L2 lead still carries it.
-    level = compute_engagement_level(
+    repository.update_lead_metadata(
+        session,
         lead,
-        user_replied=True,
-        organic=is_organic_source(lead),
-        content_consumed=is_content_consumed(lead),
+        leadme_booking_confirmed=True,
     )
+    decision = classify_engagement(lead)
     try:
-        if level == 1:
+        if decision.level == 1:
             ok = mark_ready_for_call(
                 lead, note=f"safety-net auto-push (slot={slot})", session=session,
             )
@@ -708,7 +665,7 @@ def _enforce_booking_promise(session, lead: Lead, reply: str) -> None:
             repository.update_funnel_stage(session, lead, FunnelStage.handed_off)
             logger.info(
                 "[booking-safety-net] Auto-pushed lead {} to LeadMe (L{}); "
-                "stage -> handed_off", lead.id, level,
+                "stage -> handed_off", lead.id, decision.level,
             )
         else:
             logger.error(
