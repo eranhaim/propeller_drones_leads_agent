@@ -9,6 +9,7 @@ Run a dry report first. Apply only that report after reviewing its validation:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from collections import Counter
@@ -40,11 +41,21 @@ def _redact_phone(phone: str) -> str:
     return f"***{digits[-2:]}" if len(digits) >= 2 else "***"
 
 
+def _redact_id(namespace: str, value: int) -> str:
+    """Return an auditable, non-identifying reference for an internal ID."""
+    digest = hashlib.sha256(f"{namespace}:{value}".encode()).hexdigest()
+    return f"{namespace}-{digest[:12]}"
+
+
+def _lead_ref(lead_id: int) -> str:
+    return _redact_id("lead", lead_id)
+
+
 def _status_summary(status: dict[str, Any] | None) -> dict[str, Any] | None:
     if status is None:
         return None
     return {
-        "leadme_id": status["leadId"],
+        "leadme_ref": _redact_id("leadme", status["leadId"]),
         "status_id": status["status"],
         "status_title": status["statusTitle"],
         "level": level_for_status_id(status["status"]),
@@ -83,7 +94,7 @@ def _dry_run(days: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         )
         for lead in session.execute(query).scalars():
             record: dict[str, Any] = {
-                "lead_id": lead.id,
+                "lead_ref": _lead_ref(lead.id),
                 "phone": _redact_phone(lead.phone),
                 "target": None,
                 "reason": None,
@@ -157,8 +168,12 @@ def _apply_report(path: Path) -> dict[str, int]:
     # changed a status after the report; that row must be skipped, not overwritten.
     preflight: list[tuple[int, dict[str, Any], int]] = []
     with session_scope() as session:
+        leads_by_ref = {
+            _lead_ref(lead.id): lead
+            for lead in session.execute(select(Lead)).scalars()
+        }
         for record in planned:
-            lead = session.get(Lead, record["lead_id"])
+            lead = leads_by_ref.get(record.get("lead_ref"))
             if lead is None:
                 outcomes["missing_local_lead"] += 1
                 continue
@@ -166,7 +181,7 @@ def _apply_report(path: Path) -> dict[str, int]:
             before = record.get("before") or {}
             if (
                 status is None
-                or status["leadId"] != before.get("leadme_id")
+                or _redact_id("leadme", status["leadId"]) != before.get("leadme_ref")
                 or status["status"] != before.get("status_id")
             ):
                 outcomes["changed_since_dry_run"] += 1
