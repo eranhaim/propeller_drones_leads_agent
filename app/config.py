@@ -88,16 +88,15 @@ class Settings(BaseSettings):
         "מתעניינים אקדמיה",
         alias="LEADME_WEBSITE_FORM_CAMPAIGNS",
     )
-    # Exact LeadMe source labels and campaigns that classify a new lead as
-    # Level 1. The customer-approved mapping is home site / incoming call /
-    # landing page, not a broad "organic" heuristic.
-    leadme_level_1_sources_raw: str = Field(
-        "אתר הבית,שיחה נכנסת,דף נחיתה,homepage,incoming call,landing page",
-        alias="LEADME_LEVEL_1_SOURCES",
+    # Exact organic LeadMe source labels and campaigns. A website form,
+    # landing page, paid source, or booking alone never qualifies for L1.
+    leadme_organic_sources_raw: str = Field(
+        "אורגני,organic",
+        alias="LEADME_ORGANIC_SOURCES",
     )
-    leadme_level_1_campaigns_raw: str = Field(
-        "מתעניינים אקדמיה",
-        alias="LEADME_LEVEL_1_CAMPAIGNS",
+    leadme_organic_campaigns_raw: str = Field(
+        "12293",
+        alias="LEADME_ORGANIC_CAMPAIGNS",
     )
 
     # LeadMe CRM - public "supplier" API
@@ -259,18 +258,18 @@ class Settings(BaseSettings):
         ]
 
     @property
-    def leadme_level_1_sources(self) -> List[str]:
+    def leadme_organic_sources(self) -> List[str]:
         return [
             source.strip()
-            for source in self.leadme_level_1_sources_raw.split(",")
+            for source in self.leadme_organic_sources_raw.split(",")
             if source.strip()
         ]
 
     @property
-    def leadme_level_1_campaigns(self) -> List[str]:
+    def leadme_organic_campaigns(self) -> List[str]:
         return [
             campaign.strip()
-            for campaign in self.leadme_level_1_campaigns_raw.split(",")
+            for campaign in self.leadme_organic_campaigns_raw.split(",")
             if campaign.strip()
         ]
 

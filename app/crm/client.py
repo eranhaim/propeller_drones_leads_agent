@@ -28,8 +28,8 @@ def mark_ready_for_call(
 ) -> bool:
     """Push engagement Level 1 (hottest) to the external CRM (LeadMe).
 
-    Level 1 means a configured priority source or a bot-confirmed booking.
-    Idempotent per lead.
+    Level 1 means an organic source/campaign or content delivered by the bot
+    followed by meaningful engagement. Idempotent per lead.
     """
     return push_engagement_level(lead, level=1, note=note, session=session)
 

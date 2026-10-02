@@ -138,8 +138,7 @@ _VIDEO_STOP_WORDS = {
 # the follow-up scheduler skip them regardless of what the LLM did.
 #
 # Only applied to SHORT messages: "לא מעוניין בקורס אלא בשירות" is a redirect,
-# not a refusal. A false positive costs one skipped nudge and is cleared by
-# the lead's next message, so the bar is deliberately cheap.
+# not a refusal. "לא כרגע" is also ambiguous and remains L2.
 _REFUSAL_MAX_CHARS = 80
 _REFUSAL_PATTERNS = [
     r"לא\s+מעוני",
@@ -147,7 +146,6 @@ _REFUSAL_PATTERNS = [
     r"לא\s+רלוונטי",
     r"לא\s+תודה",
     r"תודה\s+אבל\s+לא",
-    r"לא\s+כרגע",
     r"תפסיק|הפסיקו|תפסיקו",
     r"תסיר|הסר\s+אותי|להסיר\s+אותי",
     r"אל\s+תשלח",
@@ -645,11 +643,6 @@ def _enforce_booking_promise(session, lead: Lead, reply: str) -> None:
             lead.id,
         )
 
-    repository.update_lead_metadata(
-        session,
-        lead,
-        leadme_booking_confirmed=True,
-    )
     decision = classify_engagement(lead)
     try:
         if decision.level == 1:

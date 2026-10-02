@@ -31,6 +31,14 @@ class PhoneNormalizationTests(unittest.TestCase):
         self.assertEqual(_normalize_phone("not a phone"), "")
 
 
+class RefusalTests(unittest.TestCase):
+    def test_ambiguous_not_now_is_not_an_opt_out(self) -> None:
+        self.assertFalse(_is_refusal("לא כרגע"))
+
+    def test_explicit_stop_is_an_opt_out(self) -> None:
+        self.assertTrue(_is_refusal("תסירו אותי בבקשה"))
+
+
 class WebsiteFormOpenerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.settings = SimpleNamespace(

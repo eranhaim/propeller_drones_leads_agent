@@ -1,8 +1,8 @@
 """Shared LeadMe classification rules.
 
 Customer-confirmed mapping:
-    L1 = a lead from an explicitly configured priority source, or a bot-
-         confirmed booked call.
+    L1 = organic source/campaign, or content that the bot delivered and the
+         lead meaningfully engaged with afterwards.
     L2 = a meaningful WhatsApp reply that is not L1.
     L3 = no meaningful WhatsApp reply.
     not-interested = an explicit opt-out; it is outside L1/L2/L3.
@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Iterable, Optional
 
 from app.config import get_settings
-from app.db.models import FunnelStage, Lead, Message, MessageRole
+from app.db.models import Lead, Message, MessageRole
 
 
 def _normalize(value: object) -> str:
@@ -26,9 +26,6 @@ def _normalize(value: object) -> str:
 class EngagementDecision:
     level: Optional[int]
     reason: str
-
-
-_VALID_BOOKING_SLOTS = {"9-12", "12-15", "15-18", "any"}
 
 
 def _parse_iso(value: object) -> Optional[datetime]:
@@ -44,26 +41,26 @@ def _parse_iso(value: object) -> Optional[datetime]:
     return parsed
 
 
-def is_priority_source(source: object, campaign_id: object) -> bool:
-    """Return whether the exact configured LeadMe source or campaign is L1."""
+def is_organic(source: object, campaign_id: object) -> bool:
+    """Return whether the exact configured LeadMe source or campaign is organic."""
     settings = get_settings()
     normalized_source = _normalize(source)
     if normalized_source and normalized_source in {
-        _normalize(item) for item in settings.leadme_level_1_sources
+        _normalize(item) for item in settings.leadme_organic_sources
     }:
         return True
     normalized_campaign = _normalize(campaign_id)
     if normalized_campaign and normalized_campaign in {
-        _normalize(item) for item in settings.leadme_level_1_campaigns
+        _normalize(item) for item in settings.leadme_organic_campaigns
     }:
         return True
     return False
 
 
-def is_priority_source_lead(lead: Lead) -> bool:
-    """Return whether the lead's recorded LeadMe source or campaign is L1."""
+def is_organic_source(lead: Lead) -> bool:
+    """Return whether the lead's recorded LeadMe source or campaign is organic."""
     md = lead.lead_metadata or {}
-    return is_priority_source(
+    return is_organic(
         md.get("leadme_source"),
         md.get("leadme_campaign_id"),
     )
@@ -72,8 +69,8 @@ def is_priority_source_lead(lead: Lead) -> bool:
 def has_content_reply(lead: Lead, messages: Iterable[Message]) -> bool:
     """Return whether the lead replied after the bot delivered content.
 
-    This is a useful reason for L2, not an L1 criterion. The customer
-    explicitly reserves L1 for a priority source or a booked call.
+    A delivered video/webinar plus meaningful follow-up is the persisted
+    evidence available for the customer's "watched our content" L1 rule.
     """
     md = lead.lead_metadata or {}
     sent_times = [
@@ -98,15 +95,6 @@ def has_content_reply(lead: Lead, messages: Iterable[Message]) -> bool:
         if created_at > content_sent_at:
             return True
     return False
-
-
-def is_confirmed_booking(lead: Lead) -> bool:
-    """Return whether the bot recorded a sales-call booking for this lead."""
-    md = lead.lead_metadata or {}
-    if md.get("leadme_booking_confirmed") is True:
-        return True
-    slot = _normalize(md.get("preferred_call_slot"))
-    return lead.funnel_stage == FunnelStage.handed_off and slot in _VALID_BOOKING_SLOTS
 
 
 def _has_meaningful_reply(lead: Lead, messages: list[Message]) -> bool:
@@ -146,19 +134,21 @@ def classify_engagement(
     md = lead.lead_metadata or {}
     if md.get("leadme_relevance") == "not_relevant":
         return EngagementDecision(None, "explicit_not_interested")
-    if is_priority_source_lead(lead):
-        return EngagementDecision(1, "priority_source")
-    if is_confirmed_booking(lead):
-        return EngagementDecision(1, "booked_call")
 
     lead_messages = _messages_in_current_session(
         lead,
         list(messages if messages is not None else (lead.messages or [])),
     )
+    if is_organic_source(lead):
+        return EngagementDecision(1, "organic_source")
     if _has_meaningful_reply(lead, lead_messages):
         if has_content_reply(lead, lead_messages):
-            return EngagementDecision(2, "content_reply")
+            return EngagementDecision(1, "content_consumed")
+        if md.get("leadme_reentry_at"):
+            return EngagementDecision(2, "reentry_activity")
         return EngagementDecision(2, "meaningful_reply")
+    if md.get("leadme_reentry_at"):
+        return EngagementDecision(2, "reentry_activity")
     if (lead.lead_metadata or {}).get("ctwa_campaign"):
         return EngagementDecision(3, "ctwa_no_reply")
     return EngagementDecision(3, "no_reply")

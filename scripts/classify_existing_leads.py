@@ -4,9 +4,9 @@ Classification is the shared rule in ``app.crm.levels.classify_engagement``
 (the same one the live pipeline uses), so the bulk run and real-time flow can
 never diverge:
 
-- Level 1 (hottest): configured priority source/campaign, OR bot-confirmed
-  booking.
-- Level 2 (replied, not L1): meaningful WhatsApp reply.
+- Level 1 (hottest): organic source/campaign, OR bot-delivered content with
+  meaningful subsequent engagement.
+- Level 2 (replied, not L1): meaningful WhatsApp reply, including booking.
 - Level 3 (never replied): no meaningful WhatsApp reply.
 
 The call-window tag (``חלון · <slot>``) is attached only for booked leads

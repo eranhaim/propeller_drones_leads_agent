@@ -113,8 +113,7 @@ def push_lead(
        scheduler tick will drain the queue.
 
     ``level`` picks the engagement status:
-        1 = configured priority source or booked call, 2 = meaningful reply,
-        3 = no meaningful reply.
+        1 = organic/content-consumed, 2 = meaningful reply, 3 = no reply.
 
     This function writes the status only. The ``חלון · <slot>`` tag is owned
     by :func:`push_call_window_tag`; on a queued fallback the slot is carried
@@ -563,8 +562,8 @@ def push_engagement_level(
     same-level no-op.
 
     Level semantics (numerically LOWER = more engaged):
-        1 = configured priority source or bot-confirmed booking.
-        2 = meaningful WhatsApp reply without an L1 criterion.
+        1 = organic source/campaign or content-consumed.
+        2 = meaningful WhatsApp reply, including a shallow booking.
         3 = no meaningful WhatsApp reply.
 
     Transitions we allow (engagement can only INCREASE over time):

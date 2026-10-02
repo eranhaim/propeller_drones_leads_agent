@@ -393,11 +393,6 @@ def schedule_call(
         )
 
     repository.update_funnel_stage(ctx.session, ctx.lead, FunnelStage.handed_off)
-    repository.update_lead_metadata(
-        ctx.session,
-        ctx.lead,
-        leadme_booking_confirmed=True,
-    )
 
     md = ctx.lead.lead_metadata or {}
     note_parts = [

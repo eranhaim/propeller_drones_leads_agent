@@ -1,6 +1,7 @@
 # Roy's Confirmed Bot Requirements
 
-Source: the supplied WhatsApp chat export with Roy, reviewed on 2026-09-28.
+Source: WhatsApp evidence with Roy, superseded by the project-chat screenshots
+and messages from 2026-09-27 through 2026-09-29.
 This document intentionally excludes credentials, personal contacts, and
 unavailable voice/image content.
 
@@ -8,15 +9,18 @@ unavailable voice/image content.
 
 | Level | Meaning | When to assign |
 |---|---|---|
-| L1 | Highest priority | A call is booked by the bot, or LeadMe explicitly identifies the source as `אתר הבית`, `שיחה נכנסת`, or `דף נחיתה`. |
-| L2 | Engaged | The lead meaningfully talks with the bot but does not book a call. |
+| L1 | Highest priority | Organic source/campaign, or content delivered by the bot followed by meaningful engagement. |
+| L2 | Engaged | The lead meaningfully talks with the bot but is not L1; includes price questions, shallow booking, paid-source engagement, and re-entry. |
 | L3 | No bot engagement | A non-priority new lead has not meaningfully engaged with the bot. |
 
-Lower number is higher priority. Levels only upgrade: L3 → L2 → L1.
+Lower number is higher priority. Live updates only upgrade. The audited
+reconciliation may correct bot-managed L1/L2/L3 rows in either direction.
 
+Website forms, landing pages, paid source, and booking alone are never L1.
 The webhook may assign source-based L1 only when LeadMe sends a source label
-that exactly matches `LEADME_LEVEL_1_SOURCES`. Missing or unknown source data
-must never be guessed as L1.
+or campaign that exactly matches `LEADME_ORGANIC_SOURCES` /
+`LEADME_ORGANIC_CAMPAIGNS`. Missing or unknown source data must never be
+guessed as L1.
 
 ## Conversation and handoff
 
@@ -50,7 +54,7 @@ must never be guessed as L1.
 
 LeadMe must send an accurate source value in one of `source`, `lead_source`,
 or `origin` on the webhook. If its labels differ, set
-`LEADME_LEVEL_1_SOURCES` to the exact labels supplied by LeadMe.
+`LEADME_ORGANIC_SOURCES` to the exact labels supplied by LeadMe.
 
 For CRM writes, configure either a valid `LEADME_API_KEY` or a fresh
 `LEADME_COOKIES_PATH` session. The queue retains pending status changes until

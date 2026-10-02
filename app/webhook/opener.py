@@ -24,7 +24,7 @@ from sqlalchemy import select
 from whatsapp_api_client_python.API import GreenAPI
 
 from app.config import get_settings
-from app.crm.levels import is_priority_source
+from app.crm.levels import is_organic
 from app.db import repository
 from app.db.models import Lead, MessageRole
 from app.db.session import session_scope
@@ -102,12 +102,11 @@ def _is_website_form_lead(source: object, campaign_id: object) -> bool:
 def _initial_priority(source: object, campaign_id: object) -> tuple[int, str]:
     """Classify a fresh webhook lead into an initial engagement level.
 
-    Home-site, incoming-call, and landing-page sources (or their explicit
-    campaign mapping) are L1. All other webhook leads start at L3 until a
-    meaningful WhatsApp reply moves them to L2 or the bot confirms a booking.
+    Only an explicitly organic source or campaign is L1. Website forms,
+    landing pages, paid campaigns, and a booking are not L1 by themselves.
     """
-    if is_priority_source(source, campaign_id):
-        return 1, "priority_source"
+    if is_organic(source, campaign_id):
+        return 1, "organic_source"
     return 3, "unengaged"
 
 
@@ -219,6 +218,13 @@ def handle_new_lead(
             existing_meta = dict(lead.lead_metadata or {})
             history = repository.recent_messages(session, lead, limit=1)
 
+            is_reentry = existing_lead is not None and not duplicate_facebook_lead
+            if is_reentry:
+                existing_meta.pop("not_relevant", None)
+                existing_meta.pop("leadme_relevance", None)
+                lead.lead_metadata = existing_meta
+                session.flush()
+
             repository.update_lead_metadata(
                 session,
                 lead,
@@ -228,6 +234,9 @@ def handle_new_lead(
                 leadme_source_is_website_form=is_website_form_source,
                 leadme_initial_priority=initial_priority,
                 leadme_priority_reason=priority_reason,
+                leadme_reentry_at=(
+                    datetime.now(timezone.utc).isoformat() if is_reentry else None
+                ),
             )
             should_send_opener = _should_send_website_form_opener(
                 source, campaign_id,
@@ -276,11 +285,10 @@ def handle_new_lead(
             )
             return
 
-        # Re-submitting a form is not itself one of the customer-approved L1
-        # criteria. The source and a confirmed booking determine L1; every
-        # other webhook lead stays L3 until it meaningfully engages.
+        # A repeat form/call is new activity on an existing lead. It belongs
+        # in L2 unless the lead is independently organic or content-consumed.
         try:
-            from app.crm.client import mark_no_reply, mark_ready_for_call
+            from app.crm.client import mark_engaged_no_book, mark_no_reply, mark_ready_for_call
             with session_scope() as s3:
                 l3 = s3.query(Lead).filter_by(phone=phone).first()
                 if l3 is not None:
@@ -288,6 +296,12 @@ def handle_new_lead(
                         mark_ready_for_call(
                             l3,
                             note=f"LeadMe webhook priority={priority_reason}",
+                            session=s3,
+                        )
+                    elif is_reentry:
+                        mark_engaged_no_book(
+                            l3,
+                            note="existing lead submitted new activity",
                             session=s3,
                         )
                     else:
