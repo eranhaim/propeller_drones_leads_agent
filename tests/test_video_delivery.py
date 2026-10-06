@@ -77,7 +77,7 @@ class VideoDeliveryTests(unittest.TestCase):
                 )
             ],
         )
-        self.assertIn("ענה קודם בקצרה על השאלה", result)
+        self.assertIn("הוכן למשלוח אחרי התשובה", result)
 
     def test_duplicate_video_caption_is_removed_but_new_follow_up_remains(self) -> None:
         sends = [
