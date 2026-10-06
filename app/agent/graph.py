@@ -596,7 +596,7 @@ def handle_message(
 
         reply = _strip_filler(reply)
         reply = _strip_markdown(reply)
-        _enforce_video_promise(session, lead, ctx, reply)
+        _enforce_video_promise(session, lead, ctx, reply, text)
         reply = _remove_video_delivery_duplicates(reply, ctx.video_sends_this_turn)
 
         _enforce_booking_promise(session, lead, reply)
@@ -674,7 +674,13 @@ def _enforce_booking_promise(session, lead: Lead, reply: str) -> None:
         )
 
 
-def _enforce_video_promise(session, lead: Lead, ctx: AgentContext, reply: str) -> None:
+def _enforce_video_promise(
+    session,
+    lead: Lead,
+    ctx: AgentContext,
+    reply: str,
+    user_text: str,
+) -> None:
     """If the reply promises a video but none was sent, send one.
 
     Prompt-only guardrails are not enough: the LLM often tells a lead "I'll
@@ -682,8 +688,8 @@ def _enforce_video_promise(session, lead: Lead, ctx: AgentContext, reply: str) -
     left waiting for media that never arrives. This is a belt-and-suspenders
     safety net, mirroring ``_enforce_booking_promise``. If the outgoing text
     promises a video and the agent didn't actually send one this turn, we pick
-    the best unsent video and deliver it here. Loud logging either way so we
-    can measure how often the LLM is being sloppy.
+    an unsent video only when the lead's message and the reply match its
+    catalog cues. This deliberately does not fall back to a generic video.
     """
     if ctx.video_sends_this_turn:
         return
@@ -699,13 +705,13 @@ def _enforce_video_promise(session, lead: Lead, ctx: AgentContext, reply: str) -
     exclude = list(lead.videos_sent or []) + list(ctx.videos_sent_this_turn)
     video = recommend(
         familiarity=lead.familiarity_level.value,
-        topics_context=[reply],
+        topics_context=[user_text, reply],
         exclude_ids=exclude,
     )
     if video is None:
         logger.warning(
-            "[video-safety-net] lead {} was promised a video but no unsent "
-            "video is available (excluded={})", lead.id, exclude,
+            "[video-safety-net] lead {} was promised a video but no matching "
+            "unsent video is available (excluded={})", lead.id, exclude,
         )
         return
 

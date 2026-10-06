@@ -69,16 +69,13 @@ def is_organic_source(lead: Lead) -> bool:
 def has_content_reply(lead: Lead, messages: Iterable[Message]) -> bool:
     """Return whether the lead replied after the bot delivered content.
 
-    A delivered video/webinar plus meaningful follow-up is the persisted
+    A delivered catalog video plus meaningful follow-up is the persisted
     evidence available for the customer's "watched our content" L1 rule.
     """
     md = lead.lead_metadata or {}
     sent_times = [
         parsed
-        for parsed in (
-            _parse_iso(md.get("webinar_sent_at")),
-            _parse_iso(md.get("video_sent_at")),
-        )
+        for parsed in (_parse_iso(md.get("video_sent_at")),)
         if parsed is not None
     ]
     if not sent_times:

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import List, Optional, Sequence
@@ -33,6 +34,8 @@ class Video:
     trigger_topics: List[str]
     familiarity_levels: List[str]
     kind: str = "file"
+    caption: str = ""
+    matching_cues: List[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -41,9 +44,11 @@ class Video:
             "description": self.description,
             "url": self.url,
             "kind": self.kind,
+            "caption": self.caption,
             "trigger_stage": self.trigger_stage,
             "trigger_topics": list(self.trigger_topics),
             "familiarity_levels": list(self.familiarity_levels),
+            "matching_cues": list(self.matching_cues),
         }
 
 
@@ -63,9 +68,11 @@ def load_catalog(path: Path = VIDEOS_JSON) -> List[Video]:
             description=v["description"],
             url=v["url"],
             kind=v.get("kind", "file"),
+            caption=v.get("caption", ""),
             trigger_stage=v.get("trigger_stage", "any"),
             trigger_topics=list(v.get("trigger_topics", [])),
             familiarity_levels=list(v.get("familiarity_levels", [])),
+            matching_cues=list(v.get("matching_cues", [])),
         )
         for v in raw
     ]
@@ -96,36 +103,93 @@ def list_for_prompt() -> str:
     return "\n".join(lines)
 
 
+_HEBREW_WORD_RE = re.compile(r"[\u0590-\u05FF]{2,}")
+_LATIN_WORD_RE = re.compile(r"[a-z]{2,}")
+_MATCH_STOP_WORDS = {
+    "את",
+    "אתה",
+    "אתם",
+    "אני",
+    "אני",
+    "איך",
+    "אין",
+    "אבל",
+    "הוא",
+    "היא",
+    "זה",
+    "זאת",
+    "של",
+    "עם",
+    "על",
+    "גם",
+    "כל",
+    "לא",
+    "לי",
+    "לך",
+    "לכם",
+    "מה",
+    "מי",
+    "אם",
+    "כי",
+    "רוצה",
+    "רוצים",
+    "יכול",
+    "יכולה",
+}
+
+
+def _words(text: str) -> set[str]:
+    normalized = (text or "").lower()
+    return {
+        word
+        for word in (
+            _HEBREW_WORD_RE.findall(normalized)
+            + _LATIN_WORD_RE.findall(normalized)
+        )
+        if word not in _MATCH_STOP_WORDS
+    }
+
+
+def _video_match_score(video: Video, context: str) -> int:
+    context_words = _words(context)
+    if not context_words:
+        return 0
+
+    score = 0
+    for cue in video.matching_cues + video.trigger_topics:
+        cue_words = _words(cue)
+        if not cue_words:
+            continue
+        if len(cue_words) > 1 and cue.lower() in context.lower():
+            score += 4
+        score += len(context_words & cue_words)
+    return score
+
+
 def recommend(
     familiarity: str,
     topics_context: Optional[Sequence[str]] = None,
     exclude_ids: Optional[Sequence[str]] = None,
 ) -> Optional[Video]:
-    """Pick the best video for the current state.
+    """Pick an unsent video that matches the current conversation.
 
-    Preference order:
-    1. Familiarity level match + topic keyword match in the recent context.
-    2. Familiarity level match only.
-    3. Any video that hasn't been sent yet.
+    A video is never returned without a semantic cue match. This prevents a
+    generic unsent video from being pushed into an unrelated conversation.
     """
     exclude = set(exclude_ids or [])
-    context_lc = " ".join(topics_context or []).lower()
+    context = " ".join(topics_context or [])
 
     candidates = [v for v in load_catalog() if v.id not in exclude]
-    if not candidates:
+    if not candidates or not context.strip():
         return None
 
     def _familiarity_ok(v: Video) -> bool:
         return not v.familiarity_levels or familiarity in v.familiarity_levels
 
-    def _topic_score(v: Video) -> int:
-        if not context_lc:
-            return 0
-        return sum(1 for kw in v.trigger_topics if kw.lower() in context_lc)
-
     ranked = sorted(
         candidates,
-        key=lambda v: (_familiarity_ok(v), _topic_score(v)),
+        key=lambda v: (_video_match_score(v, context), _familiarity_ok(v)),
         reverse=True,
     )
-    return ranked[0] if ranked else None
+    best = ranked[0] if ranked else None
+    return best if best and _video_match_score(best, context) else None

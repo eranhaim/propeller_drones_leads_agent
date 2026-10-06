@@ -97,17 +97,11 @@ flowchart TD
     %% ---- Course funnel ----
     COURSE --> S1["stage 1: classify familiarity<br/>beginner / aware / experienced"]
 
-    S1 -->|"beginner + 2+<br/>general questions"| WEB["🎬 send webinar_full<br/>(text reply = empty)"]
-    S1 --> S2["stage 2: inspire<br/>(headlines only!)<br/>NO prices, NO course names,<br/>NO recommendations"]
-
-    S2 --> INSPO{"already sent<br/>promo video?"}
-    INSPO -->|no| VID["🎬 send intro_drones_hype<br/>→ next turn: offer webinar"]
-    INSPO -->|yes, webinar not offered| OFFER["ask: 'רוצה את הוובינר?'"]
-    INSPO -->|yes| S3
-
-    WEB --> S3["stage 3: facts on Propeller<br/>(ONLY if lead asks 'why you?')"]
-    OFFER --> S3
-    VID --> S3
+    S1 --> S2["stage 2: answer the question<br/>with verified facts"]
+    S2 --> MATCH{"question / hesitation /<br/>objection matches a<br/>new unsent video?"}
+    MATCH -->|yes| VID["🎬 answer first,<br/>then send one matching video"]
+    MATCH -->|no| S3
+    VID --> S3["stage 3: facts on Propeller<br/>(ONLY if lead asks 'why you?')"]
 
     S3 --> S4[stage 4: capture industry]
     S4 --> S5["stage 5: offer call<br/>→ ask slot"]

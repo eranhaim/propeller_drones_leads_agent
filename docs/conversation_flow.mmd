@@ -20,24 +20,16 @@ flowchart TD
     FAM -->|"מכיר משהו"| AWR["מסלול מודע"]
     FAM -->|"יש ניסיון/רישיון"| EXP["מסלול מנוסה"]
 
-    BEG --> BEGQ{"האם שאל 2 שאלות<br/>כלליות ומעלה?"}
-    BEGQ -->|"כן"| WEB["🎬 שלח וובינר מלא<br/>(55 דק')"]
-    BEGQ -->|"לא"| INSP
-
+    BEG --> INSP
     AWR --> INSP
     EXP --> INSP
 
-    INSP["הצגת התחום להשראה:<br/>'בוגרים שלנו עובדים באבטחה,<br/>חקלאות, מיפוי, קולנוע...'<br/>❌ בלי מחירים, בלי המלצת מסלול"]
+    INSP["ענה קודם על שאלת הליד<br/>עם מידע מאומת"]
 
-    INSP --> VID["🎬 שלח סרטון תדמית קצר<br/>(intro_drones_hype)"]
-
-    VID --> OFFERWEB{"הליד הגיב בחיוב?"}
-    OFFERWEB -->|"כן"| WEBQ["הצע וובינר מלא:<br/>'רוצה לראות את הוובינר<br/>המלא של 55 דק?'"]
-    OFFERWEB -->|"לא/שאלה אחרת"| Q2
-
-    WEBQ -->|"'כן'"| WEB
-    WEBQ -->|"'לא'"| Q2
-    WEB --> Q2
+    INSP --> VIDMATCH{"יש התאמה ברורה בין<br/>השאלה/התלבטות לסרטון<br/>שלא נשלח?"}
+    VIDMATCH -->|"כן"| VID["🎬 שלח סרטון רלוונטי אחד<br/>אחרי התשובה"]
+    VIDMATCH -->|"לא"| Q2
+    VID --> Q2
 
     Q2["מה עוד מעניין אותך?<br/>הליד שואל שאלות ספציפיות"]
 
@@ -86,6 +78,6 @@ flowchart TD
 
     class START start
     class END,OK,POST,NUDGE ending
-    class INTENT,FAM,BEGQ,PRICEQ,WHYPQ,INVANS,SLOT,Q4,OFFERWEB decision
-    class Q1,Q2,Q3,WEBQ,WEB,VID,INSP,SHOP,SERVICE,HOBBY,JOB,PROP,PRICE,INDUSTRY,INVITE,BOOK,ANS,CAN,BEG,AWR,EXP,C0 action
+    class INTENT,FAM,VIDMATCH,PRICEQ,WHYPQ,INVANS,SLOT,Q4 decision
+    class Q1,Q2,Q3,VID,INSP,SHOP,SERVICE,HOBBY,JOB,PROP,PRICE,INDUSTRY,INVITE,BOOK,ANS,CAN,BEG,AWR,EXP,C0 action
     class REJ warn

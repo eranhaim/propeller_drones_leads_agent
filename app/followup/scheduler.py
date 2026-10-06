@@ -95,19 +95,6 @@ _NUDGE_TEMPLATES_ANON = {
 }
 
 
-# Webinar-specific follow-up templates. Sent once, ~6h after the 55-min
-# webinar was pushed, ONLY if the lead never replied since.
-_WEBINAR_FOLLOWUP_KNOWN = (
-    "היי {name} 👋\n"
-    "שלחתי לך קודם את הוובינר של עולם הרחפנים. הספקת להסתכל? יש שאלות שעלו? "
-    "אשמח לשמוע מה חשבת."
-)
-_WEBINAR_FOLLOWUP_ANON = (
-    "היי 👋\n"
-    "שלחתי לך קודם את הוובינר של עולם הרחפנים. הספקת להסתכל? יש שאלות שעלו? "
-    "אשמח לשמוע מה חשבת."
-)
-
 # Video-specific follow-up templates. Sent once, ~6h after a video was sent,
 # ONLY if the lead never replied since.
 _VIDEO_FOLLOWUP_KNOWN = (
@@ -120,13 +107,6 @@ _VIDEO_FOLLOWUP_ANON = (
     "שלחתי לך קודם סרטון. הספקת לראות? יש שאלות שעלו? "
     "אשמח לשמוע מה חשבת."
 )
-
-
-def _render_webinar_followup(name: Optional[str]) -> str:
-    first = first_name(name)
-    if first:
-        return _WEBINAR_FOLLOWUP_KNOWN.format(name=first)
-    return _WEBINAR_FOLLOWUP_ANON
 
 
 def _render_video_followup(name: Optional[str]) -> str:
@@ -164,66 +144,8 @@ def _is_within_quiet_hours() -> bool:
     return False
 
 
-def _pick_webinar_followups(session, now: datetime) -> list[Lead]:
-    """Leads that got the webinar, went silent, and haven't gotten the
-    webinar-specific "did you watch?" ping yet."""
-    settings = get_settings()
-    hours_since = timedelta(hours=settings.webinar_followup_hours)
-
-    candidates = list(session.execute(
-        select(Lead).where(
-            Lead.funnel_stage != FunnelStage.handed_off,
-            Lead.bot_muted == False,  # noqa: E712
-        )
-    ).scalars().all())
-
-    picks: list[Lead] = []
-    for lead in candidates:
-        md = dict(lead.lead_metadata or {})
-        if _lead_already_booked(md):
-            continue
-        webinar_iso = md.get("webinar_sent_at")
-        if not webinar_iso:
-            continue
-        if md.get("webinar_followup_sent"):
-            continue
-        try:
-            webinar_at = datetime.fromisoformat(webinar_iso)
-        except ValueError:
-            continue
-        if webinar_at.tzinfo is None:
-            webinar_at = webinar_at.replace(tzinfo=timezone.utc)
-        if now - webinar_at < hours_since:
-            continue
-
-        # Only send if the lead has been silent since (last message is ours).
-        last_msg = session.execute(
-            select(Message)
-            .where(Message.lead_id == lead.id)
-            .order_by(Message.created_at.desc())
-            .limit(1)
-        ).scalar_one_or_none()
-        if last_msg is None or last_msg.role != MessageRole.assistant:
-            continue
-        picks.append(lead)
-    return picks
-
-
-def _send_webinar_followup(lead: Lead) -> bool:
-    text = _render_webinar_followup(lead.name)
-    api = _greenapi_client()
-    chat_id = f"{lead.phone}@c.us"
-    try:
-        api.sending.sendMessage(chat_id, text)
-    except Exception:
-        logger.exception("[webinar-followup] send failed for lead {}", lead.id)
-        return False
-    return True
-
-
 def _pick_video_followups(session, now: datetime) -> list[Lead]:
-    """Leads that got a (non-webinar) video, went silent, and haven't gotten
-    the video-specific "did you watch?" ping yet."""
+    """Leads that got a video, went silent, and have no video follow-up yet."""
     settings = get_settings()
     hours_since = timedelta(hours=settings.video_followup_hours)
 
@@ -408,7 +330,7 @@ def run_once() -> None:
     if not get_settings().followup_nudges_enabled:
         logger.info(
             "[followup] nudges disabled (FOLLOWUP_NUDGES_ENABLED=false); "
-            "skipping generic, video, and webinar follow-ups",
+            "skipping generic and video follow-ups",
         )
         return
     if _is_within_quiet_hours():
@@ -418,29 +340,6 @@ def run_once() -> None:
     now = datetime.now(timezone.utc)
     with session_scope() as session:
         _log_unanswered_user_messages(session)
-
-        # Webinar-specific follow-up runs BEFORE the generic silence nudge:
-        # if we just sent the webinar, the "did you watch?" ping is more
-        # relevant than the generic "still with us?" ping.
-        webinar_leads = _pick_webinar_followups(session, now)
-        for lead in webinar_leads:
-            ok = _send_webinar_followup(lead)
-            if not ok:
-                continue
-            text = _render_webinar_followup(lead.name)
-            msg = repository.add_message(
-                session, lead, MessageRole.assistant, text,
-                metadata={"nudge": "webinar"},
-            )
-            repository.update_lead_metadata(
-                session, lead,
-                webinar_followup_sent=True,
-                webinar_followup_at=now.isoformat(),
-            )
-            logger.info(
-                "[webinar-followup] pinged lead {} (msg={})",
-                lead.id, msg.id,
-            )
 
         video_leads = _pick_video_followups(session, now)
         for lead in video_leads:

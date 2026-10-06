@@ -203,7 +203,7 @@ def deliver_video(
     already checked that the video wasn't sent before and that ``ctx.send_video``
     is set. Raises on send failure so the caller can decide how to surface it.
     """
-    sent_caption = (caption or video.title).strip()
+    sent_caption = (caption or video.caption or video.title).strip()
     ctx.videos_sent_this_turn.add(video.id)
     ctx.send_video(video, sent_caption)
 
@@ -229,25 +229,17 @@ def deliver_video(
     )
     repository.mark_video_sent(ctx.session, ctx.lead, video.id)
 
-    # Track send time so the follow-up scheduler can send a "did you watch?"
-    # nudge. Webinar gets its own key; all other videos share video_sent_at
-    # (last-sent wins, which is fine -- we only nudge once per lead anyway).
+    # Track the most recent delivery for one "did you watch?" nudge.
+    # A video can be sent only once per lead, and the scheduler sends one
+    # follow-up at most, so last-sent wins here.
     from datetime import datetime, timezone as _tz
     _now_iso = datetime.now(_tz.utc).isoformat()
-    if video.id == "course_webinar_full":
-        repository.update_lead_metadata(
-            ctx.session, ctx.lead,
-            webinar_sent_at=_now_iso,
-        )
-        logger.info("[send_video] webinar sent -> tracking for follow-up (lead {})",
-                    ctx.lead.id)
-    else:
-        repository.update_lead_metadata(
-            ctx.session, ctx.lead,
-            video_sent_at=_now_iso,
-        )
-        logger.info("[send_video] video '{}' sent -> tracking for follow-up (lead {})",
-                    video.id, ctx.lead.id)
+    repository.update_lead_metadata(
+        ctx.session, ctx.lead,
+        video_sent_at=_now_iso,
+    )
+    logger.info("[send_video] video '{}' sent -> tracking for follow-up (lead {})",
+                video.id, ctx.lead.id)
 
 
 @tool
@@ -256,8 +248,10 @@ def send_video(video_id: str, caption: Optional[str] = None) -> str:
 
     Pass the ``video_id`` from the catalog shown in the system prompt.
     ``caption`` is optional text that appears with the video (keep it very
-    short -- one sentence). This tool sends the complete outbound message,
-    including its caption. Do not send the same video twice.
+    short -- one sentence). Omit it to use the catalog's approved caption.
+    This tool sends the complete outbound message, including its caption. Do
+    not send the same video twice. Use it only after you have answered the
+    lead's question, and only when the catalog topic is genuinely relevant.
     """
     ctx = current_context()
     video = get_video(video_id)
@@ -294,7 +288,8 @@ def send_video(video_id: str, caption: Optional[str] = None) -> str:
     return (
         f"הסרטון '{video.title}' נשלח בהודעה עצמאית. "
         "אל תחזור על הכיתוב או על עצם השליחה בתשובה הסופית. "
-        "השאר את התשובה ריקה, אלא אם יש מידע חדש שאינו חוזר על הכיתוב."
+        "בתשובה הסופית ענה קודם בקצרה על השאלה של הליד. אל תחזור על הכיתוב "
+        "ואל תאמר שנשלח סרטון."
     )
 
 
@@ -302,9 +297,10 @@ def send_video(video_id: str, caption: Optional[str] = None) -> str:
 def recommend_video(topics_context: Optional[str] = None) -> str:
     """Ask the system to suggest which video is best for the current lead.
 
-    Returns a video id you can then pass to ``send_video``. Optionally pass
-    ``topics_context`` (a short Hebrew phrase describing what the lead just
-    talked about) to bias the pick.
+    Returns a video id you can then pass to ``send_video``. Always pass
+    ``topics_context`` as a short Hebrew description of the lead's current
+    question or objection. The recommendation intentionally returns no match
+    when that context does not match a catalog cue.
     """
     ctx = current_context()
     ctx_list = [topics_context] if topics_context else []

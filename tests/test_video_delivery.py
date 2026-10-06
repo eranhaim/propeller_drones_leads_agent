@@ -15,12 +15,12 @@ from app.videos.catalog import Video
 class VideoDeliveryTests(unittest.TestCase):
     def test_video_tool_sends_once_and_persists_admin_event(self) -> None:
         video = Video(
-            id="course_webinar_full",
-            title="וובינר מלא",
+            id="drone_license_guide",
+            title="איזה רישיון רחפן מתאים לך",
             description="",
-            url="https://example.test/webinar",
-            kind="link",
-            trigger_stage="warm",
+            url="https://example.test/license-guide.mp4",
+            kind="file",
+            trigger_stage="any",
             trigger_topics=[],
             familiarity_levels=[],
         )
@@ -44,53 +44,53 @@ class VideoDeliveryTests(unittest.TestCase):
                 result = send_video.invoke(
                     {
                         "video_id": video.id,
-                        "caption": "הוובינר המלא מחכה לך",
+                        "caption": "סרטון קצר שעושה סדר ברישיונות",
                     }
                 )
 
-        self.assertEqual(sent, [(video, "הוובינר המלא מחכה לך")])
+        self.assertEqual(sent, [(video, "סרטון קצר שעושה סדר ברישיונות")])
         add_message.assert_called_once()
         _, _, role, content = add_message.call_args.args
         metadata = add_message.call_args.kwargs["metadata"]
         self.assertEqual(role, MessageRole.system)
-        self.assertIn("נשלח סרטון: וובינר מלא", content)
+        self.assertIn("נשלח סרטון: איזה רישיון רחפן מתאים לך", content)
         self.assertEqual(
             metadata,
             {
                 "event": "video_sent",
-                "video_id": "course_webinar_full",
-                "video_title": "וובינר מלא",
-                "caption": "הוובינר המלא מחכה לך",
-                "video_kind": "link",
+                "video_id": "drone_license_guide",
+                "video_title": "איזה רישיון רחפן מתאים לך",
+                "caption": "סרטון קצר שעושה סדר ברישיונות",
+                "video_kind": "file",
             },
         )
         self.assertEqual(
             context.video_sends_this_turn,
             [
                 VideoSend(
-                    video_id="course_webinar_full",
-                    title="וובינר מלא",
-                    caption="הוובינר המלא מחכה לך",
+                    video_id="drone_license_guide",
+                    title="איזה רישיון רחפן מתאים לך",
+                    caption="סרטון קצר שעושה סדר ברישיונות",
                 )
             ],
         )
-        self.assertIn("השאר את התשובה ריקה", result)
+        self.assertIn("ענה קודם בקצרה על השאלה", result)
 
     def test_duplicate_video_caption_is_removed_but_new_follow_up_remains(self) -> None:
         sends = [
             VideoSend(
-                video_id="course_webinar_full",
-                title="וובינר מלא",
+                video_id="drone_license_guide",
+                title="איזה רישיון רחפן מתאים לך",
                 caption=(
-                    "שלחתי לך את הוובינר המלא שסוקר את התחום והמסלולים. "
-                    "תראה כשנוח לך ותגיד לי מה חשבת."
+                    "שלחתי לך סרטון שעושה סדר בסוגי הרישיונות. "
+                    "צפה בו כשנוח לך."
                 ),
             )
         ]
 
         reply = (
-            "שלחתי לך את הוובינר המלא שסוקר את התחום והמסלולים. "
-            "תראה כשנוח לך ותגיד לי מה חשבת. "
+            "שלחתי לך סרטון שעושה סדר בסוגי הרישיונות. "
+            "צפה בו כשנוח לך. "
             "לרישיון עד 25 ק״ג נדרש מבחן תיאוריה מקוון בלבד."
         )
 

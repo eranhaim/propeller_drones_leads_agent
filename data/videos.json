@@ -1,22 +1,86 @@
 [
   {
-    "id": "intro_drones_hype",
-    "title": "עולם הרחפנים - 2 דקות שיכניסו אותך לעניינים",
-    "description": "סרטון תדמית קצר (~2 דקות) שמראה את עולם הרחפנים המסחרי - הטסות מרהיבות, שימושים מקצועיים בשטח, וטעימה למה התחום כל כך מרתק. הכלי הכי טוב שלנו לחמם ליד חדש. שלח אותו מוקדם בשיחה, במיוחד למתחילים ולסקרנים.",
-    "url": "https://propellerdrones.s3.us-east-1.amazonaws.com/videos/intro_drones_hype.mp4",
+    "id": "propeller_company_overview",
+    "title": "מי זו פרופלור דרונס ומה אנחנו עושים",
+    "description": "סרטון קצר שמציג את פרופלור דרונס ואת ארבעת תחומי הפעילות שמופיעים בו: אקדמיה, פעילות אזרחית, פעילות ביטחונית ואוטודרון.",
+    "caption": "סרטון קצר שמציג את פרופלור דרונס ואת תחומי הפעילות שלנו.",
+    "url": "https://propellerdrones.s3.us-east-1.amazonaws.com/videos/propeller_company_overview.mp4",
     "kind": "file",
-    "trigger_stage": "new",
-    "trigger_topics": ["פתיחה", "היכרות", "השראה", "מה זה בכלל", "סקרנות", "התחלה"],
-    "familiarity_levels": ["unknown", "beginner", "aware"]
+    "trigger_stage": "any",
+    "trigger_topics": ["פרופלור", "החברה", "מי אתם", "מי זו פרופלור", "מה אתם עושים", "למה דווקא אתם"],
+    "matching_cues": ["מי זו פרופלור", "מה אתם עושים", "מה החברה עושה", "מי עומד מאחורי האקדמיה", "למה ללמוד אצלכם", "האם אתם רק בית ספר", "חברת רחפנים", "אוטודרון"],
+    "familiarity_levels": ["unknown", "beginner", "aware", "experienced"]
   },
   {
-    "id": "course_webinar_full",
-    "title": "וובינר מלא (חינם) של קורס הטסת הרחפנים - 55 דקות",
-    "description": "וובינר בחינם של 55 דקות שסוקר במלואו את קורס הטסת הרחפנים של פרופלור - המרצה עובר על הרישיונות, השלבים, החומר הנלמד ושאלות נפוצות. שלח למי שכבר מתעניין ורוצה להעמיק, לא בהתחלה. מצוין לסגירת התלבטות לפני שיחה עם נציג.",
-    "url": "https://www.youtube.com/watch?v=v1xc-lvSGFA",
-    "kind": "link",
-    "trigger_stage": "warm",
-    "trigger_topics": ["וובינר", "קורס", "פרטים", "מסלולים", "רישיון", "העמקה", "התלבטות"],
-    "familiarity_levels": ["aware", "experienced"]
+    "id": "drone_academy_overview",
+    "title": "איך האקדמיה עובדת ומה היא נותנת",
+    "description": "סרטון על האקדמיה, סוגי ההכשרות שמוצגים בו, והליווי בתהליך הלימוד והרישוי.",
+    "caption": "סרטון קצר על האקדמיה, ההכשרות והליווי בתהליך.",
+    "url": "https://propellerdrones.s3.us-east-1.amazonaws.com/videos/drone_academy_overview.mp4",
+    "kind": "file",
+    "trigger_stage": "any",
+    "trigger_topics": ["אקדמיה", "הכשרה", "לימודים", "קורס", "מה לומדים", "איך זה עובד"],
+    "matching_cues": ["איך האקדמיה עובדת", "מה מקבלים בקורס", "מה לומדים אצלכם", "איך נראית ההכשרה", "איזה הכשרות יש", "מה התהליך", "מי מלמד", "ליווי אישי", "קורס מעשי"],
+    "familiarity_levels": ["unknown", "beginner", "aware", "experienced"]
+  },
+  {
+    "id": "drone_license_guide",
+    "title": "איזה רישיון רחפן מתאים לך",
+    "description": "סרטון שעושה סדר בסוגי רישיונות הרחפן שמוצגים בו ובהבדלים בין שימוש תחביבי, רישוי מסחרי עד 25 ק״ג ורישוי מסחרי עד 2,000 ק״ג.",
+    "caption": "סרטון קצר שעושה סדר בסוגי רישיונות הרחפן.",
+    "url": "https://propellerdrones.s3.us-east-1.amazonaws.com/videos/drone_license_guide.mp4",
+    "kind": "file",
+    "trigger_stage": "any",
+    "trigger_topics": ["רישיון", "רתא", "25 קג", "2000 קג", "מסחרי", "תיאוריה"],
+    "matching_cues": ["איזה רישיון צריך", "איזה רישיון מתאים", "איזה אישור צריך", "צריך רישיון", "רישיון לרחפן", "רישיון עד 25 קג", "רישיון כבד", "רישיון מסחרי", "רישיון תחביב", "מבחן רתא"],
+    "familiarity_levels": ["unknown", "beginner", "aware", "experienced"]
+  },
+  {
+    "id": "drone_career_paths",
+    "title": "קריירה בעולם הרחפנים",
+    "description": "סרטון על שלוש דרכים שמוצגות בו להשתלב מקצועית בתחום: שכיר, פרילנסר או עצמאי.",
+    "caption": "סרטון קצר על דרכים אפשריות להשתלב מקצועית בעולם הרחפנים.",
+    "url": "https://propellerdrones.s3.us-east-1.amazonaws.com/videos/drone_career_paths.mp4",
+    "kind": "file",
+    "trigger_stage": "any",
+    "trigger_topics": ["קריירה", "עבודה", "משכורת", "שכיר", "פרילנסר", "עצמאי"],
+    "matching_cues": ["אפשר להתפרנס", "יש עבודה ברחפנים", "מה עושים אחרי הקורס", "קריירה חדשה", "שכר מטיס רחפן", "כמה מרוויחים", "להיות פרילנסר", "לפתוח עסק", "לעבוד כעצמאי", "עבודה מהתחום"],
+    "familiarity_levels": ["beginner", "aware", "experienced"]
+  },
+  {
+    "id": "drone_industries",
+    "title": "באילו תעשיות רחפנים כבר עובדים",
+    "description": "סרטון על שימושי רחפנים במיפוי ומדידות, סולארי, חקלאות, צילום, אבטחה, שטיפה, לוגיסטיקה ותחומים נוספים.",
+    "caption": "סרטון קצר על התחומים שבהם רחפנים כבר עובדים היום.",
+    "url": "https://propellerdrones.s3.us-east-1.amazonaws.com/videos/drone_industries.mp4",
+    "kind": "file",
+    "trigger_stage": "any",
+    "trigger_topics": ["תעשיות", "מיפוי", "סולארי", "חקלאות", "צילום", "אבטחה"],
+    "matching_cues": ["באיזה תחומים עובדים", "באילו עבודות משתמשים ברחפנים", "מה אפשר לעשות עם רחפן", "מיפוי ומדידות", "אנרגיה סולארית", "חקלאות מדייקת", "צילום אווירי", "אבטחה וביטחון", "שטיפת פאנלים", "לוגיסטיקה", "תחום עבודה"],
+    "familiarity_levels": ["unknown", "beginner", "aware", "experienced"]
+  },
+  {
+    "id": "drone_industry_future",
+    "title": "לאן תעשיית הרחפנים הולכת",
+    "description": "סרטון על מגמות עתידיות שמוצגות בו: אוטונומיה, בינה מלאכותית ולוגיסטיקה אווירית.",
+    "caption": "סרטון קצר על המגמות שמעצבות את עתיד תעשיית הרחפנים.",
+    "url": "https://propellerdrones.s3.us-east-1.amazonaws.com/videos/drone_industry_future.mp4",
+    "kind": "file",
+    "trigger_stage": "any",
+    "trigger_topics": ["עתיד", "אוטונומיה", "בינה מלאכותית", "AI", "לוגיסטיקה"],
+    "matching_cues": ["לאן התחום הולך", "העתיד של הרחפנים", "האם זה מקצוע לעתיד", "רחפנים אוטונומיים", "בינה מלאכותית", "AI ורחפנים", "משלוחים ברחפנים", "לוגיסטיקה אווירית", "מה יקרה בעתיד"],
+    "familiarity_levels": ["unknown", "beginner", "aware", "experienced"]
+  },
+  {
+    "id": "modern_drone_history",
+    "title": "איך נולדה תעשיית הרחפנים המודרנית",
+    "description": "סרטון קצר על המעבר מטכנולוגיה יקרה ומורכבת לתעשיית רחפנים אזרחית ומסחרית נגישה יותר.",
+    "caption": "סרטון קצר על הדרך שבה נולדה תעשיית הרחפנים המודרנית.",
+    "url": "https://propellerdrones.s3.us-east-1.amazonaws.com/videos/modern_drone_history.mp4",
+    "kind": "file",
+    "trigger_stage": "any",
+    "trigger_topics": ["היסטוריה", "חדשנות", "DJI", "איך התחיל", "טכנולוגיה"],
+    "matching_cues": ["איך התחום התחיל", "היסטוריה של רחפנים", "מה השתנה ברחפנים", "למה רחפנים נהיו נגישים", "טכנולוגיה נגישה", "חדשנות ברחפנים", "DJI", "תעשייה אזרחית", "מה זה בכלל רחפן"],
+    "familiarity_levels": ["unknown", "beginner", "aware"]
   }
 ]

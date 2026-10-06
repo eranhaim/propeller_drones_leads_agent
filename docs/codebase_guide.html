@@ -332,9 +332,9 @@
       <div class="flow-step">
         <div class="flow-icon step-purple">🎥</div>
         <div class="flow-body">
-          <div class="flow-title">Follow-up לוובינר</div>
-          <div class="flow-desc">מחפש לידים שקיבלו את הוובינר לפני X שעות ועדיין לא ענו — שולח "ראית את הוובינר?"</div>
-          <div class="flow-file">app/followup/scheduler.py → _pick_webinar_followups()</div>
+          <div class="flow-title">Follow-up לסרטון</div>
+          <div class="flow-desc">מחפש לידים שקיבלו סרטון רלוונטי לפני X שעות ועדיין לא ענו — שולח "הספקת לראות?"</div>
+          <div class="flow-file">app/followup/scheduler.py → _pick_video_followups()</div>
         </div>
       </div>
 
@@ -475,8 +475,8 @@
 
       <div class="tool-card">
         <div class="tool-name">🎬 send_video(video_id, caption?)</div>
-        <div class="tool-desc">שולח וידאו ל-WhatsApp. מונע שליחה כפולה (בודק videos_sent + in-turn dedup). אם הוובינר נשלח — שומר webinar_sent_at לצורך follow-up.</div>
-        <div class="tool-when">מתי: כשמנסים לחמם ליד עם תוכן חזותי</div>
+        <div class="tool-desc">שולח וידאו ל-WhatsApp. מונע שליחה כפולה (בודק videos_sent + in-turn dedup) ושומר video_sent_at לצורך follow-up.</div>
+        <div class="tool-when">מתי: אחרי תשובה, כשהסרטון תואם במישרין לשאלת הליד או להתלבטות שלו</div>
       </div>
 
       <div class="tool-card">
@@ -577,7 +577,7 @@
         <tr><td>has_experience</td><td>true / false / null</td><td>ה-AI דרך classify_lead</td></tr>
         <tr><td>nudge_count</td><td>0, 1, 2</td><td>scheduler.py</td></tr>
         <tr><td>opener_sent_at</td><td>ISO timestamp</td><td>opener.py</td></tr>
-        <tr><td>webinar_sent_at</td><td>ISO timestamp</td><td>כלי send_video</td></tr>
+        <tr><td>video_sent_at</td><td>ISO timestamp</td><td>כלי send_video</td></tr>
         <tr><td>leadme_lead_id</td><td>מזהה LeadMe</td><td>webhook/server.py</td></tr>
       </tbody>
     </table>

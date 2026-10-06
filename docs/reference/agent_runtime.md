@@ -165,7 +165,7 @@ as an observation.
 |---|---|---|
 | `search_knowledge` | `query`, `topic?` | none (Chroma read; `topic="shop"` diverts to WooCommerce) |
 | `classify_lead` | `familiarity?`, `stage?`, `intent?`, `industry?`, `preferred_call_slot?`, `has_experience?` | writes columns + `lead_metadata` |
-| `send_video` | `video_id`, `caption?` | GreenAPI send, one `video_sent` admin event, `videos_sent`, `video_sent_at` / `webinar_sent_at` |
+| `send_video` | `video_id`, `caption?` | GreenAPI send, one `video_sent` admin event, `videos_sent`, `video_sent_at` |
 | `recommend_video` | `topics_context?` | none |
 | `schedule_call` | `summary?`, `preferred_call_slot?` | `funnel_stage=handed_off`, CRM level 1 |
 | `cancel_call` | `reason?` | clears slot, `funnel_stage=warm`, CRM cancel note |
