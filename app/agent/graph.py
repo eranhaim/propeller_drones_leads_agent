@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Callable, Dict, List, Optional
 
@@ -15,8 +16,15 @@ import re
 
 from app.agent.classifier import describe_state
 from app.agent.context import AgentContext, VideoSend, use_context
+from app.agent.memory import (
+    describe_conversation_state,
+    non_redundant_continuation,
+    record_assistant_turn,
+    record_user_turn,
+    remove_repeated_outbound_content,
+)
 from app.agent.prompts import render_system_prompt
-from app.agent.tools import ALL_TOOLS, deliver_video
+from app.agent.tools import ALL_TOOLS, queue_video, record_video_delivery
 from app.config import get_settings
 from app.crm.client import mark_call_window, mark_engaged_no_book, mark_ready_for_call
 from app.crm.levels import classify_engagement
@@ -27,6 +35,14 @@ from app.videos.catalog import Video, recommend
 
 
 HISTORY_LIMIT = 30
+
+
+@dataclass(frozen=True)
+class AgentTurn:
+    """Text plus media queued for ordered WhatsApp delivery."""
+
+    reply: str
+    video_sends: tuple[VideoSend, ...] = ()
 
 # Phrases the LLM uses when it *claims* it booked a call. If we see any of
 # these in the outgoing reply but the tool never actually fired (funnel_stage
@@ -89,9 +105,9 @@ _HEBREW_CHAR_RE = re.compile(r"[\u0590-\u05FF]")
 _VIDEO_WORD_RE = re.compile(r"[\u0590-\u05FF]{2,}")
 _VIDEO_DELIVERY_RE = re.compile(
     r"(?:שלח(?:תי|נו)|מצורף|הנה|קיבלת).{0,30}"
-    r"(?:סרטון|וובינר|קישור|וידאו)"
+    r"(?:סרטון|קישור|וידאו)"
 )
-# The LLM often writes "I'll send you a video/webinar" but never calls
+# The LLM often writes "I'll send you a video" but never calls
 # send_video, so the lead is promised media that never arrives. If the final
 # reply promises a video and none was sent this turn, the safety net below
 # delivers one. Send verbs (future or "here is") near a media noun; a bare
@@ -99,7 +115,7 @@ _VIDEO_DELIVERY_RE = re.compile(
 _VIDEO_PROMISE_RE = re.compile(
     r"(?:אשלח|נשלח|שולח(?:ת)?|אעביר|מעביר(?:ה)?|אשתף|אצרף|שלחתי|שלחנו|הנה|מצורף)"
     r".{0,30}"
-    r"(?:סרטון|וובינר|וידאו|קליפ|הדרכה|הרצאה)"
+    r"(?:סרטון|וידאו|קליפ|הדרכה|הרצאה)"
 )
 _VIDEO_STOP_WORDS = {
     "את",
@@ -161,6 +177,13 @@ def _is_refusal(text: str) -> bool:
     # "לא מעוניין בקורס אלא בשירות" redirects to a different business line;
     # it is not consent to stop all contact.
     if re.search(r"לא\s+מעוני.{0,40}\bאלא\b", trimmed):
+        return False
+    # "Not interested in a call right now, only information" is an explicit
+    # request to stay in the conversation, not an opt-out from Propeller.
+    if re.search(
+        r"לא\s+מעוני.{0,35}(?:שיחה|כרגע).{0,35}(?:מידע|אינפורמציה)",
+        trimmed,
+    ):
         return False
     return bool(_REFUSAL_RE.search(trimmed))
 
@@ -271,7 +294,7 @@ def _is_video_delivery_duplicate(sentence: str, video_sends: list[VideoSend]) ->
         overlap = len(shared_words) / len(sentence_words)
         repeats_delivery = bool(_VIDEO_DELIVERY_RE.search(sentence))
 
-        # A clear "I sent you the video/webinar/link" sentence is always a
+        # A clear "I sent you the video/link" sentence is always a
         # duplicate after the tool has delivered it. Otherwise require most
         # of the sentence to repeat the actual title/caption, so a genuinely
         # new follow-up remains visible to the lead.
@@ -341,6 +364,18 @@ def _history_as_messages(lead: Lead, session) -> List[BaseMessage]:
     Only messages from the current session are included — i.e. those created
     after ``lead_metadata["session_reset_at"]`` if a reset has occurred.
     """
+    stored = _current_session_messages(lead, session)
+    msgs: List[BaseMessage] = []
+    for m in stored:
+        if m.role == MessageRole.user:
+            msgs.append(HumanMessage(content=m.content))
+        elif m.role == MessageRole.assistant:
+            msgs.append(AIMessage(content=m.content))
+    return msgs
+
+
+def _current_session_messages(lead: Lead, session):
+    """Load durable history visible to both the model and memory safeguards."""
     from datetime import datetime, timezone
     reset_str = (lead.lead_metadata or {}).get("session_reset_at")
     after_dt = None
@@ -350,14 +385,12 @@ def _history_as_messages(lead: Lead, session) -> List[BaseMessage]:
         except ValueError:
             pass
 
-    stored = repository.recent_messages(session, lead, limit=HISTORY_LIMIT, after_dt=after_dt)
-    msgs: List[BaseMessage] = []
-    for m in stored:
-        if m.role == MessageRole.user:
-            msgs.append(HumanMessage(content=m.content))
-        elif m.role == MessageRole.assistant:
-            msgs.append(AIMessage(content=m.content))
-    return msgs
+    return repository.recent_messages(
+        session,
+        lead,
+        limit=HISTORY_LIMIT,
+        after_dt=after_dt,
+    )
 
 
 def _should_reset_session(lead: Lead) -> bool:
@@ -408,12 +441,58 @@ def _extract_reply(result: dict) -> str:
     return ""
 
 
+def _result(
+    reply: str,
+    ctx: Optional[AgentContext],
+    defer_video_delivery: bool,
+) -> str | AgentTurn:
+    if defer_video_delivery:
+        return AgentTurn(
+            reply=reply,
+            video_sends=tuple(ctx.video_sends_this_turn) if ctx else (),
+        )
+    return reply
+
+
+def _dispatch_pending_videos(session, lead: Lead, ctx: AgentContext) -> None:
+    """Deliver queued media immediately for non-WhatsApp callers.
+
+    Production passes ``defer_video_delivery=True`` and dispatches after the
+    text reply. The immediate branch preserves the small public API used by
+    offline scripts and tests.
+    """
+    if not ctx.video_sends_this_turn or ctx.send_video is None:
+        return
+    from app.videos.catalog import get_video
+
+    for delivery in ctx.video_sends_this_turn:
+        video = get_video(delivery.video_id)
+        if video is None:
+            logger.error(
+                "[send_video] queued unknown video {!r}; not dispatching",
+                delivery.video_id,
+            )
+            continue
+        try:
+            ctx.send_video(video, delivery.caption)
+        except Exception:
+            logger.exception(
+                "[send_video] failed to dispatch queued video {!r} for lead {}",
+                delivery.video_id,
+                lead.id,
+            )
+            continue
+        record_video_delivery(session, lead, video, delivery)
+
+
 def handle_message(
     phone: str,
     text: str,
     sender_name: Optional[str] = None,
     send_video_fn: Optional[Callable[[Video, Optional[str]], None]] = None,
-) -> str:
+    inbound_message_id: Optional[str] = None,
+    defer_video_delivery: bool = False,
+) -> str | AgentTurn:
     """Full pipeline for one inbound WhatsApp message.
 
     1. Load or create the lead.
@@ -431,6 +510,16 @@ def handle_message(
     push_not_relevant = False
     with session_scope() as session:
         lead = repository.get_or_create_lead(session, phone=phone, name=sender_name)
+        if (
+            inbound_message_id
+            and repository.has_inbound_message_id(session, lead, inbound_message_id)
+        ):
+            logger.info(
+                "[inbound-dedup] skipping already processed message {} for lead {}",
+                inbound_message_id,
+                lead.id,
+            )
+            return _result("", None, defer_video_delivery)
 
         # Session reset: if the lead has been idle for SESSION_RESET_DAYS, treat
         # them as brand-new (clears stage/familiarity/videos/metadata except
@@ -471,7 +560,18 @@ def handle_message(
             lead.lead_metadata = md_before
             session.flush()
             push_not_relevant = True
-        repository.add_message(session, lead, MessageRole.user, text)
+        repository.add_message(
+            session,
+            lead,
+            MessageRole.user,
+            text,
+            metadata=(
+                {"greenapi_message_id": inbound_message_id}
+                if inbound_message_id
+                else None
+            ),
+        )
+        record_user_turn(session, lead, text)
         lead_id = lead.id
 
     # CRM changes use their own transaction so a CRM failure never blocks the
@@ -524,9 +624,14 @@ def handle_message(
         lead = session.get(Lead, lead_id)
         if lead is None:
             logger.error("Lead {} vanished between txns; aborting", lead_id)
-            return ""
+            return _result("", None, defer_video_delivery)
 
-        system_prompt = render_system_prompt(describe_state(lead))
+        session_messages = _current_session_messages(lead, session)
+        system_prompt = render_system_prompt(
+            describe_state(lead)
+            + "\n\n"
+            + describe_conversation_state(lead, session_messages)
+        )
         history_msgs = _history_as_messages(lead, session)
 
         input_messages: List[BaseMessage] = [SystemMessage(content=system_prompt)]
@@ -544,7 +649,8 @@ def handle_message(
                     "אני אחזור אליך תוך דקה - או שכבר אפשר לקבוע שיחה עם יועץ לימודים?"
                 )
                 repository.add_message(session, lead, MessageRole.assistant, fallback)
-                return fallback
+                record_assistant_turn(session, lead, fallback)
+                return _result(fallback, ctx, defer_video_delivery)
 
             reply = _extract_reply(result)
             if not reply and not ctx.video_sends_this_turn:
@@ -598,12 +704,26 @@ def handle_message(
         reply = _strip_markdown(reply)
         _enforce_video_promise(session, lead, ctx, reply, text)
         reply = _remove_video_delivery_duplicates(reply, ctx.video_sends_this_turn)
+        reply, removed_duplicate = remove_repeated_outbound_content(
+            reply,
+            session_messages,
+        )
+        if removed_duplicate:
+            logger.warning(
+                "[conversation-memory] removed repeated outbound content for lead {}",
+                lead.id,
+            )
 
         _enforce_booking_promise(session, lead, reply)
 
+        if not reply and not ctx.video_sends_this_turn:
+            reply = non_redundant_continuation(lead, session_messages)
         if reply:
             repository.add_message(session, lead, MessageRole.assistant, reply)
-        return reply
+            record_assistant_turn(session, lead, reply)
+        if not defer_video_delivery:
+            _dispatch_pending_videos(session, lead, ctx)
+        return _result(reply, ctx, defer_video_delivery)
 
 
 def _enforce_booking_promise(session, lead: Lead, reply: str) -> None:
@@ -684,7 +804,7 @@ def _enforce_video_promise(
     """If the reply promises a video but none was sent, send one.
 
     Prompt-only guardrails are not enough: the LLM often tells a lead "I'll
-    send you a video/webinar" and never calls ``send_video``, so the lead is
+    send you a video" and never calls ``send_video``, so the lead is
     left waiting for media that never arrives. This is a belt-and-suspenders
     safety net, mirroring ``_enforce_booking_promise``. If the outgoing text
     promises a video and the agent didn't actually send one this turn, we pick
@@ -717,13 +837,13 @@ def _enforce_video_promise(
 
     logger.warning(
         "[video-safety-net] reply for lead {} promises a video but send_video "
-        "never fired; delivering {!r}", lead.id, video.id,
+        "never fired; queueing {!r}", lead.id, video.id,
     )
     try:
-        deliver_video(ctx, video, None)
+        queue_video(ctx, video, None)
     except Exception:
         logger.exception(
-            "[video-safety-net] failed to deliver promised video {!r} to lead {}",
+            "[video-safety-net] failed to queue promised video {!r} for lead {}",
             video.id, lead.id,
         )
 

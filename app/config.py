@@ -88,17 +88,6 @@ class Settings(BaseSettings):
         "מתעניינים אקדמיה",
         alias="LEADME_WEBSITE_FORM_CAMPAIGNS",
     )
-    # Exact organic LeadMe source labels and campaigns. A website form,
-    # landing page, paid source, or booking alone never qualifies for L1.
-    leadme_organic_sources_raw: str = Field(
-        "אורגני,organic",
-        alias="LEADME_ORGANIC_SOURCES",
-    )
-    leadme_organic_campaigns_raw: str = Field(
-        "12293",
-        alias="LEADME_ORGANIC_CAMPAIGNS",
-    )
-
     # LeadMe CRM - public "supplier" API
     # If LEADME_INSERT_URL is empty the client no-ops and just logs.
     # Provisioned in LeadMe under Preferences -> Suppliers -> {supplier} -> API.
@@ -252,22 +241,6 @@ class Settings(BaseSettings):
             p.strip()
             for p in self.allowed_test_phones_raw.split(",")
             if p.strip()
-        ]
-
-    @property
-    def leadme_organic_sources(self) -> List[str]:
-        return [
-            source.strip()
-            for source in self.leadme_organic_sources_raw.split(",")
-            if source.strip()
-        ]
-
-    @property
-    def leadme_organic_campaigns(self) -> List[str]:
-        return [
-            campaign.strip()
-            for campaign in self.leadme_organic_campaigns_raw.split(",")
-            if campaign.strip()
         ]
 
     @property

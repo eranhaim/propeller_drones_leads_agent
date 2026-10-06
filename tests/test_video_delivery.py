@@ -6,14 +6,14 @@ import unittest
 from unittest.mock import Mock, patch
 
 from app.agent.context import AgentContext, VideoSend, use_context
-from app.agent.graph import _remove_video_delivery_duplicates
+from app.agent.graph import _dispatch_pending_videos, _remove_video_delivery_duplicates
 from app.agent.tools import send_video
 from app.db.models import Lead, MessageRole
 from app.videos.catalog import Video
 
 
 class VideoDeliveryTests(unittest.TestCase):
-    def test_video_tool_sends_once_and_persists_admin_event(self) -> None:
+    def test_video_tool_queues_then_dispatches_once(self) -> None:
         video = Video(
             id="drone_license_guide",
             title="איזה רישיון רחפן מתאים לך",
@@ -48,6 +48,8 @@ class VideoDeliveryTests(unittest.TestCase):
                     }
                 )
 
+        self.assertEqual(sent, [])
+        _dispatch_pending_videos(session, lead, context)
         self.assertEqual(sent, [(video, "סרטון קצר שעושה סדר ברישיונות")])
         add_message.assert_called_once()
         _, _, role, content = add_message.call_args.args
@@ -91,12 +93,51 @@ class VideoDeliveryTests(unittest.TestCase):
         reply = (
             "שלחתי לך סרטון שעושה סדר בסוגי הרישיונות. "
             "צפה בו כשנוח לך. "
-            "לרישיון עד 25 ק״ג נדרש מבחן תיאוריה מקוון בלבד."
+            "לרישיון עד 25 ק״ג נדרש מבחן תיאוריה של רת״א בלבד."
         )
 
         self.assertEqual(
             _remove_video_delivery_duplicates(reply, sends),
-            "לרישיון עד 25 ק״ג נדרש מבחן תיאוריה מקוון בלבד.",
+            "לרישיון עד 25 ק״ג נדרש מבחן תיאוריה של רת״א בלבד.",
+        )
+
+    def test_second_different_video_is_blocked_in_the_same_turn(self) -> None:
+        first = Video(
+            id="drone_license_guide",
+            title="רישיונות",
+            description="",
+            url="https://example.test/license.mp4",
+            kind="file",
+            trigger_stage="any",
+            trigger_topics=[],
+            familiarity_levels=[],
+        )
+        second = Video(
+            id="drone_academy_overview",
+            title="אקדמיה",
+            description="",
+            url="https://example.test/academy.mp4",
+            kind="file",
+            trigger_stage="any",
+            trigger_topics=[],
+            familiarity_levels=[],
+        )
+        lead = Lead(phone="9990000000", videos_sent=[], lead_metadata={})
+        lead.id = 1
+        context = AgentContext(session=Mock(), lead=lead, send_video=Mock())
+
+        with patch(
+            "app.agent.tools.get_video",
+            side_effect=[first, second],
+        ):
+            with use_context(context):
+                send_video.invoke({"video_id": first.id})
+                result = send_video.invoke({"video_id": second.id})
+
+        self.assertIn("סרטון אחד", result)
+        self.assertEqual(
+            [delivery.video_id for delivery in context.video_sends_this_turn],
+            [first.id],
         )
 
 

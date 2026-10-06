@@ -736,10 +736,10 @@ SCENARIOS: List[Scenario] = [
         ],
     ),
     Scenario(
-        name="level_1_on_book_supersedes_level_2",
+        name="shallow_booking_stays_level_2",
         description=(
-            "When a lead books a call, the engagement level should "
-            "become 1 (booked) regardless of the previous 2."
+            "A shallow booking is meaningful middle engagement, not L1, "
+            "unless the lead separately satisfies a hot-content rule."
         ),
         sender_name="Nadav",
         turns=[
@@ -748,11 +748,11 @@ SCENARIOS: List[Scenario] = [
                 user_msg="12-15",
                 assertions=[
                     Assertion(
-                        "leadme_last_level advanced to 1",
+                        "leadme_last_level remains at 2",
                         lambda _r, lead: (
                             (lead.lead_metadata or {}).get(
                                 "leadme_last_level"
-                            ) == 1
+                            ) == 2
                         ),
                     ),
                     Assertion(

@@ -79,6 +79,22 @@ def add_message(
     return msg
 
 
+def has_inbound_message_id(session: Session, lead: Lead, message_id: str) -> bool:
+    """Return whether this GreenAPI inbound event was already persisted."""
+    if not message_id:
+        return False
+    stmt = (
+        select(Message.id)
+        .where(
+            Message.lead_id == lead.id,
+            Message.role == MessageRole.user,
+            Message.msg_metadata["greenapi_message_id"].as_string() == message_id,
+        )
+        .limit(1)
+    )
+    return session.execute(stmt).scalar_one_or_none() is not None
+
+
 def recent_messages(
     session: Session,
     lead: Lead,

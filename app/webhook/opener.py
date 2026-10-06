@@ -23,8 +23,8 @@ from loguru import logger
 from sqlalchemy import select
 from whatsapp_api_client_python.API import GreenAPI
 
+from app.agent.memory import record_assistant_turn
 from app.config import get_settings
-from app.crm.levels import is_organic
 from app.db import repository
 from app.db.models import Lead, MessageRole
 from app.db.session import session_scope
@@ -102,11 +102,13 @@ def _is_website_form_lead(source: object, campaign_id: object) -> bool:
 def _initial_priority(source: object, campaign_id: object) -> tuple[int, str]:
     """Classify a fresh webhook lead into an initial engagement level.
 
-    Only an explicitly organic source or campaign is L1. Website forms,
-    landing pages, paid campaigns, and a booking are not L1 by themselves.
+    A new approved website form starts hot (L1). Its later WhatsApp activity
+    is classified dynamically by ``classify_engagement`` and can downgrade it
+    to L2 when the follow-up is weak. Other sources start at L3 until they
+    provide meaningful evidence.
     """
-    if is_organic(source, campaign_id):
-        return 1, "organic_source"
+    if _is_website_form_lead(source, campaign_id):
+        return 1, "website_initial"
     return 3, "unengaged"
 
 
@@ -268,6 +270,7 @@ def handle_new_lead(
                     logger.exception("[opener] failed to send WhatsApp for lead_id={}", lead.id)
                 else:
                     repository.add_message(session, lead, MessageRole.assistant, text)
+                    record_assistant_turn(session, lead, text)
                     repository.update_lead_metadata(
                         session, lead,
                         opener_sent_at=datetime.now(timezone.utc).isoformat(),
@@ -285,29 +288,30 @@ def handle_new_lead(
             )
             return
 
-        # A repeat form/call is new activity on an existing lead. It belongs
-        # in L2 unless the lead is independently organic or content-consumed.
+        # A repeat form/call is new activity on an existing lead. It is L2
+        # unless a later conversation independently satisfies an L1 rule.
         try:
             from app.crm.client import mark_engaged_no_book, mark_no_reply, mark_ready_for_call
             with session_scope() as s3:
                 l3 = s3.query(Lead).filter_by(phone=phone).first()
                 if l3 is not None:
-                    if initial_priority == 1:
-                        mark_ready_for_call(
-                            l3,
-                            note=f"LeadMe webhook priority={priority_reason}",
-                            session=s3,
-                        )
-                    elif is_reentry:
+                    if is_reentry:
                         mark_engaged_no_book(
                             l3,
                             note="existing lead submitted new activity",
+                            session=s3,
+                        )
+                    elif initial_priority == 1:
+                        mark_ready_for_call(
+                            l3,
+                            note=f"LeadMe webhook priority={priority_reason}",
                             session=s3,
                         )
                     else:
                         mark_no_reply(
                             l3,
                             note="new LeadMe webhook lead; no bot reply yet",
+                            session=s3,
                         )
         except Exception:
             logger.exception(

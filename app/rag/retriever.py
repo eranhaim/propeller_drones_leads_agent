@@ -25,6 +25,14 @@ class Snippet:
         return f"{header}\n{self.content}".strip()
 
 
+@dataclass(frozen=True)
+class VideoMatch:
+    """A semantically retrieved approved video transcript."""
+
+    video_id: str
+    relevance: float
+
+
 @lru_cache(maxsize=1)
 def _retriever(k: int = 5, fetch_k: int = 20, lambda_mult: float = 0.5):
     """Cached MMR retriever."""
@@ -74,3 +82,29 @@ def search_as_text(query: str, k: int = 5, topic: Optional[str] = None) -> str:
     if not snippets:
         return "לא נמצא מידע רלוונטי במאגר הידע."
     return "\n\n---\n\n".join(s.format() for s in snippets)
+
+
+def search_video_catalog(query: str, k: int = 3) -> List[VideoMatch]:
+    """Semantically rank approved video transcripts in the shared Chroma RAG."""
+    if not query.strip():
+        return []
+    try:
+        results = get_vectorstore().similarity_search_with_relevance_scores(
+            query,
+            k=k,
+            filter={"topic": "video_catalog"},
+        )
+    except Exception as exc:
+        logger.debug("Video catalog retrieval unavailable: {}", exc)
+        return []
+
+    matches: List[VideoMatch] = []
+    seen: set[str] = set()
+    for document, relevance in results:
+        video_id = str((document.metadata or {}).get("video_id") or "").strip()
+        if not video_id or video_id in seen:
+            continue
+        seen.add(video_id)
+        matches.append(VideoMatch(video_id=video_id, relevance=float(relevance)))
+    logger.debug("Video RAG '{}' -> {} match(es)", query, len(matches))
+    return matches

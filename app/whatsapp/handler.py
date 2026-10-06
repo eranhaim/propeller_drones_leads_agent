@@ -16,12 +16,15 @@ from whatsapp_chatbot_python import GreenAPIBot, Notification
 
 _MESSAGE_TIMEOUT = 90  # seconds
 
-from app.agent.graph import handle_message
+from app.agent.context import VideoSend
+from app.agent.graph import AgentTurn, handle_message
+from app.agent.tools import record_video_delivery
 from app.config import get_settings
 from app.db import repository
 from app.db.models import MessageRole
 from app.db.session import session_scope
 from app.whatsapp.sender import ChatSender
+from app.videos.catalog import get_video
 
 
 def _detect_ctwa_campaign(text: str) -> Optional[str]:
@@ -78,6 +81,14 @@ def _extract_sender_info(notification: Notification) -> tuple[str, Optional[str]
 def _phone_from_chat_id(chat_id: str) -> str:
     """``972501234567@c.us`` -> ``972501234567``."""
     return chat_id.split("@", 1)[0]
+
+
+def _incoming_message_id(notification: Notification) -> Optional[str]:
+    """Return GreenAPI's stable message id when the notification provides one."""
+    event = notification.event or {}
+    message_data = event.get("messageData") or {}
+    value = event.get("idMessage") or message_data.get("idMessage")
+    return str(value).strip() if value else None
 
 
 def _is_allowed(phone: str) -> bool:
@@ -238,6 +249,28 @@ def _push_ctwa_tag(lead_id: int, phone: str, campaign: str) -> None:
         logger.exception("[CTWA] failed to push tag for {}", phone)
 
 
+def _record_video_delivery(phone: str, delivery: VideoSend) -> None:
+    """Persist media only after GreenAPI accepted the outbound request."""
+    video = get_video(delivery.video_id)
+    if video is None:
+        logger.error(
+            "[send_video] delivered unknown catalog id {!r} for {}",
+            delivery.video_id,
+            phone,
+        )
+        return
+    with session_scope() as session:
+        lead = repository.get_or_create_lead(session, phone=phone)
+        if delivery.video_id in (lead.videos_sent or []):
+            logger.warning(
+                "[send_video] duplicate delivery confirmation ignored for lead {} video={!r}",
+                lead.id,
+                delivery.video_id,
+            )
+            return
+        record_video_delivery(session, lead, video, delivery)
+
+
 def register_handlers(bot: GreenAPIBot) -> None:
     @bot.router.message()
     def _on_message(notification: Notification) -> None:
@@ -262,6 +295,7 @@ def register_handlers(bot: GreenAPIBot) -> None:
         if not text:
             logger.debug("Notification with no extractable text, skipping")
             return
+        inbound_message_id = _incoming_message_id(notification)
 
         # Human-takeover: if an admin muted the bot for this lead we still
         # persist the inbound message so the human sees it in the admin UI,
@@ -271,7 +305,23 @@ def register_handlers(bot: GreenAPIBot) -> None:
                 session, phone=phone, name=sender_name,
             )
             if lead.bot_muted:
-                repository.add_message(session, lead, MessageRole.user, text)
+                if inbound_message_id and repository.has_inbound_message_id(
+                    session,
+                    lead,
+                    inbound_message_id,
+                ):
+                    return
+                repository.add_message(
+                    session,
+                    lead,
+                    MessageRole.user,
+                    text,
+                    metadata=(
+                        {"greenapi_message_id": inbound_message_id}
+                        if inbound_message_id
+                        else None
+                    ),
+                )
                 logger.info(
                     "[mute] lead {} ({}) is muted; recorded inbound msg but "
                     "skipping agent + reply.",
@@ -304,8 +354,10 @@ def register_handlers(bot: GreenAPIBot) -> None:
                     text=text,
                     sender_name=sender_name,
                     send_video_fn=sender.send_video,
+                    inbound_message_id=inbound_message_id,
+                    defer_video_delivery=True,
                 )
-                reply = future.result(timeout=_MESSAGE_TIMEOUT)
+                turn = future.result(timeout=_MESSAGE_TIMEOUT)
         except concurrent.futures.TimeoutError:
             logger.error("handle_message timed out after {}s for {}", _MESSAGE_TIMEOUT, phone)
             _save_lead_error(phone, f"Timeout: handle_message took >{_MESSAGE_TIMEOUT}s")
@@ -315,8 +367,31 @@ def register_handlers(bot: GreenAPIBot) -> None:
             _save_lead_error(phone, f"{type(exc).__name__}: {exc}")
             return
 
-        if reply:
-            sender.send_text(reply)
+        if not isinstance(turn, AgentTurn):
+            logger.error(
+                "handle_message returned unexpected type {} for {}",
+                type(turn).__name__,
+                phone,
+            )
+            return
+
+        try:
+            if turn.reply:
+                sender.send_text(turn.reply)
+            for delivery in turn.video_sends:
+                video = get_video(delivery.video_id)
+                if video is None:
+                    logger.error(
+                        "[send_video] queued unknown catalog id {!r} for {}",
+                        delivery.video_id,
+                        phone,
+                    )
+                    continue
+                sender.send_video(video, delivery.caption)
+                _record_video_delivery(phone, delivery)
+        except Exception as exc:
+            logger.exception("Failed to deliver outbound turn for {}", phone)
+            _save_lead_error(phone, f"{type(exc).__name__}: {exc}")
 
 
 def _save_lead_error(phone: str, error_msg: str) -> None:

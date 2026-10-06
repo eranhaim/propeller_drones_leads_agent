@@ -5,6 +5,7 @@ Run via ``python -m scripts.ingest_knowledge`` after configuring ``.env``.
 
 from __future__ import annotations
 
+import json
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -44,6 +45,7 @@ DEFAULT_CHUNK_SIZE = 1000
 DEFAULT_CHUNK_OVERLAP = 200
 
 KNOWLEDGE_DIR = Path("knowledge")
+VIDEO_TRANSCRIPTS_PATH = Path("data/video_transcripts.json")
 
 # E-commerce store (WooCommerce-based -- exposes sitemap.xml). We seed with
 # the homepage and try to enrich with product URLs discovered via sitemap.
@@ -290,6 +292,48 @@ def load_local_documents(directory: Path = KNOWLEDGE_DIR) -> List[Document]:
     return docs
 
 
+def load_video_documents(path: Path = VIDEO_TRANSCRIPTS_PATH) -> List[Document]:
+    """Load approved video transcripts into the existing Chroma collection."""
+    if not path.exists():
+        logger.warning("Video transcript catalog not found at {}", path)
+        return []
+    try:
+        entries = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Could not read video transcript catalog {}: {}", path, exc)
+        return []
+    if not isinstance(entries, list):
+        logger.warning("Video transcript catalog {} must contain a list", path)
+        return []
+
+    docs: List[Document] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        video_id = str(entry.get("id") or "").strip()
+        transcript = str(entry.get("transcript") or "").strip()
+        source = str(entry.get("source_filename") or "").strip()
+        if not video_id or not transcript:
+            logger.warning("Skipping incomplete video transcript entry {!r}", entry)
+            continue
+        docs.append(
+            Document(
+                page_content=(
+                    f"סרטון קטלוג: {video_id}\n"
+                    f"תמלול מאושר מהסרטון:\n{transcript}"
+                ),
+                metadata={
+                    "source": source or video_id,
+                    "origin": "video",
+                    "topic": "video_catalog",
+                    "video_id": video_id,
+                },
+            )
+        )
+    logger.info("Loaded {} approved video transcript(s)", len(docs))
+    return docs
+
+
 def chunk_documents(
     docs: Iterable[Document],
     chunk_size: int = DEFAULT_CHUNK_SIZE,
@@ -310,7 +354,8 @@ def ingest(reset: bool = False) -> int:
     website_docs = load_website_documents()
     shop_docs = load_shop_documents()
     local_docs = load_local_documents()
-    all_docs = website_docs + shop_docs + local_docs
+    video_docs = load_video_documents()
+    all_docs = website_docs + shop_docs + local_docs + video_docs
 
     if not all_docs:
         logger.warning("No documents to ingest -- aborting")

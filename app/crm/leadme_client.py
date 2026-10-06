@@ -48,6 +48,7 @@ from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.crm.levels import allows_website_l1_downgrade
 from app.db.models import Lead
 
 
@@ -113,7 +114,8 @@ def push_lead(
        scheduler tick will drain the queue.
 
     ``level`` picks the engagement status:
-        1 = organic/content-consumed, 2 = meaningful reply, 3 = no reply.
+        1 = hot website lead or positive post-video engagement,
+        2 = meaningful middle engagement, 3 = no meaningful reply.
 
     This function writes the status only. The ``חלון · <slot>`` tag is owned
     by :func:`push_call_window_tag`; on a queued fallback the slot is carried
@@ -562,7 +564,7 @@ def push_engagement_level(
     same-level no-op.
 
     Level semantics (numerically LOWER = more engaged):
-        1 = organic source/campaign or content-consumed.
+        1 = hot website lead or positive post-video engagement.
         2 = meaningful WhatsApp reply, including a shallow booking.
         3 = no meaningful WhatsApp reply.
 
@@ -574,7 +576,9 @@ def push_engagement_level(
                            must upgrade to Level 2.
         None -> 2 / 3    : allowed (first-time classification).
         Same level        : no-op, idempotent.
-        1 -> 2 / 3        : REFUSED (never downgrade an L1 lead).
+        1 -> 2            : allowed only for a website lead whose weak
+                             follow-up downgrades its initial L1.
+        1 -> 3            : refused.
         2 -> 3            : REFUSED (a lead who replied isn't "silent").
     """
     if level not in (1, 2, 3):
@@ -593,8 +597,10 @@ def push_engagement_level(
         )
         return True
 
-    # Booked never downgrades.
-    if already_int == 1 and level in (2, 3):
+    allow_downgrade = allows_website_l1_downgrade(lead, level)
+
+    # L1 only downgrades when the authoritative website-lead rule requires it.
+    if already_int == 1 and level in (2, 3) and not allow_downgrade:
         logger.info(
             "[LeadMe] lead {} is already booked (L1); refusing downgrade "
             "to L{}", lead.phone, level,
@@ -639,7 +645,11 @@ def push_engagement_level(
             if current_status is not None
             else None
         )
-        if current_level is not None and current_level < level:
+        if (
+            current_level is not None
+            and current_level < level
+            and not allow_downgrade
+        ):
             logger.info(
                 "[LeadMe] refusing L{} for {} because LeadMe is already L{}",
                 level,
@@ -650,7 +660,11 @@ def push_engagement_level(
         elif _v3_push_level(lead.phone, level=level):
             # Push actually landed in LeadMe -- record it and discard any
             # stale queued L2/L3 item. A queued L1 is retained.
-            leadme_queue.record_confirmed_engagement(lead, level)
+            leadme_queue.record_confirmed_engagement(
+                lead,
+                level,
+                allow_website_downgrade=allow_downgrade,
+            )
         else:
             # v3 failed (most likely CTWA race: lead not in LeadMe yet).
             # Enqueue for background retry. Do NOT write leadme_last_level
@@ -673,7 +687,11 @@ def push_engagement_level(
         if ok and not has_pending_engagement:
             # ``push_lead`` succeeded synchronously. If it queued instead,
             # the queue drain writes this key only after LeadMe confirms.
-            leadme_queue.record_confirmed_engagement(lead, level)
+            leadme_queue.record_confirmed_engagement(
+                lead,
+                level,
+                allow_website_downgrade=allow_downgrade,
+            )
 
     return True  # queued or pushed -- caller should not retry
 

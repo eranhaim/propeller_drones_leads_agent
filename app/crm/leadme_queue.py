@@ -73,6 +73,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.crm.levels import allows_website_l1_downgrade
 from app.db.models import Lead
 from app.db.session import session_scope
 
@@ -110,7 +111,12 @@ def _next_attempt_iso(now: Optional[datetime] = None) -> str:
     return (base + timedelta(minutes=RETRY_INTERVAL_MINUTES)).isoformat()
 
 
-def _merge_engagement(existing: list[dict], new_item: dict) -> list[dict]:
+def _merge_engagement(
+    existing: list[dict],
+    new_item: dict,
+    *,
+    allow_website_downgrade: bool = False,
+) -> list[dict]:
     """Fold a new engagement item into an existing pending list.
 
     Rule: if there's already an engagement entry, we KEEP the one with
@@ -133,6 +139,21 @@ def _merge_engagement(existing: list[dict], new_item: dict) -> list[dict]:
 
     if merged_engagement is None:
         kept.append(new_item)
+    elif allow_website_downgrade:
+        merged = dict(new_item)
+        if not merged.get("slot") and merged_engagement.get("slot"):
+            merged["slot"] = merged_engagement["slot"]
+        notes = [
+            note
+            for note in (
+                (new_item.get("note") or "").strip(),
+                (merged_engagement.get("note") or "").strip(),
+            )
+            if note
+        ]
+        if notes:
+            merged["note"] = " || ".join(dict.fromkeys(notes))
+        kept.append(merged)
     else:
         kept.append(_pick_better_engagement(merged_engagement, new_item))
     return kept
@@ -198,7 +219,16 @@ def enqueue_engagement(
         item["slot"] = str(slot)
     if note:
         item["note"] = str(note)
-    _enqueue(lead, item, merge_fn=_merge_engagement, session=session)
+    _enqueue(
+        lead,
+        item,
+        merge_fn=lambda existing, new: _merge_engagement(
+            existing,
+            new,
+            allow_website_downgrade=allows_website_l1_downgrade(lead, level),
+        ),
+        session=session,
+    )
 
 
 def enqueue_ctwa_tag(
@@ -238,7 +268,12 @@ def enqueue_status(
     _enqueue(lead, item, merge_fn=_merge_status, session=session)
 
 
-def record_confirmed_engagement(lead: Lead, level: int) -> None:
+def record_confirmed_engagement(
+    lead: Lead,
+    level: int,
+    *,
+    allow_website_downgrade: bool = False,
+) -> None:
     """Record a level only after LeadMe confirmed its status update.
 
     Remove queued engagement items that are now satisfied or lower priority.
@@ -248,16 +283,23 @@ def record_confirmed_engagement(lead: Lead, level: int) -> None:
     md = dict(lead.lead_metadata or {})
     existing_level = md.get("leadme_last_level")
     existing_level_int = int(existing_level) if existing_level is not None else None
-    if existing_level_int is None or level < existing_level_int:
+    if (
+        existing_level_int is None
+        or level < existing_level_int
+        or allow_website_downgrade
+    ):
         md["leadme_last_level"] = int(level)
 
     pending = list(md.get("leadme_push_pending") or [])
-    remaining = [
-        item
-        for item in pending
-        if item.get("kind") != "engagement"
-        or int(item.get("level") or 99) < level
-    ]
+    if allow_website_downgrade:
+        remaining = [item for item in pending if item.get("kind") != "engagement"]
+    else:
+        remaining = [
+            item
+            for item in pending
+            if item.get("kind") != "engagement"
+            or int(item.get("level") or 99) < level
+        ]
     if remaining:
         md["leadme_push_pending"] = remaining
     elif pending:
@@ -428,6 +470,7 @@ def _try_drain_via_v3(
         elif kind == "engagement":
             level = int(item.get("level") or 2)
             slot = item.get("slot")
+            allow_downgrade = allows_website_l1_downgrade(lead, level)
             # The call-window tag is independent of the engagement level: a
             # booked lead carries its window even when LeadMe already holds a
             # higher (lower-numbered) level, so add it before the downgrade
@@ -435,7 +478,11 @@ def _try_drain_via_v3(
             ok_tag = True
             if slot and slot not in ("any", "none"):
                 ok_tag = add_lead_tag(lead_id, f"חלון · {slot}")
-            if remote_level is not None and remote_level < level:
+            if (
+                remote_level is not None
+                and remote_level < level
+                and not allow_downgrade
+            ):
                 logger.info(
                     "[leadme-queue v3] SKIPPING L{} status for lead {} because "
                     "LeadMe is already L{}",
@@ -450,7 +497,11 @@ def _try_drain_via_v3(
             # Guard: don't downgrade. If a higher-engagement level was
             # already pushed successfully (directly, not via queue), skip
             # this stale queue item instead of overwriting it in LeadMe.
-            if current_level_int is not None and current_level_int < level:
+            if (
+                current_level_int is not None
+                and current_level_int < level
+                and not allow_downgrade
+            ):
                 logger.info(
                     "[leadme-queue v3] SKIPPING stale level={} status for lead {} "
                     "(already at level={})",
@@ -465,7 +516,11 @@ def _try_drain_via_v3(
             if status_id:
                 ok_status = update_lead_status(lead_id, status_id)
             if ok_status and ok_tag:
-                record_confirmed_engagement(lead, level)
+                record_confirmed_engagement(
+                    lead,
+                    level,
+                    allow_website_downgrade=allow_downgrade,
+                )
                 current_level_int = level
                 logger.info(
                     "[leadme-queue v3] DRAINED engagement lead {} phone={} "
@@ -700,6 +755,7 @@ def _process_lead(sess: Session, lead: Lead, now: datetime) -> None:
             elif kind == "engagement":
                 level = int(item.get("level") or 2)
                 slot = item.get("slot")
+                allow_downgrade = allows_website_l1_downgrade(lead, level)
                 status_id = _status_id_for_level(level)
                 ok_status = True
                 if status_id:
@@ -712,7 +768,11 @@ def _process_lead(sess: Session, lead: Lead, now: datetime) -> None:
                         client, tag_lead_id, f"חלון · {slot}",
                     )
                 if ok_status and ok_tag:
-                    record_confirmed_engagement(lead, level)
+                    record_confirmed_engagement(
+                        lead,
+                        level,
+                        allow_website_downgrade=allow_downgrade,
+                    )
                     logger.info(
                         "[leadme-queue] DRAINED engagement lead {} phone={} "
                         "lc_id={} level={} slot={!r} campaign={!r}",

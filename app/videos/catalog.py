@@ -166,6 +166,20 @@ def _video_match_score(video: Video, context: str) -> int:
     return score
 
 
+def _semantic_video_ranks(context: str) -> dict[str, int]:
+    """Return RAG ranks from the shared Chroma collection when available."""
+    try:
+        from app.rag.retriever import search_video_catalog
+
+        return {
+            match.video_id: rank
+            for rank, match in enumerate(search_video_catalog(context), start=1)
+        }
+    except Exception as exc:
+        logger.debug("Video RAG ranking unavailable: {}", exc)
+        return {}
+
+
 def recommend(
     familiarity: str,
     topics_context: Optional[Sequence[str]] = None,
@@ -186,10 +200,22 @@ def recommend(
     def _familiarity_ok(v: Video) -> bool:
         return not v.familiarity_levels or familiarity in v.familiarity_levels
 
+    lexical_scores = {
+        video.id: _video_match_score(video, context)
+        for video in candidates
+    }
+    # Retrieval is deliberately a ranker rather than a permission to send:
+    # Chroma always returns its nearest document, even for an irrelevant
+    # question. A catalog cue is still required before any media can go out.
+    semantic_ranks = _semantic_video_ranks(context)
     ranked = sorted(
         candidates,
-        key=lambda v: (_video_match_score(v, context), _familiarity_ok(v)),
+        key=lambda video: (
+            lexical_scores[video.id],
+            -semantic_ranks.get(video.id, len(candidates) + 1),
+            _familiarity_ok(video),
+        ),
         reverse=True,
     )
     best = ranked[0] if ranked else None
-    return best if best and _video_match_score(best, context) else None
+    return best if best and lexical_scores[best.id] else None

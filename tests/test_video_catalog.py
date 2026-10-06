@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 from unittest.mock import Mock, patch
+from pathlib import Path
 
 from app.agent.context import AgentContext
 from app.agent.graph import _enforce_video_promise
@@ -28,6 +30,25 @@ class VideoCatalogTests(unittest.TestCase):
             "modern_drone_history": "איך הטכנולוגיה הזאת נהייתה נגישה לכל כך הרבה אנשים?",
         }
 
+        for expected_id, context in cases.items():
+            with self.subTest(expected_id=expected_id):
+                video = recommend(
+                    familiarity="beginner",
+                    topics_context=[context],
+                )
+                self.assertIsNotNone(video)
+                self.assertEqual(video.id, expected_id)
+
+    def test_each_video_handles_a_second_indirect_hebrew_variant(self) -> None:
+        cases = {
+            "propeller_company_overview": "אתם רק בית ספר או שיש לכם עוד פעילות?",
+            "drone_academy_overview": "אילו מסלולים קיימים אצלכם בהכשרה?",
+            "drone_license_guide": "אני רוצה לעבוד עם רחפן, מה צריך להוציא?",
+            "drone_career_paths": "אפשר לבנות מזה פרנסה אמיתית?",
+            "drone_industries": "יש שימוש ברחפנים בתחום הבנייה והסולארי?",
+            "drone_industry_future": "מה יקרה למטיסים כשה-AI יתפתח?",
+            "modern_drone_history": "למה DJI הפכה את הרחפנים לכל כך נגישים?",
+        }
         for expected_id, context in cases.items():
             with self.subTest(expected_id=expected_id):
                 video = recommend(
@@ -63,10 +84,10 @@ class VideoCatalogTests(unittest.TestCase):
             "drone_license_guide",
         )
 
-    @patch("app.agent.graph.deliver_video")
+    @patch("app.agent.graph.queue_video")
     def test_video_promise_safety_net_uses_the_leads_actual_topic(
         self,
-        deliver_video: Mock,
+        queue_video: Mock,
     ) -> None:
         lead = Lead(
             phone="9990000000",
@@ -85,16 +106,16 @@ class VideoCatalogTests(unittest.TestCase):
             "איזה רישיון צריך אם אני רוצה להטיס רק כתחביב?",
         )
 
-        deliver_video.assert_called_once()
+        queue_video.assert_called_once()
         self.assertEqual(
-            deliver_video.call_args.args[1].id,
+            queue_video.call_args.args[1].id,
             "drone_license_guide",
         )
 
-    @patch("app.agent.graph.deliver_video")
+    @patch("app.agent.graph.queue_video")
     def test_video_promise_safety_net_refuses_an_irrelevant_send(
         self,
-        deliver_video: Mock,
+        queue_video: Mock,
     ) -> None:
         lead = Lead(
             phone="9990000000",
@@ -113,7 +134,7 @@ class VideoCatalogTests(unittest.TestCase):
             "איפה החניה במתחם?",
         )
 
-        deliver_video.assert_not_called()
+        queue_video.assert_not_called()
 
     def test_every_catalog_asset_uses_native_greenapi_delivery(self) -> None:
         api = Mock()
@@ -128,6 +149,46 @@ class VideoCatalogTests(unittest.TestCase):
                     f"{video.id}.mp4",
                     "כיתוב בדיקה",
                 )
+
+    def test_transcripts_cover_exactly_the_deliverable_catalog(self) -> None:
+        entries = json.loads(
+            Path("data/video_transcripts.json").read_text(encoding="utf-8")
+        )
+        catalog_ids = {video.id for video in load_catalog()}
+        transcript_ids = {entry["id"] for entry in entries}
+
+        self.assertEqual(transcript_ids, catalog_ids)
+        for entry in entries:
+            with self.subTest(video_id=entry["id"]):
+                self.assertTrue(entry["source_filename"])
+                self.assertGreater(entry["duration_seconds"], 0)
+                self.assertGreater(len(entry["transcript"]), 100)
+
+    @patch("app.videos.catalog._video_match_score")
+    @patch("app.videos.catalog._semantic_video_ranks")
+    def test_rag_rank_breaks_a_catalog_cue_tie(
+        self,
+        semantic_ranks: Mock,
+        match_score: Mock,
+    ) -> None:
+        semantic_ranks.return_value = {
+            "drone_industries": 1,
+            "drone_career_paths": 2,
+        }
+        match_score.side_effect = (
+            lambda video, _context: 1
+            if video.id in semantic_ranks.return_value
+            else 0
+        )
+
+        video = recommend(
+            familiarity="beginner",
+            topics_context=["יש עבודה וצילום עם רחפנים?"],
+        )
+
+        self.assertIsNotNone(video)
+        self.assertEqual(video.id, "drone_industries")
+        semantic_ranks.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ from loguru import logger
 
 from app.agent.classifier import apply_classification
 from app.agent.context import AgentContext, VideoSend, current_context
+from app.agent.memory import record_video_delivery as remember_video_delivery
 from app.crm.client import (
     cancel_ready_for_call,
     mark_call_window,
@@ -59,14 +60,17 @@ def search_knowledge(query: str, topic: Optional[str] = None) -> str:
       Latrun flight training center). Use when asked "where is the course?".
     - ``hr`` -- HR contact info for job-seekers (hr@propeller-drones.com).
       Use when the lead asks about working AT Propeller, not about a course.
+    - ``video_catalog`` -- approved supplied-video transcripts. Use only to
+      verify what an already-catalogued video covers; use ``recommend_video``
+      to choose and send a video.
     - ``about`` -- company overview / homepage.
     - ``general`` -- everything else.
 
     IMPORTANT for the 25kg license question (customer flagged this bug):
     ``search_knowledge(topic="course_license", query="רישיון עד 25 קג")``
-    returns the authoritative answer: theory-only, online CAAI exam, NO
-    practical part required. Practical is only for the heavy (25-2000kg)
-    track.
+    returns the authoritative answer: theory plus a CAAI theory exam at a
+    CAAI testing center, with NO mandatory practical part. Practical is only
+    for the heavy (25-2000kg) track.
     """
     logger.info("Tool search_knowledge: query='{}' topic={}", query, topic)
 
@@ -193,53 +197,62 @@ def classify_lead(
     return summary
 
 
-def deliver_video(
+def queue_video(
     ctx: AgentContext, video: Video, caption: Optional[str] = None
-) -> None:
-    """Send one video and record it everywhere the rest of the system expects.
+) -> VideoSend:
+    """Queue one video for dispatch after the text answer.
 
-    Shared by the ``send_video`` tool and the post-processing safety net that
-    catches a video the LLM promised but never actually sent. Callers must have
-    already checked that the video wasn't sent before and that ``ctx.send_video``
-    is set. Raises on send failure so the caller can decide how to surface it.
+    The WhatsApp handler sends the answer before it dispatches queued media.
+    This avoids the former sequence where a video arrived before the answer
+    that explained why it was relevant.
     """
     sent_caption = (caption or video.caption or video.title).strip()
     ctx.videos_sent_this_turn.add(video.id)
-    ctx.send_video(video, sent_caption)
+    delivery = VideoSend(
+        video_id=video.id,
+        title=video.title,
+        caption=sent_caption,
+    )
+    ctx.video_sends_this_turn.append(delivery)
+    return delivery
 
+
+def record_video_delivery(
+    session,
+    lead,
+    video: Video,
+    delivery: VideoSend,
+) -> None:
+    """Persist a video only after GreenAPI accepted the outbound media."""
     repository.add_message(
-        ctx.session,
-        ctx.lead,
+        session,
+        lead,
         MessageRole.system,
-        f"נשלח סרטון: {video.title}\nכיתוב שנשלח: {sent_caption}",
+        f"נשלח סרטון: {delivery.title}\nכיתוב שנשלח: {delivery.caption}",
         metadata={
             "event": "video_sent",
-            "video_id": video.id,
-            "video_title": video.title,
-            "caption": sent_caption,
+            "video_id": delivery.video_id,
+            "video_title": delivery.title,
+            "caption": delivery.caption,
             "video_kind": video.kind,
         },
     )
-    ctx.video_sends_this_turn.append(
-        VideoSend(
-            video_id=video.id,
-            title=video.title,
-            caption=sent_caption,
-        )
-    )
-    repository.mark_video_sent(ctx.session, ctx.lead, video.id)
-
-    # Track the most recent delivery for one "did you watch?" nudge.
-    # A video can be sent only once per lead, and the scheduler sends one
-    # follow-up at most, so last-sent wins here.
+    repository.mark_video_sent(session, lead, delivery.video_id)
     from datetime import datetime, timezone as _tz
+
     _now_iso = datetime.now(_tz.utc).isoformat()
     repository.update_lead_metadata(
-        ctx.session, ctx.lead,
+        session,
+        lead,
         video_sent_at=_now_iso,
+        last_video_id=delivery.video_id,
     )
-    logger.info("[send_video] video '{}' sent -> tracking for follow-up (lead {})",
-                video.id, ctx.lead.id)
+    remember_video_delivery(session, lead, delivery.video_id)
+    logger.info(
+        "[send_video] video '{}' delivered -> tracking for follow-up (lead {})",
+        delivery.video_id,
+        lead.id,
+    )
 
 
 @tool
@@ -275,21 +288,29 @@ def send_video(video_id: str, caption: Optional[str] = None) -> str:
             f"הסרטון {video_id} כבר נשלח בהודעה הנוכחית -- אל תשלח אותו שוב."
         )
 
+    if ctx.video_sends_this_turn:
+        logger.warning(
+            "[send_video] IN-TURN SECOND VIDEO blocked: lead {} requested {!r} "
+            "after {}",
+            ctx.lead.id,
+            video.id,
+            ctx.video_sends_this_turn[0].video_id,
+        )
+        return (
+            "כבר הוכן סרטון אחד להודעה הנוכחית. אל תשלח סרטון נוסף באותו תור."
+        )
+
     if ctx.send_video is None:
         logger.warning("send_video called but no sender configured")
         return "שגיאה טכנית: לא ניתן לשלוח סרטונים כרגע."
 
-    try:
-        deliver_video(ctx, video, caption)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("Failed to send video")
-        return f"שגיאת שליחה: {exc}"
+    queue_video(ctx, video, caption)
 
     return (
-        f"הסרטון '{video.title}' נשלח בהודעה עצמאית. "
-        "אל תחזור על הכיתוב או על עצם השליחה בתשובה הסופית. "
-        "בתשובה הסופית ענה קודם בקצרה על השאלה של הליד. אל תחזור על הכיתוב "
-        "ואל תאמר שנשלח סרטון."
+        f"הסרטון '{video.title}' הוכן למשלוח אחרי התשובה הטקסטואלית. "
+        "אל תחזור על הכיתוב, על עצם השליחה, או על שאלת פתיחה שכבר נשאלה. "
+        "בתשובה הסופית ענה בקצרה על השאלה הנוכחית של הליד, ואז השאר את "
+        "המשך השיחה לנקודה חדשה ולא חוזרת."
     )
 
 
