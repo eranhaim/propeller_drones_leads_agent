@@ -167,6 +167,15 @@ _REFUSAL_PATTERNS = [
     r"אל\s+תשלח",
 ]
 _REFUSAL_RE = re.compile("|".join(_REFUSAL_PATTERNS))
+_COURSE_PRICE_RE = re.compile(
+    r"(?:מחיר|כמה\s+עולה|עלות|תשלום).{0,40}(?:קורס|מסלול|לימוד)|"
+    r"(?:קורס|מסלול|לימוד).{0,40}(?:מחיר|כמה\s+עולה|עלות|תשלום)"
+)
+_BUSINESS_INTEREST_RE = re.compile(
+    r"(?:לפתוח|להקים).{0,20}(?:עסק|חברה)|"
+    r"(?:עצמאי|פרילנס|עסק).{0,30}(?:רחפן|צילום|מיפוי|אבטחה|סולאר)"
+)
+_BOOKED_SLOT_RE = re.compile(r"(?<!\d)(9\s*-\s*12|12\s*-\s*15|15\s*-\s*18)(?!\d)")
 
 
 def _is_refusal(text: str) -> bool:
@@ -186,6 +195,67 @@ def _is_refusal(text: str) -> bool:
     ):
         return False
     return bool(_REFUSAL_RE.search(trimmed))
+
+
+def _booked_slot_in_message(text: str) -> Optional[str]:
+    match = _BOOKED_SLOT_RE.search(text or "")
+    return re.sub(r"\s+", "", match.group(1)) if match else None
+
+
+def _capture_booked_slot(session, lead: Lead, text: str) -> Optional[str]:
+    """Update an already-booked ``any`` call when the lead gives a real slot."""
+    if lead.funnel_stage != FunnelStage.handed_off:
+        return None
+    current_slot = (lead.lead_metadata or {}).get("preferred_call_slot")
+    if current_slot != "any":
+        return None
+    slot = _booked_slot_in_message(text)
+    if slot is None:
+        return None
+
+    repository.update_lead_metadata(session, lead, preferred_call_slot=slot)
+    try:
+        mark_call_window(lead, slot, session=session)
+    except Exception:
+        logger.exception(
+            "[schedule_call] failed to sync updated slot {!r} for lead {}",
+            slot,
+            lead.id,
+        )
+    logger.info(
+        "[schedule_call] captured slot {!r} after booking for lead {}",
+        slot,
+        lead.id,
+    )
+    return slot
+
+
+def _ensure_course_price_advisor(reply: str, user_text: str) -> str:
+    """Keep the required human-advisor handoff in course-price answers."""
+    if not _COURSE_PRICE_RE.search(user_text or "") or "יועץ" in (reply or ""):
+        return reply
+    suffix = "יועץ לימודים יוכל לדייק לך את המחיר לפי המסלול המתאים."
+    return f"{reply.rstrip()} {suffix}".strip()
+
+
+def _ensure_business_shop_link(
+    reply: str,
+    user_text: str,
+    session_messages,
+) -> str:
+    """Mention the shop once when a lead plans a drone-services business."""
+    if not _BUSINESS_INTEREST_RE.search(user_text or ""):
+        return reply
+    if "propeller-drones.shop" in (reply or ""):
+        return reply
+    if any(
+        "propeller-drones.shop" in (message.content or "")
+        for message in session_messages
+        if message.role == MessageRole.assistant
+    ):
+        return reply
+    suffix = "לציוד לעסק אפשר לראות את החנות שלנו: https://propeller-drones.shop/"
+    return f"{reply.rstrip()} {suffix}".strip()
 
 
 def _looks_like_english(reply: str) -> bool:
@@ -626,6 +696,7 @@ def handle_message(
             logger.error("Lead {} vanished between txns; aborting", lead_id)
             return _result("", None, defer_video_delivery)
 
+        captured_booked_slot = _capture_booked_slot(session, lead, text)
         session_messages = _current_session_messages(lead, session)
         system_prompt = render_system_prompt(
             describe_state(lead)
@@ -702,6 +773,8 @@ def handle_message(
 
         reply = _strip_filler(reply)
         reply = _strip_markdown(reply)
+        reply = _ensure_course_price_advisor(reply, text)
+        reply = _ensure_business_shop_link(reply, text, session_messages)
         _enforce_video_promise(session, lead, ctx, reply, text)
         reply = _remove_video_delivery_duplicates(reply, ctx.video_sends_this_turn)
         reply, removed_duplicate = remove_repeated_outbound_content(
@@ -718,6 +791,11 @@ def handle_message(
 
         if not reply and not ctx.video_sends_this_turn:
             reply = non_redundant_continuation(lead, session_messages)
+        if captured_booked_slot:
+            reply = (
+                f"מעולה, עדכנתי את היועץ לחלון {captured_booked_slot}. "
+                "היועץ ייצור איתך קשר בזמן הזה."
+            )
         if reply:
             repository.add_message(session, lead, MessageRole.assistant, reply)
             record_assistant_turn(session, lead, reply)

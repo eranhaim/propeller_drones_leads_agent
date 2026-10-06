@@ -102,6 +102,16 @@ class ConversationMemoryTests(unittest.TestCase):
         self.assertFalse(removed)
         self.assertIn("איזה שימוש", reply)
 
+    def test_repeated_factual_answer_is_not_mistaken_for_an_opener(self) -> None:
+        answer = "בקורס מטיס מאסטר לומדים מיפוי, צילום אווירי, אבטחה ו-FPV."
+        reply, removed = remove_repeated_outbound_content(
+            answer,
+            [_message(MessageRole.assistant, answer)],
+        )
+
+        self.assertFalse(removed)
+        self.assertEqual(reply, answer)
+
 
 if __name__ == "__main__":
     unittest.main()

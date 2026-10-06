@@ -213,7 +213,9 @@ def remove_repeated_outbound_content(
         return reply, False
 
     prior = _prior_assistant_text(messages)
-    if any(_is_similar(compact_reply, sent) for sent in prior):
+    if _looks_like_opener(compact_reply) and any(
+        _is_similar(compact_reply, sent) for sent in prior
+    ):
         return "", True
 
     parts = [_compact(part) for part in _SENTENCE_RE.split(reply) if _compact(part)]
