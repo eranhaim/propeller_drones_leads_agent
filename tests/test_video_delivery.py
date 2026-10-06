@@ -31,7 +31,7 @@ class VideoDeliveryTests(unittest.TestCase):
 
         with (
             patch("app.agent.tools.get_video", return_value=video),
-            patch("app.agent.graph.get_video", return_value=video),
+            patch("app.videos.catalog.get_video", return_value=video),
             patch("app.agent.tools.repository.add_message") as add_message,
         ):
             context = AgentContext(
