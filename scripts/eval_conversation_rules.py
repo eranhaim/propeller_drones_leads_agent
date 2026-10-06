@@ -67,9 +67,10 @@ def _run(agent: ScriptedAgent, phone: str, text: str) -> AgentTurn:
     return result
 
 
-def _lead(phone: str) -> Lead:
+def _lead_metadata(phone: str) -> dict:
     with session_scope() as session:
-        return session.execute(select(Lead).where(Lead.phone == phone)).scalar_one()
+        lead = session.execute(select(Lead).where(Lead.phone == phone)).scalar_one()
+        return dict(lead.lead_metadata or {})
 
 
 def _seed_opener(phone: str, *, last_user_at: datetime | None = None) -> None:
@@ -128,8 +129,8 @@ def _structured_state_survives_tool_invocation() -> None:
     _run(first, phone, "אני עובד בסולארי ורוצה להיכנס לתחום הרחפנים")
     second = ScriptedAgent("יש לי עוד פרט רלוונטי על התחום.")
     _run(second, phone, "מעניין")
-    lead = _lead(phone)
-    _assert((lead.lead_metadata or {}).get("industry") == "solar", "industry was lost")
+    metadata = _lead_metadata(phone)
+    _assert(metadata.get("industry") == "solar", "industry was lost")
     _assert(
         "תעשייה/תחום עניין: solar" in second.system_prompts[-1],
         "next turn did not receive structured lead state",
@@ -144,18 +145,18 @@ def _session_reset_boundaries() -> None:
     recent_phone = _phone()
     _seed_opener(recent_phone, last_user_at=datetime.now(timezone.utc) - timedelta(days=6))
     _run(ScriptedAgent("נמשיך מאיפה שעצרנו."), recent_phone, "חזרתי")
-    recent = _lead(recent_phone)
+    recent = _lead_metadata(recent_phone)
     _assert(
-        "session_reset_at" not in (recent.lead_metadata or {}),
+        "session_reset_at" not in recent,
         "active conversation reset before seven idle days",
     )
 
     stale_phone = _phone()
     _seed_opener(stale_phone, last_user_at=datetime.now(timezone.utc) - timedelta(days=8))
     _run(ScriptedAgent("אפשר להתחיל מחדש בצורה מסודרת."), stale_phone, "חזרתי")
-    stale = _lead(stale_phone)
+    stale = _lead_metadata(stale_phone)
     _assert(
-        bool((stale.lead_metadata or {}).get("session_reset_at")),
+        bool(stale.get("session_reset_at")),
         "long idle conversation did not record an explicit reset",
     )
 
