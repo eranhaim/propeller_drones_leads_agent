@@ -6,7 +6,11 @@ import unittest
 from unittest.mock import Mock, patch
 
 from app.agent.context import AgentContext, VideoSend, use_context
-from app.agent.graph import _dispatch_pending_videos, _remove_video_delivery_duplicates
+from app.agent.graph import (
+    _dispatch_pending_videos,
+    _limit_questions,
+    _remove_video_delivery_duplicates,
+)
 from app.agent.tools import send_video
 from app.db.models import Lead, MessageRole
 from app.videos.catalog import Video
@@ -139,6 +143,17 @@ class VideoDeliveryTests(unittest.TestCase):
         self.assertEqual(
             [delivery.video_id for delivery in context.video_sends_this_turn],
             [first.id],
+        )
+
+    def test_extra_question_is_removed_without_dropping_the_answer(self) -> None:
+        reply = (
+            "המחיר תלוי במסלול. מה הכי מעניין אותך? "
+            "יש לך כבר ניסיון עם רחפנים? המחיר המדויק יינתן על ידי יועץ."
+        )
+
+        self.assertEqual(
+            _limit_questions(reply),
+            "המחיר תלוי במסלול. מה הכי מעניין אותך? המחיר המדויק יינתן על ידי יועץ.",
         )
 
 

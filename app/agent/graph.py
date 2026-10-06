@@ -343,6 +343,22 @@ def _strip_markdown(reply: str) -> str:
     return reply
 
 
+def _limit_questions(reply: str) -> str:
+    """Keep one concrete question, matching the WhatsApp conversation rule."""
+    if (reply or "").count("?") <= 1:
+        return reply
+    first_question_end = reply.find("?")
+    prefix = reply[:first_question_end + 1]
+    tail = reply[first_question_end + 1:]
+    # Drop every later question sentence but retain any factual sentence that
+    # follows it. This is safer than truncating the entire answer after the
+    # first question.
+    tail = re.sub(r"[^?]*\?", "", tail)
+    cleaned = f"{prefix}{tail}".strip()
+    logger.info("[question-safety-net] removed extra questions from reply")
+    return cleaned
+
+
 def _video_words(text: str) -> set[str]:
     """Return content words used to compare a reply with a sent caption."""
     return {
@@ -773,6 +789,7 @@ def handle_message(
 
         reply = _strip_filler(reply)
         reply = _strip_markdown(reply)
+        reply = _limit_questions(reply)
         reply = _ensure_course_price_advisor(reply, text)
         reply = _ensure_business_shop_link(reply, text, session_messages)
         _enforce_video_promise(session, lead, ctx, reply, text)
