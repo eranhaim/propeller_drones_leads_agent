@@ -31,6 +31,7 @@ class VideoDeliveryTests(unittest.TestCase):
 
         with (
             patch("app.agent.tools.get_video", return_value=video),
+            patch("app.agent.graph.get_video", return_value=video),
             patch("app.agent.tools.repository.add_message") as add_message,
         ):
             context = AgentContext(
@@ -47,9 +48,9 @@ class VideoDeliveryTests(unittest.TestCase):
                         "caption": "סרטון קצר שעושה סדר ברישיונות",
                     }
                 )
+            self.assertEqual(sent, [])
+            _dispatch_pending_videos(session, lead, context)
 
-        self.assertEqual(sent, [])
-        _dispatch_pending_videos(session, lead, context)
         self.assertEqual(sent, [(video, "סרטון קצר שעושה סדר ברישיונות")])
         add_message.assert_called_once()
         _, _, role, content = add_message.call_args.args
