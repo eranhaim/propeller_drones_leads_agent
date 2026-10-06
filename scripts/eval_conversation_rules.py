@@ -22,7 +22,7 @@ os.environ["LEADME_TEST_MODE"] = "1"
 from langchain_core.messages import AIMessage
 from sqlalchemy import select
 
-from app.agent.graph import AgentTurn, handle_message
+from app.agent.graph import AgentTurn, _history_as_messages, handle_message
 from app.agent.memory import record_assistant_turn
 from app.agent.tools import classify_lead, send_video
 from app.db import repository
@@ -74,6 +74,15 @@ def _lead_metadata(phone: str) -> dict:
     with session_scope() as session:
         lead = session.execute(select(Lead).where(Lead.phone == phone)).scalar_one()
         return dict(lead.lead_metadata or {})
+
+
+def _history_contains(phone: str, expected: str) -> bool:
+    with session_scope() as session:
+        lead = session.execute(select(Lead).where(Lead.phone == phone)).scalar_one()
+        return any(
+            expected in str(message.content)
+            for message in _history_as_messages(lead, session)
+        )
 
 
 def _seed_opener(phone: str, *, last_user_at: datetime | None = None) -> None:
@@ -139,7 +148,7 @@ def _structured_state_survives_tool_invocation() -> None:
         "next turn did not receive structured lead state",
     )
     _assert(
-        "אני עובד בסולארי" in second.message_contents[-1],
+        _history_contains(phone, "אני עובד בסולארי"),
         "next turn did not receive persisted conversation history",
     )
 
