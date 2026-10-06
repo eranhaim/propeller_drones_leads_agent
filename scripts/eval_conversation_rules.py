@@ -29,6 +29,7 @@ from app.db import repository
 from app.db.models import Lead, MessageRole
 from app.db.session import session_scope
 from app.webhook.opener import OPENER_VIDEO_ID, handle_new_lead
+from app.whatsapp.handler import _record_video_delivery
 
 
 TEST_PREFIX = "9997"
@@ -199,6 +200,17 @@ def _run_opener(phone: str, api: Mock) -> None:
         )
 
 
+def _confirm_delivery(phone: str, turn: AgentTurn) -> None:
+    """Record queued media the way the WhatsApp handler does after sending.
+
+    ``defer_video_delivery=True`` leaves the dispatch to
+    ``app.whatsapp.handler``, so a multi-turn check has to close that loop
+    itself or the next turn still believes nothing was ever sent.
+    """
+    for delivery in turn.video_sends:
+        _record_video_delivery(phone, delivery)
+
+
 def _lead_videos_sent(phone: str) -> list[str]:
     with session_scope() as session:
         lead = session.execute(select(Lead).where(Lead.phone == phone)).scalar_one()
@@ -284,6 +296,7 @@ def _no_duplicate_video_across_a_conversation() -> None:
         == ["drone_license_guide"],
         "the matching video was not sent on the first ask",
     )
+    _confirm_delivery(phone, first_turn)
 
     second = ScriptedAgent(
         "ההבדל הוא שהמסלול הכבד כולל גם חלק מעשי. יש לך ניסיון בהטסה?",
