@@ -806,7 +806,11 @@ def handle_message(
 
         _enforce_booking_promise(session, lead, reply)
 
-        if not reply and not ctx.video_sends_this_turn:
+        # A video supplements an answer, it never replaces one. Duplicate
+        # filtering can empty the text when the LLM's reply only restated the
+        # caption, and production leads then received media and no words at
+        # all -- four such turns in the conversation that prompted this.
+        if not reply:
             reply = non_redundant_continuation(lead, session_messages)
         if captured_booked_slot:
             reply = (

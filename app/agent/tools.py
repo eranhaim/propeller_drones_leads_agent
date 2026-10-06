@@ -259,12 +259,18 @@ def record_video_delivery(
 def send_video(video_id: str, caption: Optional[str] = None) -> str:
     """Send a video to the lead via WhatsApp.
 
-    Pass the ``video_id`` from the catalog shown in the system prompt.
+    This is the DEFAULT action whenever the catalog holds a video that
+    explains what the lead just asked -- do not wait to be asked for it and
+    do not offer it first. Pass the ``video_id`` from the catalog shown in
+    the system prompt.
+
     ``caption`` is optional text that appears with the video (keep it very
     short -- one sentence). Omit it to use the catalog's approved caption.
-    This tool sends the complete outbound message, including its caption. Do
-    not send the same video twice. Use it only after you have answered the
-    lead's question, and only when the catalog topic is genuinely relevant.
+    This tool sends the complete outbound message, including its caption.
+
+    A video SUPPLEMENTS your answer, it never replaces it: still answer the
+    lead's question in words. At most one video per turn, and never the same
+    video twice.
     """
     ctx = current_context()
     video = get_video(video_id)
@@ -320,8 +326,12 @@ def recommend_video(topics_context: Optional[str] = None) -> str:
 
     Returns a video id you can then pass to ``send_video``. Always pass
     ``topics_context`` as a short Hebrew description of the lead's current
-    question or objection. The recommendation intentionally returns no match
-    when that context does not match a catalog cue.
+    question or objection.
+
+    This is a hint, not a permission check. "No recommendation" only means
+    the lead's wording missed a catalog cue -- you may still pick a video
+    yourself from the catalog in the system prompt when its title and
+    description genuinely cover the question.
     """
     ctx = current_context()
     ctx_list = [topics_context] if topics_context else []

@@ -149,6 +149,36 @@ def videos_sent_count(op: str, n: int) -> Callable[[str, Lead], bool]:
     return _check
 
 
+def video_sent(video_id: str) -> Callable[[str, Lead], bool]:
+    def _check(_reply: str, lead: Lead) -> bool:
+        return video_id in (lead.videos_sent or [])
+    return _check
+
+
+def videos_within(*allowed: str) -> Callable[[str, Lead], bool]:
+    """Assert no video outside *allowed* was sent (the intro is always allowed)."""
+    def _check(_reply: str, lead: Lead) -> bool:
+        return set(lead.videos_sent or []) <= set(allowed)
+    return _check
+
+
+def no_duplicate_videos() -> Callable[[str, Lead], bool]:
+    def _check(_reply: str, lead: Lead) -> bool:
+        sent = lead.videos_sent or []
+        return len(sent) == len(set(sent))
+    return _check
+
+
+def answers_in_words(min_chars: int = 25) -> Callable[[str, Lead], bool]:
+    """A video supplements the answer; the reply must still say something."""
+    def _check(reply: str, _lead: Lead) -> bool:
+        return len((reply or "").strip()) >= min_chars
+    return _check
+
+
+INTRO_VIDEO_ID = "propeller_company_overview"
+
+
 # --- scenarios ---------------------------------------------------------
 
 SCENARIOS: List[Scenario] = [
@@ -763,7 +793,147 @@ SCENARIOS: List[Scenario] = [
             ),
         ],
     ),
+    Scenario(
+        name="opener_arrives_with_intro_video",
+        description=(
+            "First contact must bring the company intro video along with the "
+            "greeting, without the lead asking for media."
+        ),
+        sender_name="Eran",
+        turns=[
+            Turn(
+                user_msg="היי, אשמח לקבל פרטים על קורס הטסת רחפנים",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion("greeting still has words", answers_in_words()),
+                    Assertion(
+                        "company intro video sent with the opener",
+                        video_sent(INTRO_VIDEO_ID),
+                    ),
+                    Assertion("one video only", videos_sent_count("==", 1)),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
+        name="intro_video_not_resent_when_asked_about_the_company",
+        description=(
+            "After the opener already delivered the intro video, a later "
+            "'who are you' question must not re-send it."
+        ),
+        sender_name="Dror",
+        turns=[
+            Turn(user_msg="היי, אשמח לקבל פרטים על הקורס"),
+            Turn(
+                user_msg="רגע, מי אתם בכלל? מה החברה שלכם עושה?",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion("the question was answered", answers_in_words()),
+                    Assertion("intro video not sent twice", no_duplicate_videos()),
+                    Assertion(
+                        "intro video recorded exactly once",
+                        lambda _r, lead: (lead.videos_sent or []).count(
+                            INTRO_VIDEO_ID
+                        ) == 1,
+                    ),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
+        name="no_matching_video_answers_from_rag",
+        description=(
+            "A question no catalog video covers (course location) must get a "
+            "normal RAG answer and no media at all."
+        ),
+        sender_name="Hila",
+        turns=[
+            Turn(user_msg="היי, מתעניינת בקורס"),
+            Turn(
+                user_msg="איפה הקורס מתקיים? כמה רחוק זה ממרכז הארץ?",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion("answered from the knowledge base", answers_in_words(30)),
+                    Assertion(
+                        "no topic video pushed for a location question",
+                        videos_within(INTRO_VIDEO_ID),
+                    ),
+                    Assertion(
+                        "does not talk about our video catalog",
+                        not_contains(
+                            "כל הסרטונים",
+                            "אין לי סרטון",
+                            "הסרטונים הרלוונטיים",
+                        ),
+                    ),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
+        name="repeat_topic_does_not_repeat_the_video",
+        description=(
+            "Lead asks about careers twice in different words. The video "
+            "goes out once; the second turn answers in text."
+        ),
+        sender_name="Oren",
+        turns=[
+            Turn(user_msg="היי, מתעניין בעולם הרחפנים"),
+            Turn(user_msg="ספר לי על התעסוקה בתחום"),
+            Turn(
+                user_msg="ומה עושים אחרי שמסיימים את הקורס שלכם?",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion("still answers in words", answers_in_words()),
+                    Assertion("no video sent twice", no_duplicate_videos()),
+                ],
+            ),
+        ],
+    ),
 ]
+
+
+# One lead question per catalog video, phrased the way leads actually write --
+# none of them asks for media. Each must come back WITH the matching video.
+# The intro video is covered separately by opener_arrives_with_intro_video.
+VIDEO_FIRST_QUESTIONS = {
+    "drone_academy_overview": "איך האקדמיה שלכם עובדת ומה כוללת ההכשרה?",
+    "drone_license_guide": "איך אני אמור לדעת איזה רישיון רחפן מתאים לי?",
+    "drone_career_paths": "ספר לי על התעסוקה בתחום, אפשר להתפרנס מזה?",
+    "drone_industries": "באילו תעשיות רחפנים כבר עובדים היום?",
+    "drone_industry_future": "מה העתיד של עולם הרחפנים, לאן זה הולך?",
+    "modern_drone_history": "מה ההיסטוריה של עולם הרחפנים? איך הגענו לאיפה שאנחנו היום?",
+}
+
+for _video_id, _question in VIDEO_FIRST_QUESTIONS.items():
+    SCENARIOS.append(
+        Scenario(
+            name=f"video_first_{_video_id}",
+            description=(
+                f"Lead question maps to {_video_id}; it must arrive unprompted "
+                "alongside a real text answer."
+            ),
+            sender_name="VideoFirst",
+            turns=[
+                Turn(user_msg="היי, מתעניין בעולם הרחפנים"),
+                Turn(
+                    user_msg=_question,
+                    assertions=[
+                        Assertion("reply is Hebrew", is_hebrew(0.6)),
+                        Assertion(
+                            "video supplements, does not replace the answer",
+                            answers_in_words(),
+                        ),
+                        Assertion(
+                            f"{_video_id} sent without being asked",
+                            video_sent(_video_id),
+                        ),
+                        Assertion("no duplicate video", no_duplicate_videos()),
+                    ],
+                ),
+            ],
+        )
+    )
 
 
 # --- runner ------------------------------------------------------------

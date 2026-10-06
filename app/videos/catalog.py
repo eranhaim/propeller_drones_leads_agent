@@ -144,14 +144,20 @@ _MATCH_STOP_WORDS = {
 
 def _words(text: str) -> set[str]:
     normalized = (text or "").lower()
-    return {
-        word
-        for word in (
-            _HEBREW_WORD_RE.findall(normalized)
-            + _LATIN_WORD_RE.findall(normalized)
-        )
-        if word not in _MATCH_STOP_WORDS
-    }
+    words: set[str] = set()
+    for word in (
+        _HEBREW_WORD_RE.findall(normalized)
+        + _LATIN_WORD_RE.findall(normalized)
+    ):
+        if word in _MATCH_STOP_WORDS:
+            continue
+        words.add(word)
+        # Hebrew glues its prepositions and article onto the noun, so a lead
+        # writing "בתחום" or "התעסוקה" shared no token with the cue "תחום".
+        # Same normalization ``app.agent.memory`` already uses.
+        if len(word) >= 5 and word[0] in "ובכלמשה":
+            words.add(word[1:])
+    return words
 
 
 def _video_match_score(video: Video, context: str) -> int:

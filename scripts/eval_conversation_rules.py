@@ -28,6 +28,7 @@ from app.agent.tools import classify_lead, send_video
 from app.db import repository
 from app.db.models import Lead, MessageRole
 from app.db.session import session_scope
+from app.webhook.opener import OPENER_VIDEO_ID, handle_new_lead
 
 
 TEST_PREFIX = "9997"
@@ -111,7 +112,8 @@ def _screenshot_regression() -> None:
         ),
     )
     turn = _run(agent, phone, "כן, שלח")
-    _assert(turn.reply == "", "repeated opener was not removed after video queue")
+    _assert("אני אלעד" not in turn.reply, "repeated opener was not removed")
+    _assert(bool(turn.reply.strip()), "lead received a bare video with no words")
     _assert(
         [delivery.video_id for delivery in turn.video_sends] == ["drone_academy_overview"],
         "the relevant video was not queued exactly once",
@@ -187,6 +189,140 @@ def _single_video_per_turn() -> None:
     _assert(len(turn.video_sends) == 1, "same video was queued twice in one turn")
 
 
+def _run_opener(phone: str, api: Mock) -> None:
+    with patch("app.webhook.opener._greenapi_client", return_value=api):
+        handle_new_lead(
+            phone=phone,
+            name="TEST-CONVERSATION ערן",
+            metadata={"leadme_source": "אתר הבית"},
+            campaign_id="12293",
+        )
+
+
+def _lead_videos_sent(phone: str) -> list[str]:
+    with session_scope() as session:
+        lead = session.execute(select(Lead).where(Lead.phone == phone)).scalar_one()
+        return list(lead.videos_sent or [])
+
+
+def _opener_sends_welcome_text_then_intro_video() -> None:
+    phone = _phone()
+    api = Mock()
+    _run_opener(phone, api)
+
+    sent = [call[0] for call in api.sending.mock_calls]
+    _assert(
+        sent == ["sendMessage", "sendFileByUrl"],
+        f"opener must send text before media, got {sent}",
+    )
+    _assert(
+        "אני אלעד" in api.sending.sendMessage.call_args.args[1],
+        "the welcome text was not the first outbound message",
+    )
+    _assert(
+        api.sending.sendFileByUrl.call_args.args[2] == f"{OPENER_VIDEO_ID}.mp4",
+        "the opener did not send the company intro video",
+    )
+    _assert(
+        _lead_videos_sent(phone) == [OPENER_VIDEO_ID],
+        "the intro video was not marked as sent",
+    )
+    _assert(
+        bool(_lead_metadata(phone).get("opener_sent_at")),
+        "the opener was not recorded as sent",
+    )
+
+
+def _opener_video_failure_never_blocks_the_welcome() -> None:
+    phone = _phone()
+    api = Mock()
+    api.sending.sendFileByUrl.side_effect = RuntimeError("GreenAPI media 500")
+    _run_opener(phone, api)
+
+    _assert(
+        _history_contains(phone, "אני אלעד"),
+        "a failed intro video lost the welcome text",
+    )
+    _assert(
+        bool(_lead_metadata(phone).get("opener_sent_at")),
+        "a failed intro video blocked the opener bookkeeping",
+    )
+    _assert(
+        _lead_videos_sent(phone) == [],
+        "a video that never reached GreenAPI was marked as sent",
+    )
+
+
+def _intro_video_is_not_offered_again_after_the_opener() -> None:
+    phone = _phone()
+    _run_opener(phone, Mock())
+    agent = ScriptedAgent(
+        "פרופלור דרונס עוסקת גם בשירותי רחפן וגם בהכשרה. מה מעניין אותך יותר?",
+        actions=(
+            lambda: send_video.invoke({"video_id": OPENER_VIDEO_ID}),
+        ),
+    )
+    turn = _run(agent, phone, "מי אתם בכלל ומה החברה עושה?")
+
+    _assert(turn.video_sends == (), "the intro video was sent to the lead twice")
+    _assert(
+        _lead_videos_sent(phone) == [OPENER_VIDEO_ID],
+        "the intro video was recorded twice",
+    )
+    _assert(bool(turn.reply.strip()), "the question was left without an answer")
+
+
+def _no_duplicate_video_across_a_conversation() -> None:
+    phone = _phone()
+    first = ScriptedAgent(
+        "לרישיון עד 25 ק\"ג נדרש מבחן תיאוריה של רת\"א. מה הכיוון שמעניין אותך?",
+        actions=(lambda: send_video.invoke({"video_id": "drone_license_guide"}),),
+    )
+    first_turn = _run(first, phone, "איזה רישיון רחפן מתאים לי?")
+    _assert(
+        [delivery.video_id for delivery in first_turn.video_sends]
+        == ["drone_license_guide"],
+        "the matching video was not sent on the first ask",
+    )
+
+    second = ScriptedAgent(
+        "ההבדל הוא שהמסלול הכבד כולל גם חלק מעשי. יש לך ניסיון בהטסה?",
+        actions=(lambda: send_video.invoke({"video_id": "drone_license_guide"}),),
+    )
+    second_turn = _run(second, phone, "ומה ההבדל בין עד 25 לכבד?")
+
+    _assert(
+        second_turn.video_sends == (),
+        "the same video was sent twice in one conversation",
+    )
+    _assert(
+        _lead_videos_sent(phone) == ["drone_license_guide"],
+        "videos_sent holds a duplicate entry",
+    )
+    _assert(
+        bool(second_turn.reply.strip()),
+        "the follow-up question was left without an answer",
+    )
+
+
+def _video_never_replaces_the_text_answer() -> None:
+    phone = _phone()
+    _seed_opener(phone)
+    # The LLM wrote nothing but a restatement of the caption, which the
+    # duplicate filter strips. The lead must still get words.
+    agent = ScriptedAgent(
+        "הנה סרטון קצר על האקדמיה, ההכשרות והליווי בתהליך.",
+        actions=(lambda: send_video.invoke({"video_id": "drone_academy_overview"}),),
+    )
+    turn = _run(agent, phone, "איך האקדמיה עובדת?")
+
+    _assert(len(turn.video_sends) == 1, "the matching video was not sent")
+    _assert(
+        bool(turn.reply.strip()),
+        "the lead received a bare video with no words",
+    )
+
+
 def _cleanup() -> None:
     with session_scope() as session:
         for lead in session.execute(
@@ -202,6 +338,11 @@ def main() -> int:
         ("structured state after tool", _structured_state_survives_tool_invocation),
         ("session reset boundaries", _session_reset_boundaries),
         ("single video per turn", _single_video_per_turn),
+        ("opener sends text then intro video", _opener_sends_welcome_text_then_intro_video),
+        ("intro video failure keeps welcome", _opener_video_failure_never_blocks_the_welcome),
+        ("intro video not resent later", _intro_video_is_not_offered_again_after_the_opener),
+        ("no duplicate video in a conversation", _no_duplicate_video_across_a_conversation),
+        ("video never replaces the answer", _video_never_replaces_the_text_answer),
     )
     passed = 0
     try:

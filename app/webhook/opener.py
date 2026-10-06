@@ -23,12 +23,16 @@ from loguru import logger
 from sqlalchemy import select
 from whatsapp_api_client_python.API import GreenAPI
 
+from app.agent.context import VideoSend
 from app.agent.memory import record_assistant_turn
+from app.agent.tools import record_video_delivery
 from app.config import get_settings
 from app.db import repository
 from app.db.models import Lead, MessageRole
 from app.db.session import session_scope
 from app.names import first_name
+from app.videos.catalog import get_video
+from app.whatsapp.sender import ChatSender
 
 
 OPENER_TEMPLATE_KNOWN_NAME = (
@@ -61,6 +65,11 @@ CAMPAIGN_TOPIC = {
     "12425": "קורס הטסת רחפנים",
 }
 DEFAULT_TOPIC = "עולם הרחפנים"
+
+# Sent right after the opener text so a first-contact lead sees who we are
+# before anything else. Marked as delivered so the agent never offers it
+# again as if it were new.
+OPENER_VIDEO_ID = "propeller_company_overview"
 
 
 def _normalize_source(value: object) -> str:
@@ -156,6 +165,44 @@ def _render_opener(name: Optional[str], topic: str) -> str:
     if clean_name:
         return OPENER_TEMPLATE_KNOWN_NAME.format(name=clean_name, topic=topic)
     return OPENER_TEMPLATE_ANON.format(topic=topic)
+
+
+def _send_opener_video(session, lead: Lead, api: GreenAPI) -> None:
+    """Deliver the company intro video after the opener text.
+
+    Called only once the opener text is already sent and recorded, and every
+    failure is swallowed: the welcome message is the thing that must never be
+    lost, and a missing video is recoverable while a missing greeting is not.
+    """
+    if OPENER_VIDEO_ID in (lead.videos_sent or []):
+        return
+
+    video = get_video(OPENER_VIDEO_ID)
+    if video is None:
+        logger.error(
+            "[opener] intro video {!r} missing from the catalog",
+            OPENER_VIDEO_ID,
+        )
+        return
+
+    caption = video.caption or video.title
+    try:
+        ChatSender(api=api, chat_id=_chat_id(lead.phone)).send_video(video, caption)
+    except Exception:
+        logger.exception(
+            "[opener] intro video send failed for lead_id={}; opener text "
+            "was already delivered",
+            lead.id,
+        )
+        return
+
+    record_video_delivery(
+        session,
+        lead,
+        video,
+        VideoSend(video_id=video.id, title=video.title, caption=caption),
+    )
+    logger.info("[opener] intro video sent for lead_id={}", lead.id)
 
 
 def handle_new_lead(
@@ -280,6 +327,9 @@ def handle_new_lead(
                         "[opener] sent for lead_id={} (campaign={}, topic={!r})",
                         lead.id, campaign_id, topic,
                     )
+                    # Text first, then media: the lead should see who is
+                    # writing before a video lands in the chat.
+                    _send_opener_video(session, lead, api)
 
         if duplicate_facebook_lead:
             logger.info(
