@@ -42,9 +42,12 @@ class ScriptedAgent:
         self.reply = reply
         self.actions = actions
         self.system_prompts: list[str] = []
+        self.message_contents: list[list[str]] = []
 
     def invoke(self, values: dict) -> dict:
-        self.system_prompts.append(str(values["messages"][0].content))
+        messages = values["messages"]
+        self.system_prompts.append(str(messages[0].content))
+        self.message_contents.append([str(message.content) for message in messages])
         for action in self.actions:
             action()
         return {"messages": [AIMessage(content=self.reply)]}
@@ -136,7 +139,7 @@ def _structured_state_survives_tool_invocation() -> None:
         "next turn did not receive structured lead state",
     )
     _assert(
-        "אני עובד בסולארי" in second.system_prompts[-1],
+        "אני עובד בסולארי" in second.message_contents[-1],
         "next turn did not receive persisted conversation history",
     )
 
