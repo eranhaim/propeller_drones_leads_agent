@@ -89,7 +89,7 @@ def search_video_catalog(query: str, k: int = 3) -> List[VideoMatch]:
     if not query.strip():
         return []
     try:
-        results = get_vectorstore().similarity_search_with_relevance_scores(
+        results = get_vectorstore().similarity_search_with_score(
             query,
             k=k,
             filter={"topic": "video_catalog"},
@@ -100,11 +100,16 @@ def search_video_catalog(query: str, k: int = 3) -> List[VideoMatch]:
 
     matches: List[VideoMatch] = []
     seen: set[str] = set()
-    for document, relevance in results:
+    for document, distance in results:
         video_id = str((document.metadata or {}).get("video_id") or "").strip()
         if not video_id or video_id in seen:
             continue
         seen.add(video_id)
-        matches.append(VideoMatch(video_id=video_id, relevance=float(relevance)))
+        matches.append(
+            VideoMatch(
+                video_id=video_id,
+                relevance=1 / (1 + max(0.0, float(distance))),
+            )
+        )
     logger.debug("Video RAG '{}' -> {} match(es)", query, len(matches))
     return matches
