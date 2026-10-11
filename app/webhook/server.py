@@ -110,10 +110,9 @@ app.include_router(admin_router)
 @app.get("/health")
 def health() -> JSONResponse:
     payload = _polling_health()
-    # Reported so one external uptime check also covers the CRM session,
-    # which previously failed only into the Docker logs. It deliberately does
-    # not affect the status code: an expired LeadMe cookie does not mean the
-    # bot is down, and this endpoint is what marks the container unhealthy.
+    # Reported so one external check also covers the CRM session, which
+    # previously failed only into the Docker logs. Like the other components
+    # it does not feed the status code.
     payload["leadme_session"] = last_known_session_status() or "unknown"
     status_code = 200 if payload["status"] == "ok" else 503
     return JSONResponse(payload, status_code=status_code)
