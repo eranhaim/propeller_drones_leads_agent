@@ -31,6 +31,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.admin.routes import admin_session_secret, router as admin_router
 from app.config import get_settings
+from app.crm.leadme_client import last_known_session_status
 from app.webhook.opener import handle_new_lead
 from app.webhook.payload import (
     flatten_payload as _flatten_payload,
@@ -109,6 +110,11 @@ app.include_router(admin_router)
 @app.get("/health")
 def health() -> JSONResponse:
     payload = _polling_health()
+    # Reported so one external uptime check also covers the CRM session,
+    # which previously failed only into the Docker logs. It deliberately does
+    # not affect the status code: an expired LeadMe cookie does not mean the
+    # bot is down, and this endpoint is what marks the container unhealthy.
+    payload["leadme_session"] = last_known_session_status() or "unknown"
     status_code = 200 if payload["status"] == "ok" else 503
     return JSONResponse(payload, status_code=status_code)
 

@@ -77,6 +77,10 @@ LEVEL_TAGS: dict[int, str] = {}
 BANNED_LEAKY_CAMPAIGN_ID = "12277"
 BANNED_LEAKY_CAMPAIGN_NAME = "הוסרו מ-Whatsapp"
 
+# LeadMe's default "חדש" status. Cancelling a booking returns the lead to it
+# so the sales team re-books from a clean state.
+_STATUS_ID_NEW = 1
+
 
 # How many fast, in-request retries we do before handing off to the
 # durable queue. Short by design -- the queue picks up the slack for
@@ -524,6 +528,17 @@ def check_leadme_session_health(force: bool = False) -> dict:
     return {**result, "cached": False}
 
 
+def last_known_session_status() -> Optional[str]:
+    """Return the most recent session status without contacting LeadMe.
+
+    ``/health`` is also the container's Docker healthcheck, so it must not
+    make an outbound request per call. The scheduler's 30-minute probe keeps
+    this value fresh; ``None`` means no probe has run yet.
+    """
+    result = _HEALTH_CACHE.get("result")
+    return result.get("status") if result else None
+
+
 def push_status_via_admin(lead: Lead, status_id: str) -> bool:
     """Backwards-compat wrapper -- prefer :func:`push_lead`.
 
@@ -796,16 +811,29 @@ def push_not_relevant(
     return True
 
 
+def _forget_last_level(lead: Lead) -> None:
+    """Drop the cached engagement level after a cancellation.
+
+    ``push_engagement_level``'s upgrade-only guard would otherwise refuse the
+    next booking push for this lead.
+    """
+    md = dict(lead.lead_metadata or {})
+    md.pop("leadme_last_level", None)
+    lead.lead_metadata = md
+
+
 def push_lead_cancellation(lead: Lead, reason: Optional[str] = None) -> bool:
     """Mark a previously-scheduled call as cancelled in LeadMe.
 
-    Uses the admin-only path. Flips the status back to plain "חדש"
-    (rel=1) so the sales team can re-book without confusion. No tag
-    is pushed -- the customer asked us to keep the LeadMe UI clean
-    (only ``חלון · <slot>`` tags are used now).
+    Flips the status back to plain "חדש" so the sales team can re-book
+    without confusion. No tag is pushed -- the customer asked us to keep the
+    LeadMe UI clean (only ``חלון · <slot>`` tags are used now).
     """
     from app.crm.leadme_delete import (
         _build_client, find_leadme_id_by_phone,
+    )
+    from app.crm.leadme_v3 import (
+        get_lead_id, is_v3_available, update_lead_status,
     )
 
     settings = get_settings()
@@ -825,6 +853,25 @@ def push_lead_cancellation(lead: Lead, reason: Optional[str] = None) -> bool:
     if not (lead.phone or "").strip():
         return True
 
+    # Prefer v3: it needs no cookies and verifies the write by re-reading the
+    # status. The cookie path below stays for deployments without an API key.
+    if is_v3_available():
+        lead_id = get_lead_id(lead.phone)
+        if lead_id is None:
+            logger.warning(
+                "[LeadMe cancel v3] phone {} not found in LeadMe (no-op) "
+                "reason={!r}", lead.phone, reason,
+            )
+            return True
+        ok_status = update_lead_status(lead_id, _STATUS_ID_NEW)
+        if ok_status:
+            _forget_last_level(lead)
+        logger.info(
+            "[LeadMe cancel v3] leadId={} phone={} reason={!r} status_ok={}",
+            lead_id, lead.phone, reason, ok_status,
+        )
+        return ok_status
+
     client = _build_client()
     if client is None:
         logger.warning(
@@ -840,13 +887,9 @@ def push_lead_cancellation(lead: Lead, reason: Optional[str] = None) -> bool:
                 "reason={!r}", lead.phone, reason,
             )
             return True
-        ok_status = _admin_change_status(client, leadme_id, "1")
+        ok_status = _admin_change_status(client, leadme_id, str(_STATUS_ID_NEW))
         if ok_status:
-            # Reset leadme_last_level so push_engagement_level's
-            # downgrade guard won't block the next classification.
-            md = dict(lead.lead_metadata or {})
-            md.pop("leadme_last_level", None)
-            lead.lead_metadata = md
+            _forget_last_level(lead)
         logger.info(
             "[LeadMe cancel] leadme_id={} phone={} reason={!r} status_ok={}",
             leadme_id, lead.phone, reason, ok_status,
