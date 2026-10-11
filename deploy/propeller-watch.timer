@@ -1,0 +1,15 @@
+[Unit]
+Description=Run the Propeller outage check every minute
+
+[Timer]
+# Every minute, and two consecutive failures are needed to alert, so a
+# confirmed outage reaches the phone in about two minutes.
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=5s
+# Deliberately NOT Persistent=true: after a reboot the only thing worth
+# knowing is the state right now, not that a check was missed while off.
+Unit=propeller-watch.service
+
+[Install]
+WantedBy=timers.target

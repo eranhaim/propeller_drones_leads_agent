@@ -46,3 +46,6 @@ docs//reference/
 
 # Names the production host and points at a private key
 deploy/deploy.env
+
+# Holds the alerter's GreenAPI credentials; lives at /etc/propeller-watch.env
+deploy/propeller-watch.env
