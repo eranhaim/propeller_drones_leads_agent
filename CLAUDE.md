@@ -260,12 +260,19 @@ Delete stale comments.
 
 Verify the affected code as far as the environment allows.
 
-There is no unit-test suite (`tests/` holds only `__init__.py`). The real
-verification tools are:
+`tests/` holds a pytest suite covering the deterministic parts — the LeadMe
+client, queue and webhook payloads, video delivery, admin auth, conversation
+memory. It does not cover the prompt or the agent's judgement; the eval harness
+does that. The real verification tools are:
 
 ```bash
+# Unit tests. pytest is not in requirements.txt and the image does not COPY
+# tests/, so both have to be supplied:
+docker compose run --rm --no-deps -v "$PWD/tests:/app/tests:ro" bot \
+  bash -c "pip install -q pytest && python -m pytest tests -q"
+
 # Offline eval harness -- drives the LIVE agent through the customer's
-# rejected conversations. This is the closest thing to a test suite.
+# rejected conversations. The only net for prompt and agent behaviour.
 docker compose exec -T bot python -m scripts.eval_rejects
 
 # Import / syntax check without a running stack
@@ -577,7 +584,9 @@ commit them, never paste them into a log line or a doc.
 
 ## 17. Known Issues
 
-* No automated test suite. `scripts/eval_rejects.py` is the only regression net.
+* The pytest suite runs nowhere automatically: there is no CI, pytest is not a
+  declared dependency, and the image does not ship `tests/`. It only runs when
+  someone runs it by hand (see §11).
 * LeadMe has no official admin API; the cookie-impersonation path is fragile by
   nature. `docs/leadme_api_escalation.md` is the open ask to the vendor.
 * `app/shopify/` is wired to config but unused — WooCommerce is the live store
