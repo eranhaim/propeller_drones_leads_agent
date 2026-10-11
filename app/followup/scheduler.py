@@ -638,6 +638,17 @@ def _openai_credit_canary() -> None:
     _LAST_OPENAI_STATUS = status
 
 
+def last_openai_status() -> str:
+    """The most recent canary verdict, for ``/health`` to report.
+
+    Returns the recorded value instead of probing: /health is polled by the
+    Docker healthcheck every 30s, and spending an OpenAI call per poll would
+    cost more than the outage it watches for. ``"unknown"`` until the first
+    canary tick, which runs 3 minutes after boot.
+    """
+    return _LAST_OPENAI_STATUS or "unknown"
+
+
 def _leadme_proactive_refresh_tick() -> None:
     """Refresh LeadMe cookies proactively before they expire.
 
