@@ -572,6 +572,72 @@ def _leadme_session_health_tick() -> None:
     _LAST_HEALTH_STATUS = status
 
 
+# --- OpenAI credit tripwire ---------------------------------------------
+
+_LAST_OPENAI_STATUS: Optional[str] = None
+
+# Markers OpenAI uses when the account cannot pay for the request. An
+# ordinary 429 is transient back-pressure and must not be reported as a
+# billing failure, so the two are classified apart.
+_NO_CREDIT_MARKERS = (
+    "insufficient_quota",
+    "credit_balance_exhausted",
+    "billing_hard_limit_reached",
+    "exceeded your current quota",
+)
+
+
+def _classify_openai_error(exc: Exception) -> str:
+    text = str(exc).lower()
+    if any(marker in text for marker in _NO_CREDIT_MARKERS):
+        return "no_credit"
+    if "rate limit" in text or "429" in text:
+        return "rate_limited"
+    return "error"
+
+
+def _openai_credit_canary() -> None:
+    """Announce a drained OpenAI balance before the next lead pays for it.
+
+    An empty balance fails silently in production: the agent raises,
+    ``handle_message`` catches it, and the lead gets the canned Hebrew
+    apology. The only evidence is a traceback nobody is reading. This probe
+    spends a few tokens every 30 min on the SAME ``_model()`` the agent
+    uses, so billing failures get their own ERROR line next to the other
+    tripwires.
+    """
+    global _LAST_OPENAI_STATUS
+    from app.agent.graph import _model
+
+    try:
+        _model().invoke("ping")
+        status, detail = "ok", ""
+    except Exception as exc:  # noqa: BLE001
+        status = _classify_openai_error(exc)
+        detail = str(exc)[:200]
+
+    if status == _LAST_OPENAI_STATUS:
+        return  # steady state, don't spam
+
+    if status == "ok":
+        if _LAST_OPENAI_STATUS is not None:
+            logger.info(
+                "[openai-canary] RECOVERED (was={}, now=ok)", _LAST_OPENAI_STATUS,
+            )
+    elif status == "no_credit":
+        logger.error(
+            "[openai-canary] OpenAI is refusing calls for BILLING reasons: "
+            "{!r}. Every lead now gets the canned apology instead of an "
+            "answer until the account is topped up.",
+            detail,
+        )
+    else:
+        logger.error(
+            "[openai-canary] probe failed status={} detail={!r}", status, detail,
+        )
+    _LAST_OPENAI_STATUS = status
+
+
 def _leadme_proactive_refresh_tick() -> None:
     """Refresh LeadMe cookies proactively before they expire.
 
@@ -697,6 +763,18 @@ def run_in_background_thread() -> None:
         max_instances=1,
         coalesce=True,
         next_run_time=datetime.now(ISRAEL_TZ) + timedelta(minutes=1),
+    )
+    # OpenAI credit tripwire. Same 30-min cadence as the session-health
+    # probe above, and for the same reason: the failure it watches for is
+    # otherwise invisible until a lead complains.
+    scheduler.add_job(
+        _openai_credit_canary,
+        trigger="interval",
+        minutes=30,
+        id="openai_credit_canary",
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(ISRAEL_TZ) + timedelta(minutes=3),
     )
     # Proactive cookie refresh -- only registered when
     # LEADME_AUTO_REFRESH_ENABLED is on, so we don't leak "job failed:
