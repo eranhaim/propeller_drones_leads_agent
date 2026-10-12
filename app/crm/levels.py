@@ -229,5 +229,5 @@ def classify_engagement(
     if any(_is_substantive(message) for message in user_messages):
         return EngagementDecision(2, "meaningful_reply")
     if metadata.get("ctwa_campaign"):
-        return EngagementDecision(3, "paid_ad_no_reply")
-    return EngagementDecision(3, "no_reply")
+        return EngagementDecision(3, "paid_ad_no_meaningful_reply")
+    return EngagementDecision(3, "no_meaningful_reply")

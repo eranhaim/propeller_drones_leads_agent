@@ -192,7 +192,9 @@ class ClassificationTests(unittest.TestCase):
                 ],
             )
         )
-        self.assertEqual((decision.level, decision.reason), (3, "paid_ad_no_reply"))
+        self.assertEqual(
+            (decision.level, decision.reason), (3, "paid_ad_no_meaningful_reply")
+        )
 
     def test_lead_with_no_messages_is_level_three(self) -> None:
         self.assertEqual(classify_engagement(_lead()).level, 3)
@@ -208,7 +210,9 @@ class ClassificationTests(unittest.TestCase):
                 messages=[_user_message(now - timedelta(days=8), "ראיתי, מעניין")],
             )
         )
-        self.assertEqual((decision.level, decision.reason), (3, "paid_ad_no_reply"))
+        self.assertEqual(
+            (decision.level, decision.reason), (3, "paid_ad_no_meaningful_reply")
+        )
 
     # --- Outside the numeric levels ---------------------------------------
 
