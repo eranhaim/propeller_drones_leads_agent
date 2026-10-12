@@ -167,7 +167,7 @@ as an observation.
 | `classify_lead` | `familiarity?`, `stage?`, `intent?`, `industry?`, `preferred_call_slot?`, `has_experience?` | writes columns + `lead_metadata` |
 | `send_video` | `video_id`, `caption?` | GreenAPI send, one `video_sent` admin event, `videos_sent`, `video_sent_at` |
 | `recommend_video` | `topics_context?` | none |
-| `schedule_call` | `summary?`, `preferred_call_slot?` | `funnel_stage=handed_off`, CRM level 1 |
+| `schedule_call` | `summary?`, `preferred_call_slot?` | `funnel_stage=handed_off`, call-window tag, CRM level from `classify_engagement` (usually 2) |
 | `cancel_call` | `reason?` | clears slot, `funnel_stage=warm`, CRM cancel note |
 | `mark_not_relevant` | — | session reset + `not_relevant` flag |
 | `search_shop_products` | `query` | none (WooCommerce read) |
@@ -253,11 +253,17 @@ Applied to the raw reply, in this order, in `handle_message`:
    follow-up content.
 5. **`_enforce_booking_promise`** — if the reply matches
    `_BOOKING_PROMISE_RE` and `funnel_stage != handed_off`: when a slot exists,
-   push CRM level 1 and set `handed_off`; when no slot exists, log and do
-   nothing (never push a fabricated slot).
+   set `handed_off`, attach the call-window tag, and push whatever level
+   `classify_engagement` returns (a booking is not itself a Level 1
+   criterion); when no slot exists, log and do nothing — never push a
+   fabricated slot.
+6. **`_enforce_intro_video`** — on the first agent turn of a conversation,
+   queue the company intro video if it has not been sent. The prompt asks for
+   this too and the LLM forgets. Stands aside when the agent already chose a
+   video itself.
 
 Order matters: the Hebrew retry runs inside the `use_context` block because the
-retry may itself call tools. Steps 2–5 run after it, outside.
+retry may itself call tools. Steps 2–6 run after it, outside.
 
 When you change a prompt rule that one of these mirrors, change both.
 
@@ -269,12 +275,14 @@ When you change a prompt rule that one of these mirrors, change both.
 
 **Transaction 1 — durability.**
 Load or create the lead; apply a session reset if the lead is idle ≥ 7 days;
-clear a stale `not_relevant` flag; count prior user messages to decide the CRM
-level; persist the inbound message. Committed before the agent runs, so an
-agent crash still leaves the lead's message recorded.
+clear a stale `not_relevant` flag; persist the inbound message. Committed
+before the agent runs, so an agent crash still leaves the lead's message
+recorded.
 
 Between the two transactions, the CRM level push runs in its own short-lived
-session, wrapped in `try/except`. A CRM failure never blocks the reply.
+session, wrapped in `try/except`. It re-runs `classify_engagement` on the
+freshly committed message history and pushes the result, so the level reflects
+every turn rather than drifting. A CRM failure never blocks the reply.
 
 **Transaction 2 — the turn.**
 Re-fetch the lead by id (it may have vanished; that is checked), build the

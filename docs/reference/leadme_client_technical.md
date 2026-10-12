@@ -30,21 +30,38 @@ is the one deliberate exception, called from `graph.py`.)
 ## 2. Public facade — `app/crm/client.py`
 
 ```python
-mark_ready_for_call(lead, note=None, slot=None) -> bool   # level 1
-mark_engaged_no_book(lead, note=None)          -> bool    # level 2
-mark_no_reply(lead, note=None)                 -> bool    # level 3
-cancel_ready_for_call(lead, reason=None)       -> bool
+mark_engagement(lead, level, note=None, *, session=None) -> bool
+mark_call_window(lead, slot, *, session=None)            -> bool
+mark_not_relevant(lead, note=None, *, session=None)      -> bool
+cancel_ready_for_call(lead, reason=None)                 -> bool
 ```
 
-All four take a live `Lead` ORM instance, not a phone string — they read and
-write `lead.lead_metadata`, so the caller must hold an open session.
+All of them take a live `Lead` ORM instance, not a phone string — they read
+and write `lead.lead_metadata`, so the caller must hold an open session.
+
+### There is deliberately no per-level helper
+
+`mark_ready_for_call` / `mark_engaged_no_book` / `mark_no_reply` were removed
+on 2026-10-12. Each one let a caller decide a level from an event, and three
+separate paths had decided that a booking means Level 1. Every caller now
+classifies first and pushes the result:
+
+```python
+decision = classify_engagement(lead)
+if decision.level is not None:
+    mark_engagement(lead, decision.level, note=f"classification={decision.reason}",
+                    session=session)
+```
+
+`classify_engagement` is the only thing allowed to choose a level. See
+`docs/leadme_integration.md` §6.5 for the rules it applies.
 
 ### Return-value semantics
 
-`True` from the three `mark_*` functions means **"accepted"**, not
-"landed in LeadMe". It covers: pushed successfully, deduplicated as a no-op,
-suppressed by test mode, or enqueued for background retry. Callers must not
-retry on `True`, and must not treat it as proof the CRM changed.
+`True` from `mark_engagement` means **"accepted"**, not "landed in LeadMe". It
+covers: pushed successfully, deduplicated as a no-op, suppressed by test mode,
+or enqueued for background retry. Callers must not retry on `True`, and must
+not treat it as proof the CRM changed.
 
 `False` means the request was rejected outright (invalid level, no cookies on
 the cancel path). Only `cancel_ready_for_call` returns `False` for a genuine
@@ -53,19 +70,18 @@ push failure.
 The real outcome is in the logs (`[LeadMe]`, `[leadme_v3]`, `[queue]`) and in
 `lead_metadata`.
 
-### `slot` on `mark_ready_for_call` is ignored
+### The slot comes from metadata
 
-It is accepted for backwards compatibility and logged if passed. The effective
-slot is always read from `lead_metadata["preferred_call_slot"]`. Persist it
-first:
+`mark_call_window` is the single owner of the `חלון · <slot>` tag, and the
+slot must be persisted before it is called:
 
 ```python
 repository.update_lead_metadata(session, lead, preferred_call_slot="9-12")
-mark_ready_for_call(lead, note="...")
+mark_call_window(lead, "9-12", session=session)
 ```
 
-Silent parameter shadowing here was a real bug — see
-`docs/handoff_2026_07_26.md` §5.3.
+A `slot` parameter that silently shadowed the metadata value was a real bug —
+see `docs/handoff_2026_07_26.md` §5.3.
 
 ---
 
@@ -130,51 +146,54 @@ lower means further along.**
 
 | Level | v3 status id | Meaning in the CRM |
 |---|---|---|
-| 1 | `LEADME_STATUS_LEVEL_1` | organic source/campaign or content consumed |
-| 2 | `LEADME_STATUS_LEVEL_2` | meaningful reply without an L1 criterion, including booking |
-| 3 | `LEADME_STATUS_LEVEL_3` | no meaningful reply |
+| 1 | `LEADME_STATUS_LEVEL_1` | already knows the industry and the company |
+| 2 | `LEADME_STATUS_LEVEL_2` | a real conversation, booking a call included |
+| 3 | `LEADME_STATUS_LEVEL_3` | paid-ad starting point, or no meaningful reply |
 
-`push_engagement_level(lead, level, note=None, slot=None)` enforces
-upgrade-only transitions:
+`docs/leadme_integration.md` §6.5 is the authority on what qualifies.
+
+`push_engagement_level(lead, level, note=None, slot=None)` allows every
+transition except a repeat of the level LeadMe already has:
 
 | From → To | Result |
 |---|---|
 | `None` → 1/2/3 | push |
-| 3 → 2, 3 → 1, 2 → 1 | push |
+| any → any different level | push, **including downgrades** |
 | same → same | no-op, returns `True` |
-| 1 → 2, 1 → 3 | **refused** |
-| 2 → 3 | **refused** |
 | level not in {1,2,3} | rejected, returns `False` |
 
+The upgrade-only guard that refused `1→2`, `1→3` and `2→3` was removed on
+2026-10-12: it is what left stale Level 1 leads in the CRM, which is the
+complaint that drove the rework.
+
 `leadme_last_level` is written **only after the push actually lands.** On a
-failed push the level is enqueued and the key is left unset — writing it
-early would make the downgrade guard block a level that never reached LeadMe.
+failed push the level is enqueued and the key is left unset, so the next
+attempt is not mistaken for a repeat of a level that never reached LeadMe.
 The queue drain writes it when the retry succeeds.
 
-`push_lead_cancellation` pops `leadme_last_level` so a re-book is not blocked.
+`push_lead_cancellation` pops `leadme_last_level` so the cached value cannot
+go stale after a status reset.
 
 ### Where levels are pushed from
 
-| Call site | Level | Condition |
-|---|---|---|
-| `graph.handle_message` | 3 | CTWA prefill or other lead without a meaningful reply |
-| `graph.handle_message` | 2 | meaningful direct WhatsApp message or later CTWA reply |
-| `tools.schedule_call` | 2 | booking unless independently organic/content-consumed |
-| `graph._enforce_booking_promise` | 1 | reply promised a call but the tool never fired |
-| `opener.handle_new_lead` | 1 | source type exactly matches configured home-page, incoming-call, or landing-page label; configured website campaign; or configured booked-call tag |
-| `opener.handle_new_lead` | 3 | other new webhook lead with no bot engagement |
+Every one of these calls `classify_engagement` and pushes its result. None of
+them chooses a level from the event that triggered it.
 
-All levels are decided mechanically rather than by the model. L1 requires an
-explicit organic source/campaign or content delivered by the bot followed by a
-meaningful reply. Website forms, paid sources, price questions, and booking
-alone are never L1. A re-entering known lead is L2 unless it independently
-meets an L1 criterion.
+| Call site | Trigger |
+|---|---|
+| `graph.handle_message` | every inbound lead message |
+| `tools.schedule_call` | the lead booked a call |
+| `graph._enforce_booking_promise` | the reply promised a call but the tool never fired |
+| `opener.handle_new_lead` | a LeadMe webhook delivered a new lead |
+| `followup.scheduler` | the final nudge went out and the lead never replied |
+| `scripts/classify_existing_leads.py --commit` | bulk re-classification |
 
 ### Slot tag
 
-For level 1 only, a `חלון · <slot>` tag is attached alongside the status.
-Levels 2 and 3 carry no tag. CTWA attribution adds a separate `מקור: <campaign>`
-tag from `handler._push_ctwa_tag`.
+`mark_call_window` attaches `חלון · <slot>` for a booked lead with a real
+slot, independent of the engagement level — the booking and the level are two
+separate facts. CTWA attribution adds a separate `מקור: <campaign>` tag from
+`handler._push_ctwa_tag`.
 
 ---
 
@@ -209,8 +228,9 @@ is no separate table and no external broker.
 
 Enqueueing is idempotent per kind:
 
-* two `engagement` items collapse to one — **lower level wins**; the newer slot
-  is kept; notes are concatenated.
+* two `engagement` items collapse to one — **the newer level wins**, since it
+  came from a later run of the classifier; the newer slot is kept; notes are
+  concatenated. A confirmed push discards everything still queued.
 * two `ctwa_tag` items with the same campaign collapse to one.
 * different kinds coexist and are replayed together against one row lookup.
 

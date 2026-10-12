@@ -39,9 +39,12 @@ flowchart TD
     NET1 -->|no| RETRY[force-Hebrew retry]
     NET1 -->|yes| NET2{reply promises call<br/>but no schedule_call<br/>was invoked?}
     RETRY --> NET2
-    NET2 -->|yes| AUTOSCHED["_enforce_booking_promise:<br/>auto-invoke mark_ready_for_call"]
-    NET2 -->|no| CLEAN
-    AUTOSCHED --> CLEAN[strip filler phrases]
+    NET2 -->|yes| AUTOSCHED["_enforce_booking_promise:<br/>book the call + push<br/>classify_engagement's level"]
+    NET2 -->|no| NET3
+    AUTOSCHED --> NET3{first turn and<br/>intro video not sent?}
+    NET3 -->|yes| INTRO["_enforce_intro_video:<br/>queue the company intro"]
+    NET3 -->|no| CLEAN
+    INTRO --> CLEAN[strip filler phrases]
 
     CLEAN --> DELAY[human-feel typing delay]
     DELAY --> SEND["whatsapp/sender.py<br/>GreenAPI send"]
@@ -61,7 +64,7 @@ flowchart TD
     classDef safety fill:#fff3cd,stroke:#856404
     classDef guard fill:#f8d7da,stroke:#721c24
     classDef ext fill:#d1ecf1,stroke:#0c5460
-    class NET1,NET2,CLEAN,DELAY,AUTOSCHED,RETRY safety
+    class NET1,NET2,NET3,CLEAN,DELAY,AUTOSCHED,INTRO,RETRY safety
     class GUARD,NOOP guard
     class LM,WA,CRM,LMAPI,LMDEL,REACT ext
 ```

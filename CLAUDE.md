@@ -457,7 +457,10 @@ A lead idle for `SESSION_RESET_DAYS` (7) is reset on their next message: stage,
 familiarity and videos clear, history is hidden behind
 `lead_metadata["session_reset_at"]` (nothing is deleted), and they get a fresh
 opener instead of an agent reply. `_LEADME_KEYS` in `app/db/repository.py`
-lists what survives a reset — `leadme_last_level` is deliberately **not** in it.
+lists what survives a reset: the LeadMe identifiers, plus `leadme_reentry_at`
+because having left details more than once is permanent and is a Level 1
+criterion. `leadme_last_level` is deliberately **not** in it — the next turn
+recomputes it.
 
 ### Call windows
 
@@ -479,9 +482,24 @@ module that writes to LeadMe. The rules, in full in `docs/leadme_integration.md`
 * Writes go through the internal admin endpoints with session cookies, or the
   v3 REST API when `LEADME_API_KEY` is set. Cookies hard-expire every 24h;
   `app/crm/leadme_login.py` refreshes them via 2Captcha.
-* Engagement levels are **upgrade-only**, and lower means more engaged:
-  `1` = booked a call, `2` = replied to the bot, `3` = never replied.
-  `push_engagement_level` refuses `1→2`, `1→3`, and `2→3`.
+* Engagement levels run **1 = most engaged, 3 = least**, and measure how much
+  the lead already knows rather than how much they chatted. `1` = already
+  knows the industry and the company (organic, website form, incoming call to
+  the published number, a returning lead, or a long *recent* conversation
+  that included a video they engaged with). `2` = a real conversation,
+  **booking a call included**. `3` = the starting point for every paid-ad
+  lead, and where a lead who never meaningfully replies stays.
+* **Levels move in both directions.** `push_engagement_level` was
+  upgrade-only until 2026-10-12 and refused `1→2`, `1→3` and `2→3`; it no
+  longer does, because that is what left stale Level 1 leads the sales team
+  could not trust. The only remaining guard is idempotency. Engagement decays
+  (`LEAD_ENGAGEMENT_FRESH_DAYS`); the source signals do not.
+* `app/crm/levels.py::classify_engagement` owns the level, and it is the only
+  thing that may decide one. There is deliberately no per-level helper and no
+  event that sets a level directly — `mark_engagement` pushes whatever the
+  classifier returned. Booking a call used to call `mark_ready_for_call` from
+  three places; leads book calls without knowing what FPV is, so a booking is
+  Level 2.
 * CTWA leads reach the bot before LeadMe's supplier sync knows their phone.
   A push that cannot resolve the phone is enqueued in
   `lead_metadata["leadme_push_pending"]` and drained by the scheduler

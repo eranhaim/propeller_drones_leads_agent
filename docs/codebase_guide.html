@@ -359,9 +359,9 @@
       <div class="flow-step">
         <div class="flow-icon step-red">📊</div>
         <div class="flow-body">
-          <div class="flow-title">דיווח Level 3 ל-LeadMe</div>
-          <div class="flow-desc">אם הליד לא ענה אפילו פעם אחת אחרי שני nudges — דוחפים "Level 3" ל-LeadMe ("לא הגיב").</div>
-          <div class="flow-file">app/crm/client.py → mark_no_reply()</div>
+          <div class="flow-title">סנכרון רמה ל-LeadMe</div>
+          <div class="flow-desc">אם הליד לא ענה אפילו פעם אחת אחרי כל ה-nudges — מריצים את המסווג מחדש ודוחפים את הרמה שיצאה (בדרך כלל Level 3).</div>
+          <div class="flow-file">app/crm/levels.py → classify_engagement() → app/crm/client.py → mark_engagement()</div>
         </div>
       </div>
 
@@ -525,8 +525,13 @@
       </div>
       <div class="safety-card purple">
         <b>📋 Booking Promise Enforcer</b>
-        אם ה-AI אמר "קבעתי לך שיחה" אבל schedule_call לא רץ — קורא ל-mark_ready_for_call() אוטומטית. מונע הבטחה ריקה.
+        אם ה-AI אמר "קבעתי לך שיחה" אבל schedule_call לא רץ — קובע את השיחה אוטומטית ודוחף את הרמה שהמסווג החזיר. מונע הבטחה ריקה.
         <br><br><em>קובץ: graph.py → _enforce_booking_promise()</em>
+      </div>
+      <div class="safety-card purple">
+        <b>🎬 Intro Video Enforcer</b>
+        בתור הראשון בשיחה, אם סרטון ההיכרות של פרופלור עוד לא נשלח — שולח אותו. הליד צריך לדעת מי כותב לו לפני כל מידע על קורסים.
+        <br><br><em>קובץ: graph.py → _enforce_intro_video()</em>
       </div>
     </div>
     <div class="warn" style="margin-top:14px">

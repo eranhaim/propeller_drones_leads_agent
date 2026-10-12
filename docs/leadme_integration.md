@@ -58,6 +58,8 @@ here.
    campaign 12277's lead count every 30 minutes. If it grows, an
    `ERROR` line lands in Docker logs. Do not disable it without a very
    good reason.
+8. **Only `classify_engagement` decides a level**, and levels move in both
+   directions. See §6.5.
 
 ---
 
@@ -371,6 +373,54 @@ The engagement-level IDs (7326/7327/7328) live in `.env` as
 `LEADME_STATUS_LEVEL_1/2/3`. Everything else is used ad-hoc in
 one-off scripts.
 
+### 6.5. What the three levels mean
+
+Redefined by the customer on 2026-10-12. The levels measure **how much the
+lead already knows** — about the drone industry and about Propeller as a
+company — not how many messages they sent. For a Level 1 lead the sales call
+is only "why now", never "what is a drone" and never "who are you".
+
+| Level | Status | Who is here |
+|---|---|---|
+| 1 | 7326 | Organic arrivals; the website form; a call to the number published on the website; a **returning** lead who had already left details before; and a long **recent** conversation (`LEAD_DEEP_ENGAGEMENT_MESSAGES`, default 15) in which the lead engaged with a video we sent. Deliberately a small group. |
+| 2 | 7327 | A real conversation: questions, objections, **and booking a call**. Booking is *not* Level 1 — leads book calls without knowing what FPV is, what a drone license is, or who we are. |
+| 3 | 7328 | The starting point for **every paid-advertising lead** (Meta, TikTok, CTWA), and where a lead who never meaningfully replies stays. |
+
+Two further rules:
+
+- **Engagement decays.** A long conversation from a month ago must not keep a
+  lead at Level 1. `LEAD_ENGAGEMENT_FRESH_DAYS` (default 14) bounds the
+  conversation-depth route, and a lead who falls out of it lands at Level 2,
+  not Level 3 — they did reply, just not recently. Source-based Level 1 does
+  not decay: where a lead came from does not change with time.
+- **Levels move down as well as up.** `push_engagement_level` refused `1→2`,
+  `1→3` and `2→3` until 2026-10-12. That guard is gone; the only remaining
+  one is idempotency (pushing the level LeadMe already has is a no-op). The
+  pending queue follows the same rule — a newer queued engagement replaces an
+  older one rather than the lower level winning.
+
+`app/crm/levels.py::classify_engagement` is the single owner of the decision
+and returns the level plus the reason that produced it, so every push can be
+traced back to a rule. `mark_engagement` pushes whatever came out. There is
+deliberately **no** per-level helper and no event that sets a level directly:
+until 2026-10-12 three separate code paths each pushed Level 1 on a booking,
+and that is exactly the drift this structure prevents.
+
+#### What the data cannot tell us
+
+- **Real video watching is not observable.** GreenAPI emits no play, watch or
+  completion event for media we send. `engaged_with_a_video` uses the only
+  available proxy: the lead wrote something substantive *after* the video went
+  out. A lead who watches a video and says nothing looks identical to a lead
+  who ignored it.
+- **Returning-lead detection is partial.** `leadme_reentry_at` is set when a
+  LeadMe webhook arrives for a phone we already have a row for. It therefore
+  only catches repeat submissions that happened *after* this bot started
+  recording leads, and only ones that came through the webhook. LeadMe exposes
+  no lead-history or duplicate-submission field in the webhook payload or in
+  v3, so a lead who left details a year before the bot existed is invisible
+  to us.
+
 ---
 
 ## 7. Tags
@@ -477,14 +527,21 @@ Implementation (as it exists today):
 
    ```
    app/agent/tools.py::schedule_call
-     → app/crm/client.py::mark_ready_for_call
-       → app/crm/leadme_client.py::push_engagement_level(lead, level=1)
+     → app/crm/levels.py::classify_engagement       (usually Level 2)
+     → app/crm/client.py::mark_engagement
+       → app/crm/leadme_client.py::push_engagement_level
          → push_lead
              → find row via get_row_by_phone            (yields lc_id)
-             → _admin_change_status(client, lc_id, 7326)  # status pill
-             → _resolve_tag_lead_id(client, lc_id)        # -> internal leadId
-             → _admin_add_tag(client, internal_leadId, f"חלון · {slot}")
+             → _admin_change_status(client, lc_id, 7327)  # status pill
+     → app/crm/client.py::mark_call_window
+       → _resolve_tag_lead_id(client, lc_id)            # -> internal leadId
+       → _admin_add_tag(client, internal_leadId, f"חלון · {slot}")
    ```
+
+   The level comes from the classifier, so a booking alone does not move the
+   status pill to 7326. The slot tag is attached separately by
+   `mark_call_window`, the single owner of that tag — the booking and the
+   level are two independent facts about the lead.
 
 3. The tag string is literally `f"חלון · {slot}"` – middle-dot
    separator, no colon.
