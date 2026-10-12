@@ -121,11 +121,12 @@ _LEADME_KEYS = frozenset({
     "leadme_lead_id",
     "leadme_raw_comment",
     "opener_campaign_id",
+    # Having left details more than once is a permanent fact about the lead
+    # and a Level 1 criterion, so it has to outlive an idle session.
+    "leadme_reentry_at",
     # NOTE: leadme_last_level is intentionally NOT preserved across session
     # resets. It represents the current engagement classification, not a
-    # permanent identifier. Keeping it blocks the opener's Level 3 push
-    # (downgrade guard refuses 2->3) so returning leads never get
-    # reclassified.
+    # permanent identifier, and the next turn recomputes it anyway.
 })
 
 
