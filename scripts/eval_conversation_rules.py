@@ -28,7 +28,8 @@ from app.agent.tools import classify_lead, send_video
 from app.db import repository
 from app.db.models import Lead, MessageRole
 from app.db.session import session_scope
-from app.webhook.opener import OPENER_VIDEO_ID, handle_new_lead
+from app.videos.catalog import INTRO_VIDEO_ID
+from app.webhook.opener import handle_new_lead
 from app.whatsapp.handler import _record_video_delivery
 
 
@@ -232,11 +233,11 @@ def _opener_sends_welcome_text_then_intro_video() -> None:
         "the welcome text was not the first outbound message",
     )
     _assert(
-        api.sending.sendFileByUrl.call_args.args[2] == f"{OPENER_VIDEO_ID}.mp4",
+        api.sending.sendFileByUrl.call_args.args[2] == f"{INTRO_VIDEO_ID}.mp4",
         "the opener did not send the company intro video",
     )
     _assert(
-        _lead_videos_sent(phone) == [OPENER_VIDEO_ID],
+        _lead_videos_sent(phone) == [INTRO_VIDEO_ID],
         "the intro video was not marked as sent",
     )
     _assert(
@@ -271,14 +272,14 @@ def _intro_video_is_not_offered_again_after_the_opener() -> None:
     agent = ScriptedAgent(
         "פרופלור דרונס עוסקת גם בשירותי רחפן וגם בהכשרה. מה מעניין אותך יותר?",
         actions=(
-            lambda: send_video.invoke({"video_id": OPENER_VIDEO_ID}),
+            lambda: send_video.invoke({"video_id": INTRO_VIDEO_ID}),
         ),
     )
     turn = _run(agent, phone, "מי אתם בכלל ומה החברה עושה?")
 
     _assert(turn.video_sends == (), "the intro video was sent to the lead twice")
     _assert(
-        _lead_videos_sent(phone) == [OPENER_VIDEO_ID],
+        _lead_videos_sent(phone) == [INTRO_VIDEO_ID],
         "the intro video was recorded twice",
     )
     _assert(bool(turn.reply.strip()), "the question was left without an answer")

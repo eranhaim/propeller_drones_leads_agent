@@ -13,6 +13,11 @@ from loguru import logger
 
 VIDEOS_JSON = Path("data/videos.json")
 
+# Every first contact opens with this one: the lead should see who is writing
+# before any course information. Sent by the webhook opener for a website-form
+# lead, and by the agent's first-turn safety net for everyone else.
+INTRO_VIDEO_ID = "propeller_company_overview"
+
 
 @dataclass(frozen=True)
 class Video:
