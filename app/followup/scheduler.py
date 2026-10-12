@@ -564,9 +564,12 @@ def _leadme_session_health_tick() -> None:
     else:
         logger.error(
             "[leadme-health] LeadMe session status={} detail={!r}. "
-            "Any push_lead calls now enqueue and cannot drain until "
-            "cookies are refreshed via /admin/leadme-cookies "
-            "(or the auto-refresh job succeeds).",
+            "Cookie-only operations are affected: the campaign-leak canary "
+            "and the admin panel's LeadMe lookup/delete tools. Engagement "
+            "levels, call-window tags and cancellations are unaffected while "
+            "LEADME_API_KEY is set -- those go over the v3 API, which needs "
+            "no cookies. Refresh via /admin/leadme-cookies (or let the "
+            "auto-refresh job succeed).",
             status, detail,
         )
     _LAST_HEALTH_STATUS = status
