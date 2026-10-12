@@ -389,8 +389,13 @@ setting is declared in `app/config.py` — add new ones there with an explicit
 * Postgres (`postgres:5432`) and Chroma (`chroma:8000`) have **no** published
   ports. They are reachable only inside the compose network. The commented-out
   `ports:` blocks in `docker-compose.yml` are for debugging; leave them commented.
-* Production runs on EC2 (`ubuntu@54.173.144.0`). Deploy is manual: SSH in,
-  `git pull`, `docker compose up -d --build bot`.
+* Production runs on a Vultr VPS, `root@64.176.175.97`, in
+  `/home/deploy/projects/propeller`. Deploy is manual: SSH in, `git pull`,
+  `docker compose up -d --build bot`. The box hosts several unrelated
+  projects, so never run a bare `docker compose down` or prune from outside
+  that directory. The EC2 address this file used to name
+  (`ubuntu@54.173.144.0`) is a dead machine; `docs/handoff_2026_07_26.md` and
+  `docs/leadme_integration.md` still repeat it.
 
 Endpoints:
 
