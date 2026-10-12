@@ -337,6 +337,42 @@ def _video_never_replaces_the_text_answer() -> None:
     )
 
 
+def _paid_ad_first_contact_starts_at_level_three() -> None:
+    phone = _phone()
+    # The CTWA fast path in app/whatsapp/handler.py records the campaign
+    # before the agent runs, so the classifier sees a paid-ad lead whose
+    # only message is the ad's prefilled text.
+    with session_scope() as session:
+        lead = repository.get_or_create_lead(
+            session, phone=phone, name="TEST-CONVERSATION",
+        )
+        repository.update_lead_metadata(session, lead, ctwa_campaign="עודד")
+
+    agent = ScriptedAgent("היי! אני אלעד מפרופלור דרונס. מה מסקרן אותך בקורס?")
+    _run(agent, phone, "אשמח לקבל פרטים על קורס מאסטר רחפנים")
+
+    _assert(
+        _lead_metadata(phone).get("leadme_last_level") == 3,
+        f"a paid-ad first contact was not Level 3: "
+        f"{_lead_metadata(phone).get('leadme_last_level')}",
+    )
+
+
+def _paid_ad_lead_also_gets_the_intro_video() -> None:
+    phone = _phone()
+    # No webhook opener for a CTWA lead, so the first agent turn is the only
+    # chance to introduce the company.
+    agent = ScriptedAgent("היי! אני אלעד מפרופלור דרונס. מה מסקרן אותך בקורס?")
+    turn = _run(agent, phone, "היי, ראיתי מודעה על קורס רחפנים")
+
+    _assert(
+        [send.video_id for send in turn.video_sends] == [INTRO_VIDEO_ID],
+        f"the intro video did not reach a lead who skipped the opener: "
+        f"{[send.video_id for send in turn.video_sends]}",
+    )
+    _assert(bool(turn.reply.strip()), "the intro video arrived without words")
+
+
 def _cleanup() -> None:
     with session_scope() as session:
         for lead in session.execute(
@@ -357,6 +393,8 @@ def main() -> int:
         ("intro video not resent later", _intro_video_is_not_offered_again_after_the_opener),
         ("no duplicate video in a conversation", _no_duplicate_video_across_a_conversation),
         ("video never replaces the answer", _video_never_replaces_the_text_answer),
+        ("paid-ad first contact is Level 3", _paid_ad_first_contact_starts_at_level_three),
+        ("paid-ad lead gets the intro video", _paid_ad_lead_also_gets_the_intro_video),
     )
     passed = 0
     try:

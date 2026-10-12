@@ -1,28 +1,29 @@
-"""Bulk-classify existing leads into LeadMe priority Levels 1/2/3.
+"""Re-classify the existing lead base under the current engagement rules.
 
 Classification is the shared rule in ``app.crm.levels.classify_engagement``
-(the same one the live pipeline uses), so the bulk run and real-time flow can
-never diverge:
+-- the same one the live pipeline uses -- so a bulk run and the real-time
+flow can never diverge. See ``docs/leadme_integration.md`` for what puts a
+lead at Level 1, 2 or 3.
 
-- Level 1 (hottest): organic source/campaign, OR bot-delivered content with
-  meaningful subsequent engagement.
-- Level 2 (replied, not L1): meaningful WhatsApp reply, including booking.
-- Level 3 (never replied): no meaningful WhatsApp reply.
+The script runs in two phases:
+
+1. **Report** (always). Classifies every lead and prints the before/after
+   distribution across Levels 1/2/3. Writes nothing, reads nothing from
+   LeadMe. "Before" is ``lead_metadata["leadme_last_level"]`` -- the level
+   this bot last pushed, which is not necessarily what the sales team sees
+   today if someone moved the lead by hand in LeadMe.
+2. **Push** (only with ``--commit``). Sends the new level to LeadMe through
+   ``push_engagement_level``, the same idempotent call the live pipeline
+   uses, so statuses, tags and metadata match what a real conversation
+   produces.
 
 The call-window tag (``חלון · <slot>``) is attached only for booked leads
-(``funnel_stage == handed_off`` with a slot) via ``mark_call_window`` -- the
-single owner of that tag -- independent of the engagement level.
-
-The push uses ``push_engagement_level`` which is idempotent per
-(lead, level). Runs the SAME code path a live lead would hit — so tags,
-statuses, and metadata all match what the real-time pipeline produces.
+(``funnel_stage == handed_off`` with a real slot) via ``mark_call_window``
+-- the single owner of that tag -- independent of the engagement level.
 
 Usage:
     docker exec -e PYTHONPATH=/app propeller_bot \\
         python scripts/classify_existing_leads.py [--commit]
-
-Without ``--commit`` the script only prints what it WOULD do. Add
-``--commit`` to actually push to LeadMe.
 
 Extra guards (kept from the eval harness):
 - 999-prefix test phones are skipped.
@@ -39,17 +40,11 @@ from typing import Optional
 from loguru import logger
 from sqlalchemy import select
 
-from app.crm.client import mark_call_window
-from app.crm.leadme_client import _is_test_phone, push_engagement_level, push_lead
-from app.crm import leadme_queue
+from app.crm.client import mark_call_window, mark_engagement
+from app.crm.leadme_client import _is_test_phone
+from app.crm.leadme_v3 import get_lead_status, is_v3_available
 from app.crm.levels import classify_engagement
-from app.crm.leadme_v3 import (
-    get_lead_status,
-    is_v3_available,
-    level_for_status_id,
-    push_level,
-)
-from app.db.models import FunnelStage, Lead, Message, MessageRole
+from app.db.models import FunnelStage, Lead
 from app.db.session import session_scope
 
 
@@ -60,27 +55,74 @@ _MANAGED_STATUS_TITLES = {
     "חדש - רמה 3",
 }
 
+_LEVELS = (1, 2, 3)
 
-def _describe(lead: Lead, level: int, user_count: int) -> str:
+
+def _recorded_level(lead: Lead) -> Optional[int]:
+    """The level this bot last pushed for the lead, if any."""
+    recorded = (lead.lead_metadata or {}).get("leadme_last_level")
+    try:
+        return int(recorded)
+    except (TypeError, ValueError):
+        return None
+
+
+def _wants_call_window_tag(lead: Lead) -> bool:
+    slot = (lead.lead_metadata or {}).get("preferred_call_slot")
     return (
-        f"lead={lead.id} "
-        f"stage={lead.funnel_stage.value} user_msgs={user_count} -> Level {level}"
+        lead.funnel_stage == FunnelStage.handed_off
+        and bool(slot)
+        and slot not in ("any", "none")
     )
+
+
+def _print_distribution(
+    rows: list[tuple[Optional[int], int, str]], skipped: Counter[str]
+) -> None:
+    before = Counter(row[0] for row in rows)
+    after = Counter(row[1] for row in rows)
+
+    print("\n" + "=" * 64)
+    print("Engagement level distribution")
+    print("-" * 64)
+    print(f"{'':<12}{'before':>10}{'after':>10}{'change':>12}")
+    for level in _LEVELS:
+        delta = after[level] - before[level]
+        print(
+            f"{'Level ' + str(level):<12}{before[level]:>10}{after[level]:>10}"
+            f"{delta:>+12}"
+        )
+    print(f"{'never set':<12}{before[None]:>10}{'-':>10}{'':>12}")
+    print(f"{'total':<12}{len(rows):>10}{len(rows):>10}")
+
+    print("\nWhy each lead landed where it did (after):")
+    for reason, count in Counter(row[2] for row in rows).most_common():
+        print(f"  {count:>6}  {reason}")
+
+    print("\nMovement (before -> after):")
+    moves = Counter((row[0], row[1]) for row in rows)
+    for (was, now), count in sorted(
+        moves.items(), key=lambda item: (-item[1], str(item[0]))
+    ):
+        label = "never set" if was is None else f"Level {was}"
+        marker = "" if was == now else "  <-- changes"
+        print(f"  {count:>6}  {label} -> Level {now}{marker}")
+
+    if skipped:
+        print("\nSkipped:")
+        for reason, count in skipped.most_common():
+            print(f"  {count:>6}  {reason}")
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--commit", action="store_true",
-        help="Actually push to LeadMe. Without this, dry-run only.",
+        help="Actually push to LeadMe. Without this, report only.",
     )
     parser.add_argument(
-        "--only-level", type=int, choices=[1, 2, 3], default=None,
-        help="Filter to leads whose computed level equals this.",
-    )
-    parser.add_argument(
-        "--force", action="store_true",
-        help="Push even if leadme_last_level already records this level.",
+        "--only-level", type=int, choices=list(_LEVELS), default=None,
+        help="Push only leads whose new level equals this. Report is unaffected.",
     )
     parser.add_argument(
         "--only-managed-statuses", action="store_true",
@@ -92,169 +134,83 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    counts: Counter[int] = Counter()
-    skipped_test = 0
-    skipped_muted = 0
-    skipped_already = 0
-    skipped_not_new = 0
-    skipped_no_lm = 0
-    skipped_protected = 0
-    confirmed_same = 0
-    pushed_ok = 0
-    pushed_fail = 0
-
     if args.only_managed_statuses and not is_v3_available():
         print("ERROR: --only-managed-statuses requires LeadMe v3 API access.")
         return 2
 
+    rows: list[tuple[Optional[int], int, str]] = []
+    skipped: Counter[str] = Counter()
+    pushed_ok = 0
+    pushed_fail = 0
+
     with session_scope() as session:
-        # Order oldest -> newest so LeadMe sees a stable timeline of updates.
-        leads = list(session.execute(
-            select(Lead).order_by(Lead.id.asc())
-        ).scalars().all())
+        # Oldest -> newest so LeadMe sees a stable timeline of updates.
+        leads = list(
+            session.execute(select(Lead).order_by(Lead.id.asc())).scalars().all()
+        )
 
         for lead in leads:
             if _is_test_phone(lead.phone):
-                skipped_test += 1
+                skipped["test phone"] += 1
                 continue
             if getattr(lead, "bot_muted", False):
-                skipped_muted += 1
+                skipped["bot muted (admin took over)"] += 1
                 continue
-
-            user_count = session.execute(
-                select(Message).where(
-                    Message.lead_id == lead.id,
-                    Message.role == MessageRole.user,
-                )
-            ).unique().scalars().all()
-            user_count = len(user_count)
 
             decision = classify_engagement(lead, lead.messages)
             if decision.level is None:
-                skipped_not_new += 1
-                continue
-            level = decision.level
-            counts[level] += 1
-
-            if args.only_level and level != args.only_level:
+                skipped[f"outside the numeric levels ({decision.reason})"] += 1
                 continue
 
-            # The call-window tag is a booking concern, not a level concern:
-            # attach it only for a booked lead that has a real slot.
-            slot = (lead.lead_metadata or {}).get("preferred_call_slot")
-            want_window_tag = (
-                lead.funnel_stage == FunnelStage.handed_off
-                and bool(slot)
-                and slot not in ("any", "none")
-            )
+            rows.append((_recorded_level(lead), decision.level, decision.reason))
+
+            if not args.commit:
+                continue
+            if args.only_level and decision.level != args.only_level:
+                continue
 
             if args.only_managed_statuses:
-                remote_status = get_lead_status(phone=lead.phone)
-                if remote_status is None:
+                remote = get_lead_status(phone=lead.phone)
+                if remote is None:
                     logger.warning(
-                        "[classify] no LeadMe row -- skipping lead={}",
-                        lead.id,
+                        "[classify] no LeadMe row -- skipping lead={}", lead.id,
                     )
-                    skipped_no_lm += 1
+                    skipped["no LeadMe row"] += 1
                     continue
-                if remote_status["statusTitle"].strip() not in _MANAGED_STATUS_TITLES:
-                    print(
-                        f"SKIP (LeadMe status outside managed levels) "
-                        f"lead={lead.id}"
-                    )
-                    skipped_not_new += 1
-                    continue
-                remote_level = level_for_status_id(remote_status["status"])
-                if remote_level is not None and remote_level < level:
-                    print(
-                        f"SKIP (LeadMe has higher-priority level) "
-                        f"lead={lead.id}"
-                    )
-                    skipped_protected += 1
-                    # A booked lead still carries its window tag even when its
-                    # status is already more engaged than the computed level.
-                    if args.commit and want_window_tag:
-                        mark_call_window(lead, slot)
-                    continue
-                if remote_level == level:
-                    if args.commit:
-                        leadme_queue.record_confirmed_engagement(lead, level)
-                        if want_window_tag:
-                            mark_call_window(lead, slot)
-                    confirmed_same += 1
+                if remote["statusTitle"].strip() not in _MANAGED_STATUS_TITLES:
+                    skipped["LeadMe status outside the managed levels"] += 1
                     continue
 
-                print(_describe(lead, level, user_count))
-                if args.commit:
-                    try:
-                        if push_level(lead.phone, level):
-                            leadme_queue.record_confirmed_engagement(lead, level)
-                            if want_window_tag:
-                                mark_call_window(lead, slot)
-                            pushed_ok += 1
-                        else:
-                            pushed_fail += 1
-                    except Exception:
-                        logger.exception(
-                            "[classify] v3 push failed for lead {}", lead.id,
-                        )
-                        pushed_fail += 1
+            try:
+                ok = mark_engagement(
+                    lead,
+                    decision.level,
+                    note=f"bulk-reclassify; classification={decision.reason}",
+                    session=session,
+                )
+            except Exception:
+                logger.exception("[classify] push failed for lead {}", lead.id)
+                pushed_fail += 1
                 continue
 
-            md = lead.lead_metadata or {}
-            already = md.get("leadme_last_level")
-            if not args.force and already is not None:
-                # Level 1 is always allowed to overwrite (booking can happen
-                # after any prior state); Levels 2/3 only if strictly higher.
-                if level != 1 and int(already) >= level:
-                    skipped_already += 1
-                    continue
-
-            print(_describe(lead, level, user_count))
-
-            if args.commit:
-                try:
-                    if args.force:
-                        # Bypass push_engagement_level's idempotency guard
-                        # so we can re-push after fixing an underlying
-                        # config bug (e.g., wrong status IDs).
-                        ok = push_lead(
-                            lead, note=f"bulk-reclassify (force)", level=level,
-                        )
-                        if ok:
-                            md_new = dict(lead.lead_metadata or {})
-                            md_new["leadme_last_level"] = int(level)
-                            lead.lead_metadata = md_new
-                    else:
-                        ok = push_engagement_level(
-                            lead, level=level,
-                            note=f"bulk-classified from {user_count} msgs",
-                        )
-                except Exception:
-                    logger.exception(
-                        "[classify] push failed for lead {}", lead.id,
+            if ok:
+                if _wants_call_window_tag(lead):
+                    mark_call_window(
+                        lead,
+                        (lead.lead_metadata or {})["preferred_call_slot"],
+                        session=session,
                     )
-                    pushed_fail += 1
-                    continue
-                if ok:
-                    if want_window_tag:
-                        mark_call_window(lead, slot)
-                    pushed_ok += 1
-                else:
-                    pushed_fail += 1
+                pushed_ok += 1
+            else:
+                pushed_fail += 1
 
-    print("\n" + "=" * 60)
-    print(f"Would classify: L1={counts[1]}  L2={counts[2]}  L3={counts[3]}")
-    print(f"skipped: test={skipped_test} muted={skipped_muted} "
-          f"already-classified={skipped_already} "
-          f"not-חדש-in-leadme={skipped_not_new} "
-          f"not-in-leadme={skipped_no_lm} "
-          f"protected-higher-level={skipped_protected} "
-          f"already-matching={confirmed_same}")
+    _print_distribution(rows, skipped)
+
+    print()
     if args.commit:
-        print(f"pushed to LeadMe: ok={pushed_ok} failed={pushed_fail}")
+        print(f"Pushed to LeadMe: ok={pushed_ok} failed={pushed_fail}")
     else:
-        print("DRY RUN (no LeadMe pushes). Add --commit to execute.")
+        print("REPORT ONLY -- nothing was written. Add --commit to push.")
     return 0
 
 
