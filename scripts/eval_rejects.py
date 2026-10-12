@@ -766,10 +766,12 @@ SCENARIOS: List[Scenario] = [
         ],
     ),
     Scenario(
-        name="booking_a_specific_window_reaches_level_1",
+        name="booking_without_our_content_stays_level_2",
         description=(
-            "Booking a call for a named window is Level 1 while it is "
-            "fresh. The customer's own rule (Roy, 2026-10-12)."
+            "A lead who books a window straight away, without engaging "
+            "with anything we sent, is Level 2. Half of the customer's "
+            "final rule (Roy and Omer, 2026-10-12): content and a booking "
+            "together, neither one alone."
         ),
         sender_name="Nadav",
         turns=[
@@ -778,17 +780,48 @@ SCENARIOS: List[Scenario] = [
                 user_msg="12-15",
                 assertions=[
                     Assertion(
-                        "leadme_last_level moves to 1",
+                        "leadme_last_level stays 2",
                         lambda _r, lead: (
                             (lead.lead_metadata or {}).get(
                                 "leadme_last_level"
-                            ) == 1
+                            ) == 2
                         ),
                     ),
                     Assertion(
                         "booking timestamp recorded for the decay rule",
                         lambda _r, lead: bool(
                             (lead.lead_metadata or {}).get("booked_at")
+                        ),
+                    ),
+                    Assertion(
+                        "funnel handed_off",
+                        stage_equals(FunnelStage.handed_off),
+                    ),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
+        name="content_and_booking_reaches_level_1",
+        description=(
+            "The other half: a lead who engages with the video we sent and "
+            "then books a named window is Level 1. First contact always "
+            "brings the intro video, so the engagement here is the "
+            "substantive reply to it."
+        ),
+        sender_name="Yarden",
+        turns=[
+            Turn(user_msg="היי, אשמח להבין איזה רישיון רחפן מתאים לי"),
+            Turn(user_msg="ראיתי את הסרטון, אז הרישיון המסחרי מתאים לי?"),
+            Turn(
+                user_msg="מעולה, אני רוצה לקבוע שיחה עם יועץ בשעות 12-15",
+                assertions=[
+                    Assertion(
+                        "leadme_last_level moves to 1",
+                        lambda _r, lead: (
+                            (lead.lead_metadata or {}).get(
+                                "leadme_last_level"
+                            ) == 1
                         ),
                     ),
                     Assertion(

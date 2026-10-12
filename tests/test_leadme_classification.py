@@ -1,8 +1,9 @@
 """Deterministic coverage for the engagement classification rules.
 
-Mirrors the customer's 2026-10-12 definition: Level 1 is a small group that
-already knows the industry, Level 2 is a real conversation including a
-booking, Level 3 is the paid-advertising starting point.
+Mirrors the customer's final 2026-10-12 definition: Level 1 is where the lead
+came from, or our content plus a call booked for a specific window; Level 2 is
+a real conversation, or half of that pair; Level 3 is the paid-advertising
+starting point.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -22,19 +23,26 @@ _SETTINGS = SimpleNamespace(
     leadme_level_1_sources=["אורגני", "שיחה נכנסת"],
     leadme_level_1_campaigns=["פניות וובינר"],
     lead_engagement_fresh_days=14,
-    lead_deep_engagement_messages=15,
+    lead_deep_engagement_messages=12,
+    webinar_video_ids=["propeller_webinar"],
 )
 
 
-def _lead(*, metadata=None, stage=FunnelStage.new, messages=None) -> Lead:
+def _lead(
+    *, metadata=None, stage=FunnelStage.new, messages=None, videos_sent=None
+) -> Lead:
     lead = Lead()
     lead.lead_metadata = metadata or {}
     lead.funnel_stage = stage
     lead.messages = messages or []
+    lead.videos_sent = videos_sent or []
     return lead
 
 
-def _booked_lead(*, slot="12-15", days_ago=0, metadata=None) -> Lead:
+def _booked_lead(
+    *, slot="12-15", days_ago=0, metadata=None, messages=None, videos_sent=None
+) -> Lead:
+    """A lead who booked a window but, unless told otherwise, got no content."""
     booked = datetime.now(timezone.utc) - timedelta(days=days_ago)
     return _lead(
         stage=FunnelStage.handed_off,
@@ -43,7 +51,23 @@ def _booked_lead(*, slot="12-15", days_ago=0, metadata=None) -> Lead:
             "booked_at": booked.isoformat(),
             **(metadata or {}),
         },
-        messages=[_user_message(booked, "רוצה שיחה עם יועץ")],
+        messages=messages or [_user_message(booked, "רוצה שיחה עם יועץ")],
+        videos_sent=videos_sent,
+    )
+
+
+def _booked_lead_with_a_video(*, days_ago=0, metadata=None) -> Lead:
+    """A lead who engaged with a video and then booked a window."""
+    sent_at = datetime.now(timezone.utc) - timedelta(days=days_ago)
+    return _booked_lead(
+        days_ago=days_ago,
+        metadata={"video_sent_at": sent_at.isoformat(), **(metadata or {})},
+        messages=[
+            _user_message(
+                sent_at + timedelta(minutes=1),
+                "ראיתי את הסרטון, מעניין אותי הרישיון המסחרי",
+            )
+        ],
     )
 
 
@@ -122,32 +146,52 @@ class ClassificationTests(unittest.TestCase):
         )
         self.assertEqual((decision.level, decision.reason), (1, "returning_lead"))
 
-    # --- Level 1: demonstrated knowledge ----------------------------------
+    # --- Level 1: our content AND a booked window, while both are fresh ---
 
-    def test_long_recent_conversation_with_video_engagement_is_level_one(self) -> None:
-        sent_at = datetime.now(timezone.utc) - timedelta(hours=2)
+    def test_video_engagement_plus_a_booking_is_level_one(self) -> None:
+        decision = classify_engagement(_booked_lead_with_a_video())
+        self.assertEqual((decision.level, decision.reason), (1, "content_and_booking"))
+
+    def test_the_webinar_plus_a_booking_is_level_one(self) -> None:
         decision = classify_engagement(
-            _lead(
-                metadata={"video_sent_at": sent_at.isoformat()},
-                messages=_conversation(16, starting_at=sent_at + timedelta(minutes=1)),
-            )
+            _booked_lead(videos_sent=["propeller_webinar"])
+        )
+        self.assertEqual((decision.level, decision.reason), (1, "content_and_booking"))
+
+    def test_an_unconfigured_video_is_not_the_webinar(self) -> None:
+        decision = classify_engagement(
+            _booked_lead(videos_sent=["drone_license_guide"])
         )
         self.assertEqual(
-            (decision.level, decision.reason), (1, "deep_recent_engagement")
+            (decision.level, decision.reason), (2, "booking_without_content")
         )
 
-    def test_long_conversation_without_a_video_is_not_level_one(self) -> None:
+    def test_a_long_conversation_plus_a_booking_is_level_one(self) -> None:
+        now = datetime.now(timezone.utc)
         decision = classify_engagement(
-            _lead(
-                messages=_conversation(
-                    20, starting_at=datetime.now(timezone.utc) - timedelta(hours=1)
-                )
-            )
+            _booked_lead(messages=_conversation(12, starting_at=now - timedelta(hours=1)))
         )
-        self.assertEqual((decision.level, decision.reason), (2, "meaningful_reply"))
+        self.assertEqual((decision.level, decision.reason), (1, "content_and_booking"))
 
-    def test_stale_long_conversation_drops_out_of_level_one(self) -> None:
-        sent_at = datetime.now(timezone.utc) - timedelta(days=30)
+    def test_a_conversation_below_the_threshold_plus_a_booking_is_level_two(self) -> None:
+        now = datetime.now(timezone.utc)
+        decision = classify_engagement(
+            _booked_lead(messages=_conversation(11, starting_at=now - timedelta(hours=1)))
+        )
+        self.assertEqual(
+            (decision.level, decision.reason), (2, "booking_without_content")
+        )
+
+    # --- Level 2: either half of that pair on its own ---------------------
+
+    def test_a_booking_without_our_content_is_level_two(self) -> None:
+        decision = classify_engagement(_booked_lead(days_ago=1))
+        self.assertEqual(
+            (decision.level, decision.reason), (2, "booking_without_content")
+        )
+
+    def test_our_content_without_a_booking_is_level_two(self) -> None:
+        sent_at = datetime.now(timezone.utc) - timedelta(hours=2)
         decision = classify_engagement(
             _lead(
                 metadata={"video_sent_at": sent_at.isoformat()},
@@ -156,37 +200,18 @@ class ClassificationTests(unittest.TestCase):
         )
         self.assertEqual((decision.level, decision.reason), (2, "meaningful_reply"))
 
-    def test_short_conversation_after_a_video_is_not_level_one(self) -> None:
-        sent_at = datetime.now(timezone.utc) - timedelta(minutes=5)
-        decision = classify_engagement(
-            _lead(
-                metadata={"video_sent_at": sent_at.isoformat()},
-                messages=[
-                    _user_message(
-                        sent_at + timedelta(minutes=1),
-                        "ראיתי את הסרטון, זה נשמע טוב ואני רוצה להתקדם.",
-                    )
-                ],
-            )
-        )
-        self.assertEqual((decision.level, decision.reason), (2, "meaningful_reply"))
-
-    # --- Level 1: a booked call, while it is fresh ------------------------
-
-    def test_recent_booking_for_a_specific_window_is_level_one(self) -> None:
-        decision = classify_engagement(_booked_lead(days_ago=1))
-        self.assertEqual((decision.level, decision.reason), (1, "recent_booking"))
-
-    def test_stale_booking_drops_to_level_two(self) -> None:
-        decision = classify_engagement(_booked_lead(days_ago=30))
+    def test_a_stale_booking_is_level_two_even_with_our_content(self) -> None:
+        decision = classify_engagement(_booked_lead_with_a_video(days_ago=30))
         self.assertEqual((decision.level, decision.reason), (2, "stale_booking"))
 
     def test_booking_without_a_specific_window_is_level_two(self) -> None:
         for slot in ("any", "none"):
             with self.subTest(slot=slot):
-                decision = classify_engagement(_booked_lead(slot=slot))
+                decision = classify_engagement(
+                    _booked_lead(slot=slot, videos_sent=["propeller_webinar"])
+                )
                 self.assertEqual(decision.level, 2)
-                self.assertNotEqual(decision.reason, "recent_booking")
+                self.assertNotEqual(decision.reason, "content_and_booking")
 
     def test_an_unbooked_lead_is_never_a_booking(self) -> None:
         decision = classify_engagement(
@@ -213,13 +238,14 @@ class ClassificationTests(unittest.TestCase):
             stage=FunnelStage.handed_off,
             metadata={"preferred_call_slot": "9-12"},
             messages=[_user_message(old, "רוצה שיחה עם יועץ")],
+            videos_sent=["propeller_webinar"],
         )
         self.assertEqual(classify_engagement(lead).reason, "stale_booking")
 
         lead.messages.append(
             _user_message(datetime.now(timezone.utc), "עדיין מעוניין, מתי נדבר?")
         )
-        self.assertEqual(classify_engagement(lead).reason, "recent_booking")
+        self.assertEqual(classify_engagement(lead).reason, "content_and_booking")
 
     # --- Level 2 ----------------------------------------------------------
 
