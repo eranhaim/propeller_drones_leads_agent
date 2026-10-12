@@ -4,21 +4,25 @@ Levels are numerically inverted: ``1`` is the most engaged, ``3`` the least.
 The customer redefined them on 2026-10-12 around how much a lead already
 knows, not around how much they chatted:
 
-* **Level 1** -- a deliberately small group. The lead already understands the
-  drone industry and who Propeller are, so the sales call is only "why now".
-  That is: an organic arrival, the website form, a call to the number
-  published on the website, a lead who is back in the system after leaving
-  details before, or a lead who has had a long *recent* conversation with the
-  bot and engaged with the videos it sent.
+* **Level 1** -- the lead already understands the drone industry and who
+  Propeller are, so the sales call is only "why now". That is: an organic
+  arrival, the website form, a landing page, a call to the number published on
+  the website, a lead who is back in the system after leaving details before,
+  a lead who booked a call for a specific window, or a lead who has had a long
+  conversation with the bot and engaged with the videos it sent.
 * **Level 2** -- reasonable interest. A real conversation with the bot:
-  questions, objections, and **booking a call**. Booking is explicitly NOT
-  Level 1; leads book calls without knowing what FPV is or who we are.
+  questions and objections, but no booked window.
 * **Level 3** -- the starting point for everyone else, paid advertising
   included, and where a lead who never meaningfully replies stays.
 
-Engagement decays: a long conversation from a month ago no longer carries a
-lead at Level 1. The source signals do not decay -- they describe where the
-lead came from, not what they did this week.
+Engagement decays; where a lead came from does not. A long conversation from
+a month ago, or a call booked a month ago, no longer carries a lead at Level
+1 -- it falls back to Level 2. The source signals never decay, because they
+describe what the lead already knew before we spoke to them.
+
+The booking rule is the customer's own amendment (Roy, 2026-10-12) to the
+model Omer set earlier the same day, and the decay on it is what stops it
+from recreating the stale-Level-1 problem Omer complained about.
 
 Explicit opt-outs are outside the numeric levels (``level is None``); they get
 the configured terminal status instead.
@@ -32,7 +36,7 @@ from dataclasses import dataclass
 from typing import Iterable, Optional
 
 from app.config import get_settings
-from app.db.models import Lead, Message, MessageRole
+from app.db.models import FunnelStage, Lead, Message, MessageRole
 
 
 @dataclass(frozen=True)
@@ -53,6 +57,10 @@ _BOOKING_RE = re.compile(
     r"(?:רוצה\s+שיחה|אשמח\s+לשיחה|תקבע|לקבוע|דברו\s+איתי|תחזרו\s+אלי)"
 )
 _WORD_RE = re.compile(r"[\u0590-\u05FFa-zA-Z0-9]{2,}")
+
+# A booking only reaches Level 1 with a real window. ``any`` and ``none`` are
+# what schedule_call falls back to when the lead never named one.
+_SPECIFIC_SLOTS = frozenset({"9-12", "12-15", "15-18"})
 
 
 def _normalize(value: object) -> str:
@@ -129,6 +137,9 @@ def level_1_source_reason(metadata: dict) -> Optional[str]:
     are account-specific, so the accepted values are configuration rather than
     code. A lead arriving through any of them has already seen Propeller's own
     content, which is the whole point of the tier.
+
+    Measured on 2026-10-12: LeadMe sends no source field at all, so only the
+    campaign-based routes can fire. See ``app/config.py``.
     """
     settings = get_settings()
     source = metadata.get("leadme_source")
@@ -140,11 +151,42 @@ def level_1_source_reason(metadata: dict) -> Optional[str]:
         or _matches_any(campaign, settings.leadme_website_form_campaigns)
     ):
         return "website_form"
+    if _matches_any(campaign, settings.leadme_landing_page_campaigns):
+        return "landing_page"
     if _matches_any(source, settings.leadme_level_1_sources):
         return "organic_or_incoming_call"
     if _matches_any(campaign, settings.leadme_level_1_campaigns):
         return "propeller_content_campaign"
     return None
+
+
+def booked_a_specific_window(lead: Lead) -> bool:
+    """Return whether the lead booked a call for a concrete time window.
+
+    Roy's rule separates "booked a call at a specific hour" (Level 1) from
+    "talked to the bot but booked no specific hour" (Level 2), so a booking
+    that fell back to ``any`` does not qualify. ``schedule_call`` books with
+    ``any`` rather than stalling when the lead never names a window, and those
+    leads are exactly the ones he means to leave at Level 2.
+    """
+    if lead.funnel_stage != FunnelStage.handed_off:
+        return False
+    slot = (lead.lead_metadata or {}).get("preferred_call_slot")
+    return _normalize(slot) in _SPECIFIC_SLOTS
+
+
+def booked_at(lead: Lead, user_messages: list[Message]) -> Optional[datetime]:
+    """Return when the call was booked, as well as we can tell.
+
+    ``booked_at`` has only been recorded since 2026-10-12. For every lead
+    booked before that the best available stand-in is their last inbound
+    message, which is never earlier than the booking and so can only make an
+    old booking look newer than it is -- the forgiving direction.
+    """
+    recorded = _parse_iso((lead.lead_metadata or {}).get("booked_at"))
+    if recorded is not None:
+        return recorded
+    return _last_activity_at(user_messages)
 
 
 def engaged_with_a_video(lead: Lead, messages: Iterable[Message]) -> bool:
@@ -218,13 +260,21 @@ def classify_engagement(
     if any(_is_explicit_opt_out(_message_text(message)) for message in user_messages):
         return EngagementDecision(None, "explicit_not_interested")
 
+    # Where the lead came from, which never decays.
     source_reason = level_1_source_reason(metadata)
     if source_reason is not None:
         return EngagementDecision(1, source_reason)
     if metadata.get("leadme_reentry_at"):
         return EngagementDecision(1, "returning_lead")
+
+    # What the lead did, which does decay.
+    has_booking = booked_a_specific_window(lead)
+    if has_booking and _is_fresh(booked_at(lead, user_messages)):
+        return EngagementDecision(1, "recent_booking")
     if _is_deeply_engaged(lead, lead_messages, user_messages):
         return EngagementDecision(1, "deep_recent_engagement")
+    if has_booking:
+        return EngagementDecision(2, "stale_booking")
 
     if any(_is_substantive(message) for message in user_messages):
         return EngagementDecision(2, "meaningful_reply")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Callable, Dict, List, Optional
 
@@ -462,7 +463,6 @@ def _history_as_messages(lead: Lead, session) -> List[BaseMessage]:
 
 def _current_session_messages(lead: Lead, session):
     """Load durable history visible to both the model and memory safeguards."""
-    from datetime import datetime, timezone
     reset_str = (lead.lead_metadata or {}).get("session_reset_at")
     after_dt = None
     if reset_str:
@@ -487,8 +487,6 @@ def _should_reset_session(lead: Lead) -> bool:
     used to be greeted with the first-contact opener as if we had never
     spoken.
     """
-    from datetime import datetime, timezone, timedelta
-
     messages = lead.messages or []
     last_user = max(
         (m for m in messages if m.role == MessageRole.user),
@@ -849,8 +847,14 @@ def _enforce_booking_promise(session, lead: Lead, reply: str) -> None:
             lead.id,
         )
 
-    # Booking does not by itself make a lead Level 1 -- the classifier owns
-    # the level, exactly as it does on the normal ``schedule_call`` path.
+    # Book locally first, exactly as ``schedule_call`` does, so the classifier
+    # sees the same lead state on both paths and a booking made here counts
+    # for the same level it would have there.
+    repository.update_funnel_stage(session, lead, FunnelStage.handed_off)
+    repository.update_lead_metadata(
+        session, lead, booked_at=datetime.now(timezone.utc).isoformat(),
+    )
+
     decision = classify_engagement(lead)
     try:
         ok = decision.level is not None and mark_engagement(
@@ -861,7 +865,6 @@ def _enforce_booking_promise(session, lead: Lead, reply: str) -> None:
         )
         mark_call_window(lead, slot, session=session)
         if ok:
-            repository.update_funnel_stage(session, lead, FunnelStage.handed_off)
             logger.info(
                 "[booking-safety-net] Auto-pushed lead {} to LeadMe (L{}); "
                 "stage -> handed_off", lead.id, decision.level,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Optional
 
 from langchain_core.tools import tool
@@ -237,13 +238,10 @@ def record_video_delivery(
         },
     )
     repository.mark_video_sent(session, lead, delivery.video_id)
-    from datetime import datetime, timezone as _tz
-
-    _now_iso = datetime.now(_tz.utc).isoformat()
     repository.update_lead_metadata(
         session,
         lead,
-        video_sent_at=_now_iso,
+        video_sent_at=datetime.now(timezone.utc).isoformat(),
         last_video_id=delivery.video_id,
     )
     remember_video_delivery(session, lead, delivery.video_id)
@@ -419,6 +417,13 @@ def schedule_call(
         )
 
     repository.update_funnel_stage(ctx.session, ctx.lead, FunnelStage.handed_off)
+    # A booking is a Level 1 signal that decays, so the classifier needs to
+    # know when it happened rather than inferring it from the last message.
+    repository.update_lead_metadata(
+        ctx.session,
+        ctx.lead,
+        booked_at=datetime.now(timezone.utc).isoformat(),
+    )
 
     md = ctx.lead.lead_metadata or {}
     note_parts = [
@@ -431,9 +436,9 @@ def schedule_call(
     if summary:
         note_parts.append(f"summary={summary}")
 
-    # Booking a call is Level 2, not Level 1: leads book without knowing what
-    # FPV is or who Propeller are. The classifier decides the level here, and
-    # booking is not one of its Level 1 criteria.
+    # The classifier decides the level, as it does everywhere else. A booking
+    # for a specific window is one of its Level 1 criteria, but only while it
+    # is fresh -- booking with the "any" fallback above is not.
     level = classify_engagement(ctx.lead).level
 
     # Wrap the CRM push -- we do NOT want to break the user-facing handoff
@@ -529,6 +534,8 @@ def cancel_call(reason: Optional[str] = None) -> str:
     md = dict(ctx.lead.lead_metadata or {})
     md.pop("preferred_call_slot", None)
     md.pop("leadme_booking_confirmed", None)
+    # A cancelled booking must stop counting towards Level 1.
+    md.pop("booked_at", None)
     ctx.lead.lead_metadata = md
     ctx.session.flush()
     repository.update_funnel_stage(ctx.session, ctx.lead, FunnelStage.warm)
