@@ -5,24 +5,31 @@ The customer redefined them on 2026-10-12 around how much a lead already
 knows, not around how much they chatted:
 
 * **Level 1** -- the lead already understands the drone industry and who
-  Propeller are, so the sales call is only "why now". That is: an organic
-  arrival, the website form, a landing page, a call to the number published on
-  the website, a lead who is back in the system after leaving details before,
-  a lead who booked a call for a specific window, or a lead who has had a long
-  conversation with the bot and engaged with the videos it sent.
-* **Level 2** -- reasonable interest. A real conversation with the bot:
-  questions and objections, but no booked window.
+  Propeller are, so the sales call is only "why now". Either of two routes
+  gets them there:
+
+  - **Where they came from**: an organic arrival, a call to the number
+    published on the website, the website form, a landing page, or a lead who
+    is back in the system after leaving details before.
+  - **What they did**: they consumed Propeller's content *and* booked a call
+    for a specific window. Both halves are required, and both must be recent.
+
+* **Level 2** -- reasonable interest, but the sales call still has to explain
+  the industry. A booking without the content, content without the booking, a
+  stale version of either, or simply a real conversation with the bot.
 * **Level 3** -- the starting point for everyone else, paid advertising
   included, and where a lead who never meaningfully replies stays.
 
-Engagement decays; where a lead came from does not. A long conversation from
-a month ago, or a call booked a month ago, no longer carries a lead at Level
-1 -- it falls back to Level 2. The source signals never decay, because they
-describe what the lead already knew before we spoke to them.
+Engagement decays; where a lead came from does not. A conversation or a
+booking from a month ago no longer carries a lead at Level 1 -- it falls back
+to Level 2. The source signals never decay, because they describe what the
+lead already knew before we spoke to them.
 
-The booking rule is the customer's own amendment (Roy, 2026-10-12) to the
-model Omer set earlier the same day, and the decay on it is what stops it
-from recreating the stale-Level-1 problem Omer complained about.
+Pairing content with a booking is the customer's final word on the model
+(Roy and Omer, 2026-10-12), after a day in which a booking alone was first
+Level 2 and then Level 1. Neither signal is sufficient by itself: leads book
+calls without knowing what FPV is, and leads watch a video without ever
+intending to buy.
 
 Explicit opt-outs are outside the numeric levels (``level is None``); they get
 the configured terminal status instead.
@@ -163,11 +170,11 @@ def level_1_source_reason(metadata: dict) -> Optional[str]:
 def booked_a_specific_window(lead: Lead) -> bool:
     """Return whether the lead booked a call for a concrete time window.
 
-    Roy's rule separates "booked a call at a specific hour" (Level 1) from
-    "talked to the bot but booked no specific hour" (Level 2), so a booking
-    that fell back to ``any`` does not qualify. ``schedule_call`` books with
-    ``any`` rather than stalling when the lead never names a window, and those
-    leads are exactly the ones he means to leave at Level 2.
+    The customer's rule says "תיאם שיחה בשעה מסוימת" -- booked a call at a
+    specific hour -- so a booking that fell back to ``any`` does not qualify.
+    ``schedule_call`` books with ``any`` rather than stalling when the lead
+    never names a window, and those leads are exactly the vaguer intent the
+    rule means to exclude.
     """
     if lead.funnel_stage != FunnelStage.handed_off:
         return False
@@ -187,6 +194,25 @@ def booked_at(lead: Lead, user_messages: list[Message]) -> Optional[datetime]:
     if recorded is not None:
         return recorded
     return _last_activity_at(user_messages)
+
+
+def received_the_webinar(lead: Lead) -> bool:
+    """Return whether the bot sent this lead Propeller's webinar.
+
+    The customer lists "קיבל וובינר" as a content signal of its own. Nothing
+    in the catalogue or the schema represents a webinar today, so this matches
+    nobody; the hook exists so that adding the webinar to ``data/videos.json``
+    and naming its id in ``WEBINAR_VIDEO_IDS`` is all it takes to switch the
+    signal on.
+
+    Whether the lead *attended* stays unobservable either way. The only record
+    of attendance is LeadMe's "פניות וובינר" campaign, which is a Level 1
+    source in its own right and does not need this route.
+    """
+    configured = {_normalize(video_id) for video_id in get_settings().webinar_video_ids}
+    if not configured:
+        return False
+    return any(_normalize(sent) in configured for sent in (lead.videos_sent or []))
 
 
 def engaged_with_a_video(lead: Lead, messages: Iterable[Message]) -> bool:
@@ -225,22 +251,24 @@ def _last_activity_at(user_messages: list[Message]) -> Optional[datetime]:
     return max(moments) if moments else None
 
 
-def _is_deeply_engaged(
+def _received_our_content(
     lead: Lead,
     messages: list[Message],
     user_messages: list[Message],
 ) -> bool:
-    """Return whether conversation depth alone earns Level 1.
+    """Return whether the lead has taken in enough to know the industry.
 
-    All three conditions are required. Message count on its own was what
-    pushed shallow leads into Level 1 and is the behaviour the customer
-    rejected.
+    The customer's three content signals, any one of which counts: they got
+    the webinar, they got a video and said something real about it, or the
+    conversation itself ran long enough to be an education. None of them is
+    sufficient on its own for Level 1 -- the caller pairs this with a booking.
     """
-    if len(user_messages) < get_settings().lead_deep_engagement_messages:
-        return False
-    if not engaged_with_a_video(lead, messages):
-        return False
-    return _is_fresh(_last_activity_at(user_messages))
+    if received_the_webinar(lead):
+        return True
+    if engaged_with_a_video(lead, messages):
+        return True
+    substantive = sum(1 for message in user_messages if _is_substantive(message))
+    return substantive >= get_settings().lead_deep_engagement_messages
 
 
 def classify_engagement(
@@ -267,14 +295,14 @@ def classify_engagement(
     if metadata.get("leadme_reentry_at"):
         return EngagementDecision(1, "returning_lead")
 
-    # What the lead did, which does decay.
-    has_booking = booked_a_specific_window(lead)
-    if has_booking and _is_fresh(booked_at(lead, user_messages)):
-        return EngagementDecision(1, "recent_booking")
-    if _is_deeply_engaged(lead, lead_messages, user_messages):
-        return EngagementDecision(1, "deep_recent_engagement")
-    if has_booking:
-        return EngagementDecision(2, "stale_booking")
+    # What the lead did, which does decay. Content and a booked window
+    # together are Level 1; either one alone is Level 2.
+    if booked_a_specific_window(lead):
+        if not _is_fresh(booked_at(lead, user_messages)):
+            return EngagementDecision(2, "stale_booking")
+        if _received_our_content(lead, lead_messages, user_messages):
+            return EngagementDecision(1, "content_and_booking")
+        return EngagementDecision(2, "booking_without_content")
 
     if any(_is_substantive(message) for message in user_messages):
         return EngagementDecision(2, "meaningful_reply")

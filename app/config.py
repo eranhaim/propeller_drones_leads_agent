@@ -129,18 +129,24 @@ class Settings(BaseSettings):
         "",
         alias="LEADME_LEVEL_1_CAMPAIGNS",
     )
-    # How long a conversation keeps a lead at Level 1. A long conversation
-    # from a month ago is not a hot lead today, and leaving stale ones at
+    # How long a booking or a conversation keeps a lead at Level 1. A call
+    # booked a month ago is not a hot lead today, and leaving stale ones at
     # Level 1 is what made the tier useless to the sales team.
     lead_engagement_fresh_days: int = Field(
         14, alias="LEAD_ENGAGEMENT_FRESH_DAYS",
     )
-    # Inbound messages required before conversation depth alone reaches
-    # Level 1 -- on top of engaging with a video the bot sent, and on top of
-    # the freshness window above.
+    # Substantive inbound messages that count as having taken our content in,
+    # for a lead who got no video and no webinar. The customer's number
+    # ("לפחות 12 הודעות"). On its own it still does not reach Level 1 -- the
+    # classifier also requires a booked window.
     lead_deep_engagement_messages: int = Field(
-        15, alias="LEAD_DEEP_ENGAGEMENT_MESSAGES",
+        12, alias="LEAD_DEEP_ENGAGEMENT_MESSAGES",
     )
+    # Catalogue ids that count as "received the webinar". Empty because
+    # data/videos.json holds no webinar and nothing else in the schema records
+    # one, so the signal the customer asked for cannot fire yet. Add the
+    # webinar to the catalogue and name its id here to switch it on.
+    webinar_video_ids_raw: str = Field("", alias="WEBINAR_VIDEO_IDS")
 
     # LeadMe CRM - public "supplier" API
     # If LEADME_INSERT_URL is empty the client no-ops and just logs.
@@ -318,6 +324,14 @@ class Settings(BaseSettings):
             campaign.strip()
             for campaign in self.leadme_landing_page_campaigns_raw.split(",")
             if campaign.strip()
+        ]
+
+    @property
+    def webinar_video_ids(self) -> List[str]:
+        return [
+            video_id.strip()
+            for video_id in self.webinar_video_ids_raw.split(",")
+            if video_id.strip()
         ]
 
     @property
