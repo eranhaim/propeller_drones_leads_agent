@@ -76,14 +76,18 @@ class Settings(BaseSettings):
         True, alias="WEBSITE_FORM_OPENER_ENABLED",
     )
     # Exact LeadMe source labels that identify a website form. Incoming calls
-    # remain Level 1 but do not receive an automatic WhatsApp opener.
+    # remain Level 1 but do not receive an automatic WhatsApp opener. Like
+    # LEADME_LEVEL_1_SOURCES below, this matches nothing in production today
+    # because the webhook sends no source field.
     leadme_website_form_sources_raw: str = Field(
         "אתר הבית,דף נחיתה,homepage,landing page",
         alias="LEADME_WEBSITE_FORM_SOURCES",
     )
-    # LeadMe's external-interface payload for the website form currently
-    # carries the campaign name but omits the source label. Keep that explicit
-    # mapping narrow so other LeadMe sources remain CRM-only.
+    # LeadMe's external-interface payload for the website form carries the
+    # campaign name but omits the source label, so the campaign is what
+    # actually identifies a website-form lead. This is the only campaign that
+    # appears on production leads (28 of 593 on 2026-10-12). Keep the mapping
+    # narrow so other LeadMe sources remain CRM-only.
     leadme_website_form_campaigns_raw: str = Field(
         "מתעניינים אקדמיה",
         alias="LEADME_WEBSITE_FORM_CAMPAIGNS",
@@ -93,16 +97,26 @@ class Settings(BaseSettings):
     #
     # LeadMe "sourceType" labels that mean the lead already knows the industry
     # before we speak to them: an organic arrival, or a call to the number
-    # published on the website. These labels are account-specific -- read them
-    # off a real LeadMe row before trusting the defaults.
+    # published on the website.
+    #
+    # Measured against production on 2026-10-12: **not one** of the 593 leads
+    # carries a source value at all. The webhook delivers a campaign but no
+    # source field under any of the names parse_leadme_payload accepts
+    # (sourceType, source_type, source, "arrival source", arrivalSource), so
+    # this list is inert until LeadMe starts sending one. The values below are
+    # the expected Hebrew labels and have NOT been confirmed against the CRM;
+    # confirm them before relying on this route.
     leadme_level_1_sources_raw: str = Field(
         "אורגני,organic,שיחה נכנסת,שיחת טלפון,טלפון,phone,phone call,incoming call",
         alias="LEADME_LEVEL_1_SOURCES",
     )
-    # LeadMe campaigns whose members already consumed Propeller's own content
-    # (today: the webinar list).
+    # LeadMe campaigns whose members already consumed Propeller's own content,
+    # a webinar list being the motivating example. Empty by default: the only
+    # campaign that appears on production leads is the website form one above,
+    # and inventing a name here would silently match nothing while looking
+    # configured.
     leadme_level_1_campaigns_raw: str = Field(
-        "פניות וובינר",
+        "",
         alias="LEADME_LEVEL_1_CAMPAIGNS",
     )
     # How long a conversation keeps a lead at Level 1. A long conversation
