@@ -41,12 +41,14 @@ enqueues a CTWA tag for the same lead (or vice versa), both live on
 the same pending list and get replayed together (single client, single
 row lookup, cheap).
 
-Idempotency and level upgrades
-------------------------------
+Idempotency and level changes
+-----------------------------
 - Two ``engagement`` pushes for the same lead collapse into one -- the
-  LOWER level wins (level 1 = booked beats level 2 = replied beats
-  level 3 = silent). Slot from either is preserved (newer wins). Note
-  strings are concatenated so operators can see the full trail.
+  NEWER one wins. Classification is recomputed from scratch on every turn
+  and levels move in both directions (see :mod:`app.crm.levels`), so the
+  latest decision is the only correct one to deliver. Slot from either is
+  preserved (newer wins). Note strings are concatenated so operators can
+  see the full trail.
 - Two ``ctwa_tag`` pushes with the same campaign collapse into one.
   Different campaigns keep both entries -- unlikely in practice but
   cheap to preserve.
@@ -73,7 +75,6 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.crm.levels import allows_website_l1_downgrade
 from app.db.models import Lead
 from app.db.session import session_scope
 
@@ -111,74 +112,35 @@ def _next_attempt_iso(now: Optional[datetime] = None) -> str:
     return (base + timedelta(minutes=RETRY_INTERVAL_MINUTES)).isoformat()
 
 
-def _merge_engagement(
-    existing: list[dict],
-    new_item: dict,
-    *,
-    allow_website_downgrade: bool = False,
-) -> list[dict]:
+def _merge_engagement(existing: list[dict], new_item: dict) -> list[dict]:
     """Fold a new engagement item into an existing pending list.
 
-    Rule: if there's already an engagement entry, we KEEP the one with
-    the lower level (== more engaged). Slot from the newer wins if the
-    older didn't have one. Notes get concatenated with a separator so
-    the sales team can see the full trail on the eventual LeadMe push.
+    The newest decision replaces any queued one: ``classify_engagement`` is
+    recomputed in full on every turn and may return a less engaged level than
+    last time, so an older queued item is simply out of date. Slot and notes
+    from the superseded item are carried forward -- the slot because a booked
+    lead must keep its call-window tag, the notes so operators can read the
+    full trail on the eventual push.
     """
-    kept: list[dict] = []
-    merged_engagement: Optional[dict] = None
-    for item in existing:
-        if item.get("kind") != "engagement":
-            kept.append(item)
-            continue
-        if merged_engagement is None:
-            merged_engagement = dict(item)
-        else:
-            # Shouldn't normally happen (we always merge on write) but
-            # be defensive against migrated data.
-            merged_engagement = _pick_better_engagement(merged_engagement, item)
+    kept = [item for item in existing if item.get("kind") != "engagement"]
+    superseded = [item for item in existing if item.get("kind") == "engagement"]
 
-    if merged_engagement is None:
-        kept.append(new_item)
-    elif allow_website_downgrade:
-        merged = dict(new_item)
-        if not merged.get("slot") and merged_engagement.get("slot"):
-            merged["slot"] = merged_engagement["slot"]
-        notes = [
-            note
-            for note in (
-                (new_item.get("note") or "").strip(),
-                (merged_engagement.get("note") or "").strip(),
-            )
-            if note
-        ]
-        if notes:
-            merged["note"] = " || ".join(dict.fromkeys(notes))
-        kept.append(merged)
-    else:
-        kept.append(_pick_better_engagement(merged_engagement, new_item))
+    merged = dict(new_item)
+    for item in superseded:
+        if not merged.get("slot") and item.get("slot"):
+            merged["slot"] = item["slot"]
+    notes = [
+        note
+        for note in (
+            [(new_item.get("note") or "").strip()]
+            + [(item.get("note") or "").strip() for item in superseded]
+        )
+        if note
+    ]
+    if notes:
+        merged["note"] = " || ".join(dict.fromkeys(notes))
+    kept.append(merged)
     return kept
-
-
-def _pick_better_engagement(a: dict, b: dict) -> dict:
-    """Return the "better" of two engagement dicts (lower level wins)."""
-    la = int(a.get("level") or 99)
-    lb = int(b.get("level") or 99)
-    winner = a if la <= lb else b
-    loser = b if la <= lb else a
-    merged = dict(winner)
-    # Slot: prefer whichever slot we have; the winner's slot takes
-    # precedence, but if it's empty and loser has one, promote it.
-    if not merged.get("slot") and loser.get("slot"):
-        merged["slot"] = loser["slot"]
-    # Notes: concatenate distinct notes so full trail survives.
-    parts: list[str] = []
-    for src in (winner, loser):
-        n = (src.get("note") or "").strip()
-        if n and n not in parts:
-            parts.append(n)
-    if parts:
-        merged["note"] = " || ".join(parts)
-    return merged
 
 
 def _merge_ctwa_tag(existing: list[dict], new_item: dict) -> list[dict]:
@@ -219,16 +181,7 @@ def enqueue_engagement(
         item["slot"] = str(slot)
     if note:
         item["note"] = str(note)
-    _enqueue(
-        lead,
-        item,
-        merge_fn=lambda existing, new: _merge_engagement(
-            existing,
-            new,
-            allow_website_downgrade=allows_website_l1_downgrade(lead, level),
-        ),
-        session=session,
-    )
+    _enqueue(lead, item, merge_fn=_merge_engagement, session=session)
 
 
 def enqueue_ctwa_tag(
@@ -268,38 +221,18 @@ def enqueue_status(
     _enqueue(lead, item, merge_fn=_merge_status, session=session)
 
 
-def record_confirmed_engagement(
-    lead: Lead,
-    level: int,
-    *,
-    allow_website_downgrade: bool = False,
-) -> None:
+def record_confirmed_engagement(lead: Lead, level: int) -> None:
     """Record a level only after LeadMe confirmed its status update.
 
-    Remove queued engagement items that are now satisfied or lower priority.
-    A queued Level 1 remains when a direct Level 2 succeeded, because Level 1
-    is the more engaged state and must still be delivered.
+    The confirmed write is the newest truth about this lead, so any queued
+    engagement item is now obsolete and is dropped. Other kinds (tags, the
+    terminal status) describe different things and stay queued.
     """
     md = dict(lead.lead_metadata or {})
-    existing_level = md.get("leadme_last_level")
-    existing_level_int = int(existing_level) if existing_level is not None else None
-    if (
-        existing_level_int is None
-        or level < existing_level_int
-        or allow_website_downgrade
-    ):
-        md["leadme_last_level"] = int(level)
+    md["leadme_last_level"] = int(level)
 
     pending = list(md.get("leadme_push_pending") or [])
-    if allow_website_downgrade:
-        remaining = [item for item in pending if item.get("kind") != "engagement"]
-    else:
-        remaining = [
-            item
-            for item in pending
-            if item.get("kind") != "engagement"
-            or int(item.get("level") or 99) < level
-        ]
+    remaining = [item for item in pending if item.get("kind") != "engagement"]
     if remaining:
         md["leadme_push_pending"] = remaining
     elif pending:
@@ -433,7 +366,6 @@ def _try_drain_via_v3(
     from app.crm.leadme_v3 import (
         add_lead_tag,
         get_lead_status,
-        level_for_status_id,
         status_id_for_level,
         update_lead_status,
     )
@@ -444,16 +376,9 @@ def _try_drain_via_v3(
         # Still not in LeadMe -- leave for next tick.
         return False
     lead_id = current_status["leadId"]
-    remote_level = level_for_status_id(current_status["status"])
 
     if (lead.lead_metadata or {}).get("leadme_relevance") == "not_relevant":
         pending = [item for item in pending if item.get("kind") != "engagement"]
-
-    # Re-read metadata to get the latest leadme_last_level -- it may have
-    # been updated by a successful direct push while this item sat in queue.
-    current_md = dict(lead.lead_metadata or {})
-    current_level = current_md.get("leadme_last_level")
-    current_level_int = int(current_level) if current_level is not None else None
 
     remaining: list[dict] = []
     for item in pending:
@@ -470,58 +395,17 @@ def _try_drain_via_v3(
         elif kind == "engagement":
             level = int(item.get("level") or 2)
             slot = item.get("slot")
-            allow_downgrade = allows_website_l1_downgrade(lead, level)
             # The call-window tag is independent of the engagement level: a
-            # booked lead carries its window even when LeadMe already holds a
-            # higher (lower-numbered) level, so add it before the downgrade
-            # guards below.
+            # booked lead carries its window whatever level it ends up at.
             ok_tag = True
             if slot and slot not in ("any", "none"):
                 ok_tag = add_lead_tag(lead_id, f"חלון · {slot}")
-            if (
-                remote_level is not None
-                and remote_level < level
-                and not allow_downgrade
-            ):
-                logger.info(
-                    "[leadme-queue v3] SKIPPING L{} status for lead {} because "
-                    "LeadMe is already L{}",
-                    level, lead.id, remote_level,
-                )
-                if ok_tag:
-                    record_confirmed_engagement(lead, remote_level)
-                    current_level_int = remote_level
-                    continue
-                remaining.append(item)
-                continue
-            # Guard: don't downgrade. If a higher-engagement level was
-            # already pushed successfully (directly, not via queue), skip
-            # this stale queue item instead of overwriting it in LeadMe.
-            if (
-                current_level_int is not None
-                and current_level_int < level
-                and not allow_downgrade
-            ):
-                logger.info(
-                    "[leadme-queue v3] SKIPPING stale level={} status for lead {} "
-                    "(already at level={})",
-                    level, lead.id, current_level_int,
-                )
-                if ok_tag:
-                    continue
-                remaining.append(item)
-                continue
             status_id = status_id_for_level(level)
             ok_status = True
             if status_id:
                 ok_status = update_lead_status(lead_id, status_id)
             if ok_status and ok_tag:
-                record_confirmed_engagement(
-                    lead,
-                    level,
-                    allow_website_downgrade=allow_downgrade,
-                )
-                current_level_int = level
+                record_confirmed_engagement(lead, level)
                 logger.info(
                     "[leadme-queue v3] DRAINED engagement lead {} phone={} "
                     "leadId={} level={} slot={!r}",
@@ -755,7 +639,6 @@ def _process_lead(sess: Session, lead: Lead, now: datetime) -> None:
             elif kind == "engagement":
                 level = int(item.get("level") or 2)
                 slot = item.get("slot")
-                allow_downgrade = allows_website_l1_downgrade(lead, level)
                 status_id = _status_id_for_level(level)
                 ok_status = True
                 if status_id:
@@ -768,11 +651,7 @@ def _process_lead(sess: Session, lead: Lead, now: datetime) -> None:
                         client, tag_lead_id, f"חלון · {slot}",
                     )
                 if ok_status and ok_tag:
-                    record_confirmed_engagement(
-                        lead,
-                        level,
-                        allow_website_downgrade=allow_downgrade,
-                    )
+                    record_confirmed_engagement(lead, level)
                     logger.info(
                         "[leadme-queue] DRAINED engagement lead {} phone={} "
                         "lc_id={} level={} slot={!r} campaign={!r}",

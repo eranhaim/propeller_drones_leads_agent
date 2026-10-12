@@ -48,7 +48,6 @@ from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.crm.levels import allows_website_l1_downgrade
 from app.db.models import Lead
 
 
@@ -117,9 +116,8 @@ def push_lead(
        :mod:`app.crm.leadme_queue`) and return True. A background
        scheduler tick will drain the queue.
 
-    ``level`` picks the engagement status:
-        1 = hot website lead or positive post-video engagement,
-        2 = meaningful middle engagement, 3 = no meaningful reply.
+    ``level`` picks the engagement status. The semantics live in
+    :mod:`app.crm.levels`; lower is more engaged.
 
     This function writes the status only. The ``חלון · <slot>`` tag is owned
     by :func:`push_call_window_tag`; on a queued fallback the slot is carried
@@ -571,30 +569,22 @@ def push_engagement_level(
     *,
     session: Optional[Session] = None,
 ) -> bool:
-    """Convenience wrapper: push an engagement level (1/2/3) to LeadMe.
+    """Push an engagement level (1/2/3) to LeadMe.
 
     The call-window tag is NOT handled here -- it is a separate concern owned
     by :func:`push_call_window_tag`. This keeps the tag independent of the
     level so a booked lead still gets tagged even when the status push is a
     same-level no-op.
 
-    Level semantics (numerically LOWER = more engaged):
-        1 = hot website lead or positive post-video engagement.
-        2 = meaningful WhatsApp reply, including a shallow booking.
-        3 = no meaningful WhatsApp reply.
+    Level semantics (numerically LOWER = more engaged) live in
+    :mod:`app.crm.levels`; this function only transports the decision.
 
-    Transitions we allow (engagement can only INCREASE over time):
-
-        Any -> 1 : always allowed.
-        3   -> 2 (silent lead replied): allowed. The bulk classifier
-                           pushes Level 3 at scale, then a live reply
-                           must upgrade to Level 2.
-        None -> 2 / 3    : allowed (first-time classification).
-        Same level        : no-op, idempotent.
-        1 -> 2            : allowed only for a website lead whose weak
-                             follow-up downgrades its initial L1.
-        1 -> 3            : refused.
-        2 -> 3            : REFUSED (a lead who replied isn't "silent").
+    **Levels move in both directions.** Until 2026-10-12 this was upgrade-only
+    and refused 1->2, 1->3 and 2->3, so a lead who had one hot moment stayed
+    Level 1 forever and the tier filled with stale leads. The customer asked
+    for the opposite: engagement decays and leads must be able to drop out of
+    Level 1. The only remaining guard is idempotency -- a push to the level
+    LeadMe already holds is a no-op.
     """
     if level not in (1, 2, 3):
         logger.warning("[LeadMe] ignoring invalid engagement level {}", level)
@@ -604,7 +594,6 @@ def push_engagement_level(
     already = md.get("leadme_last_level")
     already_int = int(already) if already is not None else None
 
-    # Same level -> nothing to do.
     if already_int == level:
         logger.info(
             "[LeadMe] lead {} already at level {}, skipping duplicate",
@@ -612,29 +601,10 @@ def push_engagement_level(
         )
         return True
 
-    allow_downgrade = allows_website_l1_downgrade(lead, level)
-
-    # L1 only downgrades when the authoritative website-lead rule requires it.
-    if already_int == 1 and level in (2, 3) and not allow_downgrade:
-        logger.info(
-            "[LeadMe] lead {} is already booked (L1); refusing downgrade "
-            "to L{}", lead.phone, level,
-        )
-        return True
-
-    # Replied never downgrades to silent.
-    if already_int == 2 and level == 3:
-        logger.info(
-            "[LeadMe] lead {} already replied (L2); refusing downgrade "
-            "to L3", lead.phone,
-        )
-        return True
-
-    # 3 -> 2, 3 -> 1, 2 -> 1, None -> any: proceed.
     # push_lead and cancel_lead honour test mode; this path did not, so the
     # eval harness still called the v3 API with its synthetic 999... phones.
-    # Placed after the upgrade-only guards and still recording the level
-    # locally, so the harness observes exactly what production would record.
+    # Still records the level locally, so the harness observes exactly what
+    # production would record.
     if get_settings().leadme_test_mode:
         logger.info(
             "[LeadMe TEST_MODE] recording level {} for {} without calling LeadMe",
@@ -645,47 +615,18 @@ def push_engagement_level(
         return True
 
     # Try v3 API first (clean, no cookies); fall back to legacy cookie path.
-    from app.crm.leadme_v3 import (
-        get_lead_status,
-        is_v3_available,
-        level_for_status_id,
-        push_level as _v3_push_level,
-    )
+    from app.crm.leadme_v3 import is_v3_available, push_level as _v3_push_level
     from app.crm import leadme_queue
     if is_v3_available():
         slot = (lead.lead_metadata or {}).get("preferred_call_slot")
-        current_status = get_lead_status(phone=lead.phone or "")
-        current_level = (
-            level_for_status_id(current_status["status"])
-            if current_status is not None
-            else None
-        )
-        if (
-            current_level is not None
-            and current_level < level
-            and not allow_downgrade
-        ):
-            logger.info(
-                "[LeadMe] refusing L{} for {} because LeadMe is already L{}",
-                level,
-                lead.phone,
-                current_level,
-            )
-            leadme_queue.record_confirmed_engagement(lead, current_level)
-        elif _v3_push_level(lead.phone, level=level):
-            # Push actually landed in LeadMe -- record it and discard any
-            # stale queued L2/L3 item. A queued L1 is retained.
-            leadme_queue.record_confirmed_engagement(
-                lead,
-                level,
-                allow_website_downgrade=allow_downgrade,
-            )
+        if _v3_push_level(lead.phone, level=level):
+            leadme_queue.record_confirmed_engagement(lead, level)
         else:
             # v3 failed (most likely CTWA race: lead not in LeadMe yet).
             # Enqueue for background retry. Do NOT write leadme_last_level
-            # here -- the queue drain writes it when the push actually
-            # lands. Writing it prematurely causes the downgrade guard to
-            # block future pushes for a level that never reached LeadMe.
+            # here -- the queue drain writes it when the push actually lands,
+            # otherwise the idempotency check would skip a level that never
+            # reached LeadMe.
             logger.info(
                 "[LeadMe] v3 push failed for {} level={} -- queueing for retry",
                 lead.phone, level,
@@ -702,11 +643,7 @@ def push_engagement_level(
         if ok and not has_pending_engagement:
             # ``push_lead`` succeeded synchronously. If it queued instead,
             # the queue drain writes this key only after LeadMe confirms.
-            leadme_queue.record_confirmed_engagement(
-                lead,
-                level,
-                allow_website_downgrade=allow_downgrade,
-            )
+            leadme_queue.record_confirmed_engagement(lead, level)
 
     return True  # queued or pushed -- caller should not retry
 
@@ -814,8 +751,10 @@ def push_not_relevant(
 def _forget_last_level(lead: Lead) -> None:
     """Drop the cached engagement level after a cancellation.
 
-    ``push_engagement_level``'s upgrade-only guard would otherwise refuse the
-    next booking push for this lead.
+    A cancellation writes the plain "חדש" status straight to LeadMe, outside
+    the level flow, so ``leadme_last_level`` now describes a status the CRM no
+    longer holds. Left in place, its idempotency check would skip the next
+    push of that same level.
     """
     md = dict(lead.lead_metadata or {})
     md.pop("leadme_last_level", None)
