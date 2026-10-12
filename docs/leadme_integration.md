@@ -382,26 +382,36 @@ is only "why now", never "what is a drone" and never "who are you".
 
 | Level | Status | Who is here |
 |---|---|---|
-| 1 | 7326 | Organic arrivals; the website form; a landing page; a call to the number published on the website; a **returning** lead who had already left details before; a lead who **booked a call for a specific window**; and a long conversation (`LEAD_DEEP_ENGAGEMENT_MESSAGES`, default 15) in which the lead engaged with a video we sent. |
-| 2 | 7327 | A real conversation — questions and objections — but no booked window. Also where a lead lands when their booking or their conversation goes stale. |
+| 1 | 7326 | **Where they came from**: organic arrivals, the website form, a landing page, a call to the number published on the website, a **returning** lead. **Or what they did**: they took in Propeller's content *and* booked a call for a specific window. |
+| 2 | 7327 | A real conversation — questions and objections. Also either half of that pair on its own: a booking with no content, content with no booking, or a stale version of either. |
 | 3 | 7328 | The starting point for **every paid-advertising lead** (Meta, TikTok, CTWA), and where a lead who never meaningfully replies stays. |
 
-Two further rules:
+Three further rules:
 
-- **Engagement decays; where a lead came from does not.** A long conversation
-  from a month ago, or a call booked a month ago, must not keep a lead at
-  Level 1. `LEAD_ENGAGEMENT_FRESH_DAYS` (default 14) bounds both the
-  conversation-depth route and the booking route, and a lead who falls out of
-  either lands at Level 2, not Level 3 — they did engage, just not recently.
-  Source-based Level 1 never decays.
+- **The engagement route to Level 1 needs both halves.** Neither is
+  sufficient alone: leads book calls without knowing what FPV is, and leads
+  watch a video without intending to buy. "Content" is any one of the
+  webinar, a substantive reply after a video we sent, or a conversation of at
+  least `LEAD_DEEP_ENGAGEMENT_MESSAGES` (default 12) substantive inbound
+  messages.
+- **Engagement decays; where a lead came from does not.**
+  `LEAD_ENGAGEMENT_FRESH_DAYS` (default 14) bounds the booking, and a lead
+  who falls out of it lands at Level 2, not Level 3 — they did engage, just
+  not recently. Source-based Level 1 never decays.
 - **A booking only counts with a real window.** `9-12`, `12-15` or `15-18`.
   `schedule_call` books with `any` rather than stalling when the lead never
-  names a time, and the customer's rule separates "booked a call at a
-  specific hour" from "talked to the bot but booked no specific hour", so an
+  names a time, and the customer's rule says "תיאם שיחה בשעה מסוימת", so an
   `any` booking stays at Level 2. `booked_at` in `lead_metadata` is what the
   decay is measured from; leads booked before 2026-10-12 have no such
   timestamp and fall back to their last inbound message, which can only make
   an old booking look newer than it is.
+
+Roy's own wording puts "לא תיאם שיחה" among the Level 3 traits. Read as a
+strict boolean that demotes every engaged non-booker, and measured against
+production on 2026-10-12 it moves 307 of 571 leads from Level 2 to Level 3,
+leaving 75% of the base at the bottom tier. It is read here as a description
+of a cold lead instead, so a substantive conversation without a booking stays
+at Level 2. Eran's call; revisit it if the sales team disagrees.
 - **Levels move down as well as up.** `push_engagement_level` refused `1→2`,
   `1→3` and `2→3` until 2026-10-12. That guard is gone; the only remaining
   one is idempotency (pushing the level LeadMe already has is a no-op). The
@@ -413,8 +423,8 @@ and returns the level plus the reason that produced it, so every push can be
 traced back to a rule. `mark_engagement` pushes whatever came out. There is
 deliberately **no** per-level helper and no event that sets a level directly:
 until 2026-10-12 three separate code paths each pushed Level 1 on a booking,
-and that is exactly the drift this structure prevents. A booking is a Level 1
-criterion again, but it is the classifier that says so, in one place.
+and that is exactly the drift this structure prevents. A booking is half of a
+Level 1 criterion again, but it is the classifier that says so, in one place.
 
 #### What the data cannot tell us
 
@@ -430,6 +440,13 @@ criterion again, but it is the classifier that says so, in one place.
   no lead-history or duplicate-submission field in the webhook payload or in
   v3, so a lead who left details a year before the bot existed is invisible
   to us. Measured 2026-10-12: it fires for **zero** of 593 leads.
+- **The webinar is not observable.** The customer counts "קיבל וובינר" as a
+  content signal, but there is no webinar in `data/videos.json` and nothing
+  in the schema records one, so `WEBINAR_VIDEO_IDS` is empty and matches
+  nobody. Add the webinar to the catalogue and name its id there to switch
+  the signal on. Attendance stays unobservable regardless; LeadMe's
+  "פניות וובינר" campaign is the only record of it, and that is a Level 1
+  source in its own right.
 - **There is no source field.** LeadMe's webhook sends a campaign but no
   source, under any of the five names `parse_leadme_payload` accepts. Measured
   2026-10-12: zero of 593 leads carry one. So the organic and incoming-call
@@ -549,7 +566,8 @@ Implementation (as it exists today):
    ```
    app/agent/tools.py::schedule_call
      → app/crm/levels.py::classify_engagement  (Level 1 on a fresh booking
-                                                with a specific window)
+                                                with a specific window, but
+                                                only alongside our content)
      → app/crm/client.py::mark_engagement
        → app/crm/leadme_client.py::push_engagement_level
          → push_lead
@@ -560,11 +578,11 @@ Implementation (as it exists today):
        → _admin_add_tag(client, internal_leadId, f"חלון · {slot}")
    ```
 
-   The status id is whatever the classifier's level maps to — 7326 for a
-   fresh booking with a named window, 7327 for an `any` booking or a stale
-   one. The slot tag is attached separately by `mark_call_window`, the single
-   owner of that tag, so the booking and the level stay two independent facts
-   about the lead.
+   The status id is whatever the classifier's level maps to — 7326 only when
+   a fresh booking with a named window meets content the lead took in, 7327
+   otherwise. The slot tag is attached separately by `mark_call_window`, the
+   single owner of that tag, so the booking and the level stay two
+   independent facts about the lead.
 
 3. The tag string is literally `f"חלון · {slot}"` – middle-dot
    separator, no colon.

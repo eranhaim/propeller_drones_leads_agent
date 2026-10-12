@@ -167,7 +167,7 @@ as an observation.
 | `classify_lead` | `familiarity?`, `stage?`, `intent?`, `industry?`, `preferred_call_slot?`, `has_experience?` | writes columns + `lead_metadata` |
 | `send_video` | `video_id`, `caption?` | GreenAPI send, one `video_sent` admin event, `videos_sent`, `video_sent_at` |
 | `recommend_video` | `topics_context?` | none |
-| `schedule_call` | `summary?`, `preferred_call_slot?` | `funnel_stage=handed_off`, `booked_at`, call-window tag, CRM level from `classify_engagement` (1 for a fresh booking with a named window) |
+| `schedule_call` | `summary?`, `preferred_call_slot?` | `funnel_stage=handed_off`, `booked_at`, call-window tag, CRM level from `classify_engagement` (1 only when a fresh named-window booking meets content the lead took in) |
 | `cancel_call` | `reason?` | clears slot, `funnel_stage=warm`, CRM cancel note |
 | `mark_not_relevant` | — | session reset + `not_relevant` flag |
 | `search_shop_products` | `query` | none (WooCommerce read) |

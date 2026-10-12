@@ -488,14 +488,13 @@ module that writes to LeadMe. The rules, in full in `docs/leadme_integration.md`
   v3 REST API when `LEADME_API_KEY` is set. Cookies hard-expire every 24h;
   `app/crm/leadme_login.py` refreshes them via 2Captcha.
 * Engagement levels run **1 = most engaged, 3 = least**, and measure how much
-  the lead already knows rather than how much they chatted. `1` = organic,
-  website form, landing page, incoming call to the published number, a
-  returning lead, **a call booked for a specific window**, or a long
-  conversation that included a video they engaged with. `2` = a real
-  conversation with no booked window, and where a stale booking or a stale
-  conversation falls back to. `3` = the starting point for every paid-ad
-  lead, and where a lead who never meaningfully replies stays.
-  `docs/leadme_integration.md` §6.5 is the authority.
+  the lead already knows rather than how much they chatted. `1` = where the
+  lead came from (organic, website form, landing page, incoming call to the
+  published number, a returning lead), **or** Propeller's content *and* a
+  call booked for a specific window. `2` = a real conversation, or either
+  half of that pair alone, or a stale version of either. `3` = the starting
+  point for every paid-ad lead, and where a lead who never meaningfully
+  replies stays. `docs/leadme_integration.md` §6.5 is the authority.
 * **Levels move in both directions.** `push_engagement_level` was
   upgrade-only until 2026-10-12 and refused `1→2`, `1→3` and `2→3`; it no
   longer does, because that is what left stale Level 1 leads the sales team
@@ -505,8 +504,9 @@ module that writes to LeadMe. The rules, in full in `docs/leadme_integration.md`
   thing that may decide one. There is deliberately no per-level helper and no
   event that sets a level directly — `mark_engagement` pushes whatever the
   classifier returned. Booking a call used to call `mark_ready_for_call` from
-  three places; it is a Level 1 criterion again, but only the classifier may
-  say so, and only while the booking is fresh.
+  three places; it is half of a Level 1 criterion again, but only the
+  classifier may say so, and only while the booking is fresh and paired with
+  content the lead actually took in.
 * CTWA leads reach the bot before LeadMe's supplier sync knows their phone.
   A push that cannot resolve the phone is enqueued in
   `lead_metadata["leadme_push_pending"]` and drained by the scheduler

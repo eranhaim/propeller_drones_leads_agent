@@ -14,7 +14,7 @@ promise a human callback until a valid call window has been captured.
 | `industry` | `security`, `solar`, `agriculture`, `mapping`, `infrastructure`, `cinema`, `delivery`, `washing`, `other`, or a Hebrew free-text value | Agent, persisted in `lead_metadata` | Industry is never a call window. |
 | `preferred_call_slot` | `9-12`, `12-15`, `15-18`, `any` | Code validates before persistence | Reject all free-form times, cities, names, and industries. |
 | `funnel_stage` | `new`, `engaged`, `warm`, `ready_for_call`, `handed_off` | Agent/code | `handed_off` only after `schedule_call` succeeds locally. |
-| LeadMe level | `1` already knows us or booked a window, `2` real conversation without one, `3` paid-ad start / no reply | `app/crm/levels.py::classify_engagement` | Lower number is more engaged. The level is recomputed every turn and may go **down** — engagement decays, so a conversation or a booking from last month does not keep a lead at `1`. A booking only counts with a named window, not with the `any` fallback. |
+| LeadMe level | `1` already knows us, or our content plus a booked window; `2` a real conversation or half that pair; `3` paid-ad start / no reply | `app/crm/levels.py::classify_engagement` | Lower number is more engaged. The level is recomputed every turn and may go **down** — engagement decays, so a booking from last month does not keep a lead at `1`. A booking only counts with a named window, not with the `any` fallback. |
 | `leadme_relevance` | `not_relevant` or absent | Deterministic inbound refusal detector | An explicit short opt-out queues LeadMe's configured `לא רלוונטי` status and suppresses stale engagement retries. |
 
 ## Routing rules

@@ -146,8 +146,8 @@ lower means further along.**
 
 | Level | v3 status id | Meaning in the CRM |
 |---|---|---|
-| 1 | `LEADME_STATUS_LEVEL_1` | already knows us, or booked a specific window |
-| 2 | `LEADME_STATUS_LEVEL_2` | a real conversation with no booked window |
+| 1 | `LEADME_STATUS_LEVEL_1` | already knows us, or our content plus a booking |
+| 2 | `LEADME_STATUS_LEVEL_2` | a real conversation, or half of that pair |
 | 3 | `LEADME_STATUS_LEVEL_3` | paid-ad starting point, or no meaningful reply |
 
 `docs/leadme_integration.md` §6.5 is the authority on what qualifies.
