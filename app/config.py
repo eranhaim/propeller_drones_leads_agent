@@ -95,6 +95,16 @@ class Settings(BaseSettings):
     # Engagement classification -- see app/crm/levels.py. Levels are
     # numerically inverted: 1 is the most engaged.
     #
+    # Landing-page campaigns. The customer lists "דפי נחיתה" as its own
+    # Level 1 route, separate from the website form. There is no source field
+    # to recognise one by (see below), so a landing page can only be
+    # identified by its campaign name, and we do not yet know what those are
+    # called. Empty until someone reads them off the LeadMe UI.
+    leadme_landing_page_campaigns_raw: str = Field(
+        "",
+        alias="LEADME_LANDING_PAGE_CAMPAIGNS",
+    )
+    #
     # LeadMe "sourceType" labels that mean the lead already knows the industry
     # before we speak to them: an organic arrival, or a call to the number
     # published on the website.
@@ -299,6 +309,14 @@ class Settings(BaseSettings):
         return [
             campaign.strip()
             for campaign in self.leadme_website_form_campaigns_raw.split(",")
+            if campaign.strip()
+        ]
+
+    @property
+    def leadme_landing_page_campaigns(self) -> List[str]:
+        return [
+            campaign.strip()
+            for campaign in self.leadme_landing_page_campaigns_raw.split(",")
             if campaign.strip()
         ]
 
