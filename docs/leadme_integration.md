@@ -320,32 +320,52 @@ name. LeadMe silently ignores status *names* if you send them via any
 write endpoint. To discover the mapping, open any campaign page,
 Right-Click → View Source, find the `dialog_changeStatus` block and
 extract every `<a class="... changeStatusPuBtn" rel="<id>">Label</a>`.
-Current mapping for the Propeller account, read through v3 `getStatuses` on
-2026-09-29:
+Current mapping for the Propeller account, all 26 statuses as read through v3
+`getStatuses` on 2026-10-12. Sorted by id, which is the order the endpoint
+returns and the easiest to diff against a fresh read:
 
-| Status label (Hebrew)                | Numeric ID |
-|--------------------------------------|-----------:|
-| חדש (default)                        | 1          |
-| חדש - רמה 1                          | 7326       |
-| חדש - רמה 2                          | 7327       |
-| חדש - רמה 3                          | 7328       |
-| שיחה חוזרת                          | 14         |
-| אין מענה 1 / 2 / 3                   | 4 / 5 / 1623 |
-| רלוונטי ליום פתוח                   | 7155       |
-| פולואפ - מחכה למימון חיצוני         | 250        |
-| פולואפ - ניתנה הצעה                 | 5827       |
-| מאגר - בדיקה                         | 5839       |
-| נקבעה פגישה                          | 7          |
-| ניוזלטר                              | 7228       |
-| בוצעה עסקה                           | 10         |
-| לקוח קיים                            | 609        |
-| לא נסגר – כללי / 2 טון / מגמה / ביזנס / 25 ק"ג / חנות | 5821 / 7220 / 7221 / 7229 / 7222 / 5841 |
-| הסרה מרשימות תפוצה                  | 6570       |
-| לא מתאים לנו                        | 2392       |
+| Numeric ID | Status label (Hebrew)              |
+|-----------:|------------------------------------|
+| 1          | חדש (default)                      |
+| 4          | ללא מענה                           |
+| 5          | ללא מענה 2                         |
+| 7          | נקבעה פגישה                        |
+| 10         | בוצעה עסקה                         |
+| 14         | שיחה חוזרת                        |
+| 250        | פולואפ                             |
+| 609        | לקוח קיים                          |
+| 1623       | אין מענה 3                         |
+| 2392       | לא מתאים לנו                      |
+| 5821       | לא נסגר - לא מספיק חשוב לו כרגע  |
+| 5827       | פולואפ - ניתנה הצעה               |
+| 5839       | מאגר - בדיקה                       |
+| 5841       | לא רלוונטי - פנאי וספורט          |
+| 6570       | ענו לא                             |
+| 7155       | רלוונטי ליום פתוח                 |
+| 7220       | לא נסגר - 2 טון                    |
+| 7221       | לא נסגר - מגמה מקצועית            |
+| 7222       | לא נסגר - 25 ק"ג                   |
+| 7228       | ניוזלטר                            |
+| 7229       | לא נסגר  מסלול ביזנס              |
+| 7326       | חדש - רמה 1                        |
+| 7327       | חדש - רמה 2                        |
+| 7328       | חדש - רמה 3                        |
+| 7403       | לא נסגר - FPV                      |
+| 7409       | לא נסגר - רוצה פיקדון צבאי        |
 
-There is currently no exact `לא רלוונטי` status title in this account; do not
-configure an automatic terminal-status write until Roy selects a title. Status
-IDs are per-account. Re-run v3 `getStatuses` after any LeadMe status change.
+Renamed since the 2026-09-29 read, so any script matching on a label rather
+than an id needs checking: 4 and 5 (`אין מענה 1/2` → `ללא מענה`/`ללא מענה 2`),
+250 (`פולואפ - מחכה למימון חיצוני` → `פולואפ`), 5821 (`לא נסגר – כללי`), 5841
+(`לא נסגר - חנות` → `לא רלוונטי - פנאי וספורט`) and 6570
+(`הסרה מרשימות תפוצה` → `ענו לא`). 7403 and 7409 are new.
+
+`getStatuses` returns labels HTML-escaped — 7222 comes back as
+`לא נסגר - 25 ק&quot;ג`. Unescape before comparing to a literal.
+
+There is still no exact `לא רלוונטי` title. `LEADME_STATUS_NOT_RELEVANT` is
+set to 2392 (`לא מתאים לנו`), which is what the sales rep already applies to
+these leads by hand. Status IDs are per-account. Re-run v3 `getStatuses` after
+any LeadMe status change.
 
 The engagement-level IDs (7326/7327/7328) live in `.env` as
 `LEADME_STATUS_LEVEL_1/2/3`. Everything else is used ad-hoc in
