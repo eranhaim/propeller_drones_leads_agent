@@ -766,10 +766,10 @@ SCENARIOS: List[Scenario] = [
         ],
     ),
     Scenario(
-        name="shallow_booking_stays_level_2",
+        name="booking_a_specific_window_reaches_level_1",
         description=(
-            "A shallow booking is meaningful middle engagement, not L1, "
-            "unless the lead separately satisfies a hot-content rule."
+            "Booking a call for a named window is Level 1 while it is "
+            "fresh. The customer's own rule (Roy, 2026-10-12)."
         ),
         sender_name="Nadav",
         turns=[
@@ -778,11 +778,17 @@ SCENARIOS: List[Scenario] = [
                 user_msg="12-15",
                 assertions=[
                     Assertion(
-                        "leadme_last_level remains at 2",
+                        "leadme_last_level moves to 1",
                         lambda _r, lead: (
                             (lead.lead_metadata or {}).get(
                                 "leadme_last_level"
-                            ) == 2
+                            ) == 1
+                        ),
+                    ),
+                    Assertion(
+                        "booking timestamp recorded for the decay rule",
+                        lambda _r, lead: bool(
+                            (lead.lead_metadata or {}).get("booked_at")
                         ),
                     ),
                     Assertion(

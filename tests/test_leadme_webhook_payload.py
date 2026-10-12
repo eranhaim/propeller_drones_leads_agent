@@ -67,6 +67,7 @@ class SourceLevelTests(unittest.TestCase):
             return_value=SimpleNamespace(
                 leadme_website_form_sources=["אתר הבית", "homepage"],
                 leadme_website_form_campaigns=["מתעניינים אקדמיה"],
+                leadme_landing_page_campaigns=["דף נחיתה רחפנים"],
                 leadme_level_1_sources=["אורגני", "שיחה נכנסת"],
                 leadme_level_1_campaigns=["פניות וובינר"],
             ),
@@ -91,6 +92,12 @@ class SourceLevelTests(unittest.TestCase):
         self.assertEqual(
             level_1_source_reason({"leadme_source": "שיחה נכנסת"}),
             "organic_or_incoming_call",
+        )
+
+    def test_landing_page_campaign(self) -> None:
+        self.assertEqual(
+            level_1_source_reason({"leadme_campaign": "דף נחיתה רחפנים"}),
+            "landing_page",
         )
 
     def test_webinar_campaign(self) -> None:

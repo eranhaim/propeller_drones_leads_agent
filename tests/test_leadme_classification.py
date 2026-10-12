@@ -16,8 +16,9 @@ from app.db.models import FunnelStage, Lead, Message, MessageRole
 
 
 _SETTINGS = SimpleNamespace(
-    leadme_website_form_sources=["אתר הבית", "דף נחיתה"],
+    leadme_website_form_sources=["אתר הבית"],
     leadme_website_form_campaigns=["מתעניינים אקדמיה"],
+    leadme_landing_page_campaigns=["דף נחיתה רחפנים"],
     leadme_level_1_sources=["אורגני", "שיחה נכנסת"],
     leadme_level_1_campaigns=["פניות וובינר"],
     lead_engagement_fresh_days=14,
@@ -31,6 +32,19 @@ def _lead(*, metadata=None, stage=FunnelStage.new, messages=None) -> Lead:
     lead.funnel_stage = stage
     lead.messages = messages or []
     return lead
+
+
+def _booked_lead(*, slot="12-15", days_ago=0, metadata=None) -> Lead:
+    booked = datetime.now(timezone.utc) - timedelta(days=days_ago)
+    return _lead(
+        stage=FunnelStage.handed_off,
+        metadata={
+            "preferred_call_slot": slot,
+            "booked_at": booked.isoformat(),
+            **(metadata or {}),
+        },
+        messages=[_user_message(booked, "רוצה שיחה עם יועץ")],
+    )
 
 
 def _user_message(created_at: datetime, content: str) -> Message:
@@ -96,6 +110,12 @@ class ClassificationTests(unittest.TestCase):
             (decision.level, decision.reason), (1, "propeller_content_campaign")
         )
 
+    def test_landing_page_campaign_is_level_one(self) -> None:
+        decision = classify_engagement(
+            _lead(metadata={"leadme_campaign": "דף נחיתה רחפנים"})
+        )
+        self.assertEqual((decision.level, decision.reason), (1, "landing_page"))
+
     def test_returning_lead_is_level_one(self) -> None:
         decision = classify_engagement(
             _lead(metadata={"leadme_reentry_at": datetime.now(timezone.utc).isoformat()})
@@ -151,20 +171,57 @@ class ClassificationTests(unittest.TestCase):
         )
         self.assertEqual((decision.level, decision.reason), (2, "meaningful_reply"))
 
-    # --- Level 2 ----------------------------------------------------------
+    # --- Level 1: a booked call, while it is fresh ------------------------
 
-    def test_booking_a_call_is_level_two_not_level_one(self) -> None:
+    def test_recent_booking_for_a_specific_window_is_level_one(self) -> None:
+        decision = classify_engagement(_booked_lead(days_ago=1))
+        self.assertEqual((decision.level, decision.reason), (1, "recent_booking"))
+
+    def test_stale_booking_drops_to_level_two(self) -> None:
+        decision = classify_engagement(_booked_lead(days_ago=30))
+        self.assertEqual((decision.level, decision.reason), (2, "stale_booking"))
+
+    def test_booking_without_a_specific_window_is_level_two(self) -> None:
+        for slot in ("any", "none"):
+            with self.subTest(slot=slot):
+                decision = classify_engagement(_booked_lead(slot=slot))
+                self.assertEqual(decision.level, 2)
+                self.assertNotEqual(decision.reason, "recent_booking")
+
+    def test_an_unbooked_lead_is_never_a_booking(self) -> None:
         decision = classify_engagement(
             _lead(
-                stage=FunnelStage.handed_off,
-                messages=[
-                    _user_message(datetime.now(timezone.utc), "כן"),
-                    _user_message(datetime.now(timezone.utc), "רוצה שיחה עם יועץ"),
-                    _user_message(datetime.now(timezone.utc), "12-15"),
-                ],
+                stage=FunnelStage.warm,
+                metadata={"preferred_call_slot": "12-15"},
+                messages=[_user_message(datetime.now(timezone.utc), "אולי 12-15")],
             )
         )
         self.assertEqual((decision.level, decision.reason), (2, "meaningful_reply"))
+
+    def test_a_booking_never_outranks_where_the_lead_came_from(self) -> None:
+        decision = classify_engagement(
+            _booked_lead(days_ago=90, metadata={"leadme_source": "אורגני"})
+        )
+        self.assertEqual(
+            (decision.level, decision.reason), (1, "organic_or_incoming_call")
+        )
+
+    def test_last_message_stands_in_for_a_missing_booking_timestamp(self) -> None:
+        # Leads booked before booked_at existed.
+        old = datetime.now(timezone.utc) - timedelta(days=40)
+        lead = _lead(
+            stage=FunnelStage.handed_off,
+            metadata={"preferred_call_slot": "9-12"},
+            messages=[_user_message(old, "רוצה שיחה עם יועץ")],
+        )
+        self.assertEqual(classify_engagement(lead).reason, "stale_booking")
+
+        lead.messages.append(
+            _user_message(datetime.now(timezone.utc), "עדיין מעוניין, מתי נדבר?")
+        )
+        self.assertEqual(classify_engagement(lead).reason, "recent_booking")
+
+    # --- Level 2 ----------------------------------------------------------
 
     def test_price_course_and_license_questions_are_level_two(self) -> None:
         for text in (
