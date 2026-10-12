@@ -13,9 +13,8 @@ from app.agent.memory import record_video_delivery as remember_video_delivery
 from app.crm.client import (
     cancel_ready_for_call,
     mark_call_window,
-    mark_engaged_no_book,
+    mark_engagement,
     mark_not_relevant as mark_not_relevant_in_crm,
-    mark_ready_for_call,
 )
 from app.crm.levels import classify_engagement
 from app.db import repository
@@ -432,6 +431,9 @@ def schedule_call(
     if summary:
         note_parts.append(f"summary={summary}")
 
+    # Booking a call is Level 2, not Level 1: leads book without knowing what
+    # FPV is or who Propeller are. The classifier decides the level here, and
+    # booking is not one of its Level 1 criteria.
     level = classify_engagement(ctx.lead).level
 
     # Wrap the CRM push -- we do NOT want to break the user-facing handoff
@@ -445,14 +447,9 @@ def schedule_call(
         # The tool runs inside the agent transaction. Reuse it for the
         # durable-queue fallback; opening a second session for this lead
         # would wait forever on the row lock held by this one.
-        if level == 1:
-            ok = mark_ready_for_call(
-                ctx.lead, note=" | ".join(note_parts), session=ctx.session,
-            )
-        else:
-            ok = mark_engaged_no_book(
-                ctx.lead, note=" | ".join(note_parts), session=ctx.session,
-            )
+        ok = level is not None and mark_engagement(
+            ctx.lead, level, note=" | ".join(note_parts), session=ctx.session,
+        )
         mark_call_window(ctx.lead, slot, session=ctx.session)
         if ok:
             logger.info("schedule_call: LeadMe push succeeded for lead {}",
@@ -464,7 +461,7 @@ def schedule_call(
         logger.exception(
             "schedule_call: LeadMe push RAISED for lead {} -- lead is "
             "marked handed_off in our DB but did NOT reach LeadMe. "
-            "Investigate & replay via app.crm.client.mark_ready_for_call",
+            "Investigate & replay via app.crm.client.mark_engagement",
             ctx.lead.id,
         )
 

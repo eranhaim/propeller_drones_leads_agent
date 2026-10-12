@@ -392,10 +392,10 @@ def run_once() -> None:
             )
 
             # On the FINAL nudge, if the lead still hasn't sent a single
-            # inbound message, they're the "never replied" cohort -> push
-            # engagement Level 3 to LeadMe so the sales dashboard shows
-            # the true status. Skipped if they already have any user msgs
-            # in history (they'd already be Level 2 or better).
+            # inbound message, re-sync their level so the sales dashboard
+            # shows the true status. Goes through the shared classifier
+            # rather than assuming Level 3 -- a website-form or organic lead
+            # stays Level 1 whether or not they ever answer WhatsApp.
             if nudge_number >= settings.followup_max_nudges:
                 user_msg_count = sum(
                     1 for m in (lead.messages or [])
@@ -403,14 +403,19 @@ def run_once() -> None:
                 )
                 if user_msg_count == 0:
                     try:
-                        from app.crm.client import mark_no_reply
-                        mark_no_reply(
-                            lead,
-                            note=f"no reply after {nudge_number} nudges",
-                        )
+                        from app.crm.client import mark_engagement
+                        from app.crm.levels import classify_engagement
+                        decision = classify_engagement(lead)
+                        if decision.level is not None:
+                            mark_engagement(
+                                lead,
+                                decision.level,
+                                note=f"no reply after {nudge_number} nudges",
+                                session=session,
+                            )
                     except Exception:
                         logger.exception(
-                            "[level-3] push failed for lead {}", lead.id,
+                            "[level-push] failed for lead {}", lead.id,
                         )
 
 

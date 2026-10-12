@@ -1,7 +1,7 @@
 """CRM integration facade.
 
 Delegates to LeadMe (or any future CRM) so callers in the agent layer keep
-using ``mark_ready_for_call`` regardless of which backend is wired up.
+using ``mark_engagement`` regardless of which backend is wired up.
 """
 
 from __future__ import annotations
@@ -20,38 +20,20 @@ from app.crm.leadme_client import (
 from app.db.models import Lead
 
 
-def mark_ready_for_call(
+def mark_engagement(
     lead: Lead,
+    level: int,
     note: Optional[str] = None,
     *,
     session: Optional[Session] = None,
 ) -> bool:
-    """Push engagement Level 1 (hottest) to the external CRM (LeadMe).
+    """Push the engagement level chosen by ``classify_engagement`` to LeadMe.
 
-    Level 1 means an organic source/campaign or content delivered by the bot
-    followed by meaningful engagement. Idempotent per lead.
+    There is deliberately no per-level helper. Every caller classifies first
+    and pushes whatever came out, so no code path can decide on its own that
+    some event (booking a call, for instance) means Level 1.
     """
-    return push_engagement_level(lead, level=1, note=note, session=session)
-
-
-def mark_engaged_no_book(
-    lead: Lead,
-    note: Optional[str] = None,
-    *,
-    session: Optional[Session] = None,
-) -> bool:
-    """Engagement Level 2: meaningful reply without an L1 criterion."""
-    return push_engagement_level(lead, level=2, note=note, session=session)
-
-
-def mark_no_reply(
-    lead: Lead,
-    note: Optional[str] = None,
-    *,
-    session: Optional[Session] = None,
-) -> bool:
-    """Engagement Level 3: lead never replied to the opener."""
-    return push_engagement_level(lead, level=3, note=note, session=session)
+    return push_engagement_level(lead, level=level, note=note, session=session)
 
 
 def mark_not_relevant(

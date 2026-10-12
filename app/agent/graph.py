@@ -26,12 +26,12 @@ from app.agent.memory import (
 from app.agent.prompts import render_system_prompt
 from app.agent.tools import ALL_TOOLS, queue_video, record_video_delivery
 from app.config import get_settings
-from app.crm.client import mark_call_window, mark_engaged_no_book, mark_ready_for_call
+from app.crm.client import mark_call_window, mark_engagement
 from app.crm.levels import classify_engagement
 from app.db import repository
 from app.db.models import FunnelStage, FamiliarityLevel, Lead, MessageRole
 from app.db.session import session_scope
-from app.videos.catalog import Video, recommend
+from app.videos.catalog import INTRO_VIDEO_ID, Video, get_video, recommend
 
 
 HISTORY_LIMIT = 30
@@ -549,8 +549,6 @@ def _dispatch_pending_videos(session, lead: Lead, ctx: AgentContext) -> None:
     """
     if not ctx.video_sends_this_turn or ctx.send_video is None:
         return
-    from app.videos.catalog import get_video
-
     for delivery in ctx.video_sends_this_turn:
         video = get_video(delivery.video_id)
         if video is None:
@@ -684,22 +682,10 @@ def handle_message(
                 l_lvl = s_lvl.get(Lead, lead_id)
                 if l_lvl is not None:
                     decision = classify_engagement(l_lvl)
-                    if decision.level == 1:
-                        mark_ready_for_call(
+                    if decision.level is not None:
+                        mark_engagement(
                             l_lvl,
-                            note=f"classification={decision.reason}",
-                            session=s_lvl,
-                        )
-                    elif decision.level == 2:
-                        mark_engaged_no_book(
-                            l_lvl,
-                            note=f"classification={decision.reason}",
-                            session=s_lvl,
-                        )
-                    elif decision.level == 3:
-                        from app.crm.client import mark_no_reply
-                        mark_no_reply(
-                            l_lvl,
+                            decision.level,
                             note=f"classification={decision.reason}",
                             session=s_lvl,
                         )
@@ -792,6 +778,7 @@ def handle_message(
         reply = _limit_questions(reply)
         reply = _ensure_course_price_advisor(reply, text)
         reply = _ensure_business_shop_link(reply, text, session_messages)
+        _enforce_intro_video(lead, ctx, session_messages)
         _enforce_video_promise(session, lead, ctx, reply, text)
         reply = _remove_video_delivery_duplicates(reply, ctx.video_sends_this_turn)
         reply, removed_duplicate = remove_repeated_outbound_content(
@@ -862,16 +849,16 @@ def _enforce_booking_promise(session, lead: Lead, reply: str) -> None:
             lead.id,
         )
 
+    # Booking does not by itself make a lead Level 1 -- the classifier owns
+    # the level, exactly as it does on the normal ``schedule_call`` path.
     decision = classify_engagement(lead)
     try:
-        if decision.level == 1:
-            ok = mark_ready_for_call(
-                lead, note=f"safety-net auto-push (slot={slot})", session=session,
-            )
-        else:
-            ok = mark_engaged_no_book(
-                lead, note=f"safety-net auto-push (slot={slot})", session=session,
-            )
+        ok = decision.level is not None and mark_engagement(
+            lead,
+            decision.level,
+            note=f"safety-net auto-push (slot={slot})",
+            session=session,
+        )
         mark_call_window(lead, slot, session=session)
         if ok:
             repository.update_funnel_stage(session, lead, FunnelStage.handed_off)
@@ -890,6 +877,38 @@ def _enforce_booking_promise(session, lead: Lead, reply: str) -> None:
             "[booking-safety-net] engagement push raised for lead {} "
             "-- lead was promised a call but LeadMe push failed",
             lead.id,
+        )
+
+
+def _enforce_intro_video(lead: Lead, ctx: AgentContext, session_messages) -> None:
+    """Open every conversation with the company intro video.
+
+    The lead should know who is writing before they get any course
+    information. Website-form leads receive it with the webhook opener; a
+    paid-ad lead reaches us through WhatsApp instead, so their first agent
+    turn is the only chance. The prompt asks for this too and the LLM
+    forgets, which is why it is also enforced here.
+    """
+    if INTRO_VIDEO_ID in (lead.videos_sent or []):
+        return
+    if ctx.video_sends_this_turn or ctx.send_video is None:
+        return
+    if any(message.role == MessageRole.assistant for message in session_messages):
+        return
+
+    video = get_video(INTRO_VIDEO_ID)
+    if video is None:
+        logger.error(
+            "[intro-video] {!r} missing from the catalog", INTRO_VIDEO_ID,
+        )
+        return
+
+    logger.info("[intro-video] queueing first-contact intro for lead {}", lead.id)
+    try:
+        queue_video(ctx, video, None)
+    except Exception:
+        logger.exception(
+            "[intro-video] failed to queue the intro for lead {}", lead.id,
         )
 
 

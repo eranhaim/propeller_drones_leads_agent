@@ -31,7 +31,7 @@ from app.db import repository
 from app.db.models import Lead, MessageRole
 from app.db.session import session_scope
 from app.names import first_name
-from app.videos.catalog import get_video
+from app.videos.catalog import INTRO_VIDEO_ID, get_video
 from app.whatsapp.sender import ChatSender
 
 
@@ -65,11 +65,6 @@ CAMPAIGN_TOPIC = {
     "12425": "קורס הטסת רחפנים",
 }
 DEFAULT_TOPIC = "עולם הרחפנים"
-
-# Sent right after the opener text so a first-contact lead sees who we are
-# before anything else. Marked as delivered so the agent never offers it
-# again as if it were new.
-OPENER_VIDEO_ID = "propeller_company_overview"
 
 
 def _normalize_source(value: object) -> str:
@@ -106,19 +101,6 @@ def _is_website_form_lead(source: object, campaign_id: object) -> bool:
         _is_website_form_source(source)
         or _is_website_form_campaign(campaign_id)
     )
-
-
-def _initial_priority(source: object, campaign_id: object) -> tuple[int, str]:
-    """Classify a fresh webhook lead into an initial engagement level.
-
-    A new approved website form starts hot (L1). Its later WhatsApp activity
-    is classified dynamically by ``classify_engagement`` and can downgrade it
-    to L2 when the follow-up is weak. Other sources start at L3 until they
-    provide meaningful evidence.
-    """
-    if _is_website_form_lead(source, campaign_id):
-        return 1, "website_initial"
-    return 3, "unengaged"
 
 
 def _should_send_website_form_opener(
@@ -174,14 +156,14 @@ def _send_opener_video(session, lead: Lead, api: GreenAPI) -> None:
     failure is swallowed: the welcome message is the thing that must never be
     lost, and a missing video is recoverable while a missing greeting is not.
     """
-    if OPENER_VIDEO_ID in (lead.videos_sent or []):
+    if INTRO_VIDEO_ID in (lead.videos_sent or []):
         return
 
-    video = get_video(OPENER_VIDEO_ID)
+    video = get_video(INTRO_VIDEO_ID)
     if video is None:
         logger.error(
             "[opener] intro video {!r} missing from the catalog",
-            OPENER_VIDEO_ID,
+            INTRO_VIDEO_ID,
         )
         return
 
@@ -219,8 +201,6 @@ def handle_new_lead(
     try:
         source = metadata.get("leadme_source")
         is_website_form_source = _is_website_form_lead(source, campaign_id)
-        initial_priority, priority_reason = _initial_priority(source, campaign_id)
-        is_level_one_source = initial_priority == 1
         should_send_opener = False
         lead_id: Optional[int] = None
         duplicate_facebook_lead = False
@@ -279,10 +259,7 @@ def handle_new_lead(
                 lead,
                 **metadata,
                 leadme_webhook_received_at=datetime.now(timezone.utc).isoformat(),
-                leadme_source_is_level_1=is_level_one_source,
                 leadme_source_is_website_form=is_website_form_source,
-                leadme_initial_priority=initial_priority,
-                leadme_priority_reason=priority_reason,
                 leadme_reentry_at=(
                     datetime.now(timezone.utc).isoformat() if is_reentry else None
                 ),
@@ -338,29 +315,20 @@ def handle_new_lead(
             )
             return
 
-        # A repeat form/call is new activity on an existing lead. It is L2
-        # unless a later conversation independently satisfies an L1 rule.
+        # Same classifier the live conversation uses, so a lead's level never
+        # depends on which code path happened to see them first.
         try:
-            from app.crm.client import mark_engaged_no_book, mark_no_reply, mark_ready_for_call
+            from app.crm.client import mark_engagement
+            from app.crm.levels import classify_engagement
             with session_scope() as s3:
                 l3 = s3.query(Lead).filter_by(phone=phone).first()
                 if l3 is not None:
-                    if is_reentry:
-                        mark_engaged_no_book(
+                    decision = classify_engagement(l3)
+                    if decision.level is not None:
+                        mark_engagement(
                             l3,
-                            note="existing lead submitted new activity",
-                            session=s3,
-                        )
-                    elif initial_priority == 1:
-                        mark_ready_for_call(
-                            l3,
-                            note=f"LeadMe webhook priority={priority_reason}",
-                            session=s3,
-                        )
-                    else:
-                        mark_no_reply(
-                            l3,
-                            note="new LeadMe webhook lead; no bot reply yet",
+                            decision.level,
+                            note=f"LeadMe webhook; classification={decision.reason}",
                             session=s3,
                         )
         except Exception:
