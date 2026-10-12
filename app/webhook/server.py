@@ -32,6 +32,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.admin.routes import admin_session_secret, router as admin_router
 from app.config import get_settings
+from app.crm.leadme_client import last_known_session_status
 from app.db.session import engine
 from app.followup.scheduler import last_openai_status
 from app.webhook.opener import handle_new_lead
@@ -127,11 +128,17 @@ app.include_router(admin_router)
 def health() -> JSONResponse:
     payload = _polling_health()
     # Per-component detail so the host-level alerter can name a cause
-    # instead of reporting "the bot is unwell". Deliberately does NOT feed
-    # the status code: this endpoint is what marks the container unhealthy,
-    # and a drained OpenAI balance is not a reason to restart the bot.
+    # instead of reporting "the bot is unwell", and so one external check
+    # also covers OpenAI billing and the CRM session, which previously
+    # failed only into the Docker logs.
+    #
+    # None of these feed the status code. That is derived from polling
+    # alone, because this endpoint is also the Docker healthcheck: a
+    # drained OpenAI balance or an expired LeadMe cookie is not a reason to
+    # restart the container.
     payload["openai"] = last_openai_status()
     payload["database"] = _database_status()
+    payload["leadme_session"] = last_known_session_status() or "unknown"
     status_code = 200 if payload["status"] == "ok" else 503
     return JSONResponse(payload, status_code=status_code)
 

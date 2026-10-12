@@ -141,7 +141,6 @@ class Settings(BaseSettings):
     leadme_status_level_1: str = Field("", alias="LEADME_STATUS_LEVEL_1")
     leadme_status_level_2: str = Field("", alias="LEADME_STATUS_LEVEL_2")
     leadme_status_level_3: str = Field("", alias="LEADME_STATUS_LEVEL_3")
-    # Keep this empty until LeadMe has an exact approved terminal status.
     leadme_status_not_relevant: str = Field(
         "", alias="LEADME_STATUS_NOT_RELEVANT",
     )
