@@ -382,17 +382,26 @@ is only "why now", never "what is a drone" and never "who are you".
 
 | Level | Status | Who is here |
 |---|---|---|
-| 1 | 7326 | Organic arrivals; the website form; a call to the number published on the website; a **returning** lead who had already left details before; and a long **recent** conversation (`LEAD_DEEP_ENGAGEMENT_MESSAGES`, default 15) in which the lead engaged with a video we sent. Deliberately a small group. |
-| 2 | 7327 | A real conversation: questions, objections, **and booking a call**. Booking is *not* Level 1 — leads book calls without knowing what FPV is, what a drone license is, or who we are. |
+| 1 | 7326 | Organic arrivals; the website form; a landing page; a call to the number published on the website; a **returning** lead who had already left details before; a lead who **booked a call for a specific window**; and a long conversation (`LEAD_DEEP_ENGAGEMENT_MESSAGES`, default 15) in which the lead engaged with a video we sent. |
+| 2 | 7327 | A real conversation — questions and objections — but no booked window. Also where a lead lands when their booking or their conversation goes stale. |
 | 3 | 7328 | The starting point for **every paid-advertising lead** (Meta, TikTok, CTWA), and where a lead who never meaningfully replies stays. |
 
 Two further rules:
 
-- **Engagement decays.** A long conversation from a month ago must not keep a
-  lead at Level 1. `LEAD_ENGAGEMENT_FRESH_DAYS` (default 14) bounds the
-  conversation-depth route, and a lead who falls out of it lands at Level 2,
-  not Level 3 — they did reply, just not recently. Source-based Level 1 does
-  not decay: where a lead came from does not change with time.
+- **Engagement decays; where a lead came from does not.** A long conversation
+  from a month ago, or a call booked a month ago, must not keep a lead at
+  Level 1. `LEAD_ENGAGEMENT_FRESH_DAYS` (default 14) bounds both the
+  conversation-depth route and the booking route, and a lead who falls out of
+  either lands at Level 2, not Level 3 — they did engage, just not recently.
+  Source-based Level 1 never decays.
+- **A booking only counts with a real window.** `9-12`, `12-15` or `15-18`.
+  `schedule_call` books with `any` rather than stalling when the lead never
+  names a time, and the customer's rule separates "booked a call at a
+  specific hour" from "talked to the bot but booked no specific hour", so an
+  `any` booking stays at Level 2. `booked_at` in `lead_metadata` is what the
+  decay is measured from; leads booked before 2026-10-12 have no such
+  timestamp and fall back to their last inbound message, which can only make
+  an old booking look newer than it is.
 - **Levels move down as well as up.** `push_engagement_level` refused `1→2`,
   `1→3` and `2→3` until 2026-10-12. That guard is gone; the only remaining
   one is idempotency (pushing the level LeadMe already has is a no-op). The
@@ -404,7 +413,8 @@ and returns the level plus the reason that produced it, so every push can be
 traced back to a rule. `mark_engagement` pushes whatever came out. There is
 deliberately **no** per-level helper and no event that sets a level directly:
 until 2026-10-12 three separate code paths each pushed Level 1 on a booking,
-and that is exactly the drift this structure prevents.
+and that is exactly the drift this structure prevents. A booking is a Level 1
+criterion again, but it is the classifier that says so, in one place.
 
 #### What the data cannot tell us
 
@@ -419,7 +429,18 @@ and that is exactly the drift this structure prevents.
   recording leads, and only ones that came through the webhook. LeadMe exposes
   no lead-history or duplicate-submission field in the webhook payload or in
   v3, so a lead who left details a year before the bot existed is invisible
-  to us.
+  to us. Measured 2026-10-12: it fires for **zero** of 593 leads.
+- **There is no source field.** LeadMe's webhook sends a campaign but no
+  source, under any of the five names `parse_leadme_payload` accepts. Measured
+  2026-10-12: zero of 593 leads carry one. So the organic and incoming-call
+  routes cannot fire at all, and the website-form and landing-page routes work
+  only when a campaign name identifies them.
+- **Half the bot's leads are not in LeadMe.** Two read-only samples on
+  2026-10-12 put the share of leads whose phone resolves to no LeadMe row at
+  50% and 60%. It does not correlate with paid-ad origin or with lead age, and
+  our phones are consistently 12-digit E.164, so it is not a formatting
+  problem on this side. Cause unknown. Any level we compute for those leads is
+  unobservable to the sales team.
 
 ---
 
@@ -527,21 +548,23 @@ Implementation (as it exists today):
 
    ```
    app/agent/tools.py::schedule_call
-     → app/crm/levels.py::classify_engagement       (usually Level 2)
+     → app/crm/levels.py::classify_engagement  (Level 1 on a fresh booking
+                                                with a specific window)
      → app/crm/client.py::mark_engagement
        → app/crm/leadme_client.py::push_engagement_level
          → push_lead
              → find row via get_row_by_phone            (yields lc_id)
-             → _admin_change_status(client, lc_id, 7327)  # status pill
+             → _admin_change_status(client, lc_id, 7326)  # status pill
      → app/crm/client.py::mark_call_window
        → _resolve_tag_lead_id(client, lc_id)            # -> internal leadId
        → _admin_add_tag(client, internal_leadId, f"חלון · {slot}")
    ```
 
-   The level comes from the classifier, so a booking alone does not move the
-   status pill to 7326. The slot tag is attached separately by
-   `mark_call_window`, the single owner of that tag — the booking and the
-   level are two independent facts about the lead.
+   The status id is whatever the classifier's level maps to — 7326 for a
+   fresh booking with a named window, 7327 for an `any` booking or a stale
+   one. The slot tag is attached separately by `mark_call_window`, the single
+   owner of that tag, so the booking and the level stay two independent facts
+   about the lead.
 
 3. The tag string is literally `f"חלון · {slot}"` – middle-dot
    separator, no colon.

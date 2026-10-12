@@ -167,7 +167,7 @@ as an observation.
 | `classify_lead` | `familiarity?`, `stage?`, `intent?`, `industry?`, `preferred_call_slot?`, `has_experience?` | writes columns + `lead_metadata` |
 | `send_video` | `video_id`, `caption?` | GreenAPI send, one `video_sent` admin event, `videos_sent`, `video_sent_at` |
 | `recommend_video` | `topics_context?` | none |
-| `schedule_call` | `summary?`, `preferred_call_slot?` | `funnel_stage=handed_off`, call-window tag, CRM level from `classify_engagement` (usually 2) |
+| `schedule_call` | `summary?`, `preferred_call_slot?` | `funnel_stage=handed_off`, `booked_at`, call-window tag, CRM level from `classify_engagement` (1 for a fresh booking with a named window) |
 | `cancel_call` | `reason?` | clears slot, `funnel_stage=warm`, CRM cancel note |
 | `mark_not_relevant` | — | session reset + `not_relevant` flag |
 | `search_shop_products` | `query` | none (WooCommerce read) |
@@ -252,11 +252,11 @@ Applied to the raw reply, in this order, in `handle_message`:
    duplicates a caption sent directly by `send_video`, while preserving new
    follow-up content.
 5. **`_enforce_booking_promise`** — if the reply matches
-   `_BOOKING_PROMISE_RE` and `funnel_stage != handed_off`: when a slot exists,
-   set `handed_off`, attach the call-window tag, and push whatever level
-   `classify_engagement` returns (a booking is not itself a Level 1
-   criterion); when no slot exists, log and do nothing — never push a
-   fabricated slot.
+   `_BOOKING_PROMISE_RE` and `funnel_stage != handed_off`: set `handed_off`
+   and `booked_at` first, exactly as `schedule_call` does so the classifier
+   sees the same state on both paths, then attach the call-window tag and
+   push whatever level `classify_engagement` returns. Falls back to the `any`
+   slot rather than leaving a promised call out of the CRM.
 6. **`_enforce_intro_video`** — on the first agent turn of a conversation,
    queue the company intro video if it has not been sent. The prompt asks for
    this too and the LLM forgets. Stands aside when the agent already chose a
