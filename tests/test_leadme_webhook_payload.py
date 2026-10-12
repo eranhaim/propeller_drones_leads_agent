@@ -6,7 +6,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.webhook.opener import _initial_priority
+from app.crm.levels import level_1_source_reason
 from app.webhook.payload import normalize_leadme_payload
 
 
@@ -58,35 +58,52 @@ class ConfiguredFieldPayloadTests(unittest.TestCase):
         self.assertEqual(payload.source_type, "")
 
 
-class WebhookPriorityTests(unittest.TestCase):
+class SourceLevelTests(unittest.TestCase):
+    """Which LeadMe source and campaign values are Level 1 on their own."""
+
     def setUp(self) -> None:
-        self.settings = SimpleNamespace(
-            leadme_website_form_sources=["אתר הבית", "homepage"],
-            leadme_website_form_campaigns=["מתעניינים אקדמיה"],
+        patcher = patch(
+            "app.crm.levels.get_settings",
+            return_value=SimpleNamespace(
+                leadme_website_form_sources=["אתר הבית", "homepage"],
+                leadme_website_form_campaigns=["מתעניינים אקדמיה"],
+                leadme_level_1_sources=["אורגני", "שיחה נכנסת"],
+                leadme_level_1_campaigns=["פניות וובינר"],
+            ),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_website_form_source_or_campaign(self) -> None:
+        self.assertEqual(
+            level_1_source_reason({"leadme_source": "אתר הבית"}), "website_form"
+        )
+        self.assertEqual(
+            level_1_source_reason({"leadme_campaign_id": "מתעניינים אקדמיה"}),
+            "website_form",
         )
 
-    @patch("app.webhook.opener.get_settings")
-    def test_website_form_source_or_campaign_starts_at_level_one(
-        self,
-        get_settings,
-    ) -> None:
-        get_settings.return_value = self.settings
-
-        # Approved website form sources begin L1.
+    def test_organic_and_incoming_calls(self) -> None:
         self.assertEqual(
-            _initial_priority("אתר הבית", ""),
-            (1, "website_initial"),
+            level_1_source_reason({"leadme_source": "אורגני"}),
+            "organic_or_incoming_call",
         )
         self.assertEqual(
-            _initial_priority("", "מתעניינים אקדמיה"),
-            (1, "website_initial"),
+            level_1_source_reason({"leadme_source": "שיחה נכנסת"}),
+            "organic_or_incoming_call",
         )
 
-        # Paid and unknown sources stay L3 until evidence changes them.
+    def test_webinar_campaign(self) -> None:
         self.assertEqual(
-            _initial_priority("Facebook", "אחר"), (3, "unengaged"),
+            level_1_source_reason({"leadme_campaign": "פניות וובינר"}),
+            "propeller_content_campaign",
         )
-        self.assertEqual(_initial_priority("אורגני", ""), (3, "unengaged"))
+
+    def test_paid_and_unknown_sources_are_not_level_one(self) -> None:
+        self.assertIsNone(
+            level_1_source_reason({"leadme_source": "Facebook", "leadme_campaign": "אחר"})
+        )
+        self.assertIsNone(level_1_source_reason({}))
 
 
 if __name__ == "__main__":

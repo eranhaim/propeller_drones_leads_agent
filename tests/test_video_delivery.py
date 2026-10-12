@@ -8,12 +8,13 @@ from unittest.mock import Mock, patch
 from app.agent.context import AgentContext, VideoSend, use_context
 from app.agent.graph import (
     _dispatch_pending_videos,
+    _enforce_intro_video,
     _limit_questions,
     _remove_video_delivery_duplicates,
 )
 from app.agent.tools import send_video
-from app.db.models import Lead, MessageRole
-from app.videos.catalog import Video
+from app.db.models import Lead, Message, MessageRole
+from app.videos.catalog import INTRO_VIDEO_ID, Video
 
 
 class VideoDeliveryTests(unittest.TestCase):
@@ -35,7 +36,7 @@ class VideoDeliveryTests(unittest.TestCase):
 
         with (
             patch("app.agent.tools.get_video", return_value=video),
-            patch("app.videos.catalog.get_video", return_value=video),
+            patch("app.agent.graph.get_video", return_value=video),
             patch("app.agent.tools.repository.add_message") as add_message,
         ):
             context = AgentContext(
@@ -154,6 +155,65 @@ class VideoDeliveryTests(unittest.TestCase):
         self.assertEqual(
             _limit_questions(reply),
             "המחיר תלוי במסלול. מה הכי מעניין אותך? המחיר המדויק יינתן על ידי יועץ.",
+        )
+
+
+class IntroVideoTests(unittest.TestCase):
+    """Every conversation opens with the company intro video."""
+
+    def _context(self, lead: Lead) -> AgentContext:
+        return AgentContext(session=Mock(), lead=lead, send_video=Mock())
+
+    def _lead(self, videos_sent=None) -> Lead:
+        lead = Lead(phone="9990000001", videos_sent=videos_sent or [], lead_metadata={})
+        lead.id = 1
+        return lead
+
+    def _assistant_message(self) -> Message:
+        message = Message()
+        message.role = MessageRole.assistant
+        message.content = "שלום, אני אלעד"
+        return message
+
+    def test_first_turn_queues_the_intro(self) -> None:
+        lead = self._lead()
+        context = self._context(lead)
+
+        _enforce_intro_video(lead, context, [])
+
+        self.assertEqual(
+            [send.video_id for send in context.video_sends_this_turn],
+            [INTRO_VIDEO_ID],
+        )
+
+    def test_an_already_sent_intro_is_not_repeated(self) -> None:
+        lead = self._lead(videos_sent=[INTRO_VIDEO_ID])
+        context = self._context(lead)
+
+        _enforce_intro_video(lead, context, [])
+
+        self.assertEqual(context.video_sends_this_turn, [])
+
+    def test_later_turns_do_not_queue_the_intro(self) -> None:
+        lead = self._lead()
+        context = self._context(lead)
+
+        _enforce_intro_video(lead, context, [self._assistant_message()])
+
+        self.assertEqual(context.video_sends_this_turn, [])
+
+    def test_a_video_the_agent_chose_itself_wins(self) -> None:
+        lead = self._lead()
+        context = self._context(lead)
+        context.video_sends_this_turn.append(
+            VideoSend(video_id="drone_license_guide", title="רישיונות", caption="")
+        )
+
+        _enforce_intro_video(lead, context, [])
+
+        self.assertEqual(
+            [send.video_id for send in context.video_sends_this_turn],
+            ["drone_license_guide"],
         )
 
 
