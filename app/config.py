@@ -88,6 +88,36 @@ class Settings(BaseSettings):
         "מתעניינים אקדמיה",
         alias="LEADME_WEBSITE_FORM_CAMPAIGNS",
     )
+    # Engagement classification -- see app/crm/levels.py. Levels are
+    # numerically inverted: 1 is the most engaged.
+    #
+    # LeadMe "sourceType" labels that mean the lead already knows the industry
+    # before we speak to them: an organic arrival, or a call to the number
+    # published on the website. These labels are account-specific -- read them
+    # off a real LeadMe row before trusting the defaults.
+    leadme_level_1_sources_raw: str = Field(
+        "אורגני,organic,שיחה נכנסת,שיחת טלפון,טלפון,phone,phone call,incoming call",
+        alias="LEADME_LEVEL_1_SOURCES",
+    )
+    # LeadMe campaigns whose members already consumed Propeller's own content
+    # (today: the webinar list).
+    leadme_level_1_campaigns_raw: str = Field(
+        "פניות וובינר",
+        alias="LEADME_LEVEL_1_CAMPAIGNS",
+    )
+    # How long a conversation keeps a lead at Level 1. A long conversation
+    # from a month ago is not a hot lead today, and leaving stale ones at
+    # Level 1 is what made the tier useless to the sales team.
+    lead_engagement_fresh_days: int = Field(
+        14, alias="LEAD_ENGAGEMENT_FRESH_DAYS",
+    )
+    # Inbound messages required before conversation depth alone reaches
+    # Level 1 -- on top of engaging with a video the bot sent, and on top of
+    # the freshness window above.
+    lead_deep_engagement_messages: int = Field(
+        15, alias="LEAD_DEEP_ENGAGEMENT_MESSAGES",
+    )
+
     # LeadMe CRM - public "supplier" API
     # If LEADME_INSERT_URL is empty the client no-ops and just logs.
     # Provisioned in LeadMe under Preferences -> Suppliers -> {supplier} -> API.
@@ -255,6 +285,22 @@ class Settings(BaseSettings):
         return [
             campaign.strip()
             for campaign in self.leadme_website_form_campaigns_raw.split(",")
+            if campaign.strip()
+        ]
+
+    @property
+    def leadme_level_1_sources(self) -> List[str]:
+        return [
+            source.strip()
+            for source in self.leadme_level_1_sources_raw.split(",")
+            if source.strip()
+        ]
+
+    @property
+    def leadme_level_1_campaigns(self) -> List[str]:
+        return [
+            campaign.strip()
+            for campaign in self.leadme_level_1_campaigns_raw.split(",")
             if campaign.strip()
         ]
 

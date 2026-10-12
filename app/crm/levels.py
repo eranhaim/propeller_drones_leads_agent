@@ -1,19 +1,37 @@
-"""Shared LeadMe classification rules from the recovered sales evidence.
+"""The single engagement-classification rule for LeadMe.
 
-L1 is a hot lead. A new website form starts there, but weak follow-up must
-move it to L2. A non-website lead becomes L1 only after a delivered video and
-clear positive engagement. L2 is meaningful middle engagement; L3 is a lead
-who never meaningfully replied. Explicit opt-outs are outside the numeric
-levels.
+Levels are numerically inverted: ``1`` is the most engaged, ``3`` the least.
+The customer redefined them on 2026-10-12 around how much a lead already
+knows, not around how much they chatted:
+
+* **Level 1** -- a deliberately small group. The lead already understands the
+  drone industry and who Propeller are, so the sales call is only "why now".
+  That is: an organic arrival, the website form, a call to the number
+  published on the website, a lead who is back in the system after leaving
+  details before, or a lead who has had a long *recent* conversation with the
+  bot and engaged with the videos it sent.
+* **Level 2** -- reasonable interest. A real conversation with the bot:
+  questions, objections, and **booking a call**. Booking is explicitly NOT
+  Level 1; leads book calls without knowing what FPV is or who we are.
+* **Level 3** -- the starting point for everyone else, paid advertising
+  included, and where a lead who never meaningfully replies stays.
+
+Engagement decays: a long conversation from a month ago no longer carries a
+lead at Level 1. The source signals do not decay -- they describe where the
+lead came from, not what they did this week.
+
+Explicit opt-outs are outside the numeric levels (``level is None``); they get
+the configured terminal status instead.
 """
 
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
+from app.config import get_settings
 from app.db.models import Lead, Message, MessageRole
 
 
@@ -23,38 +41,29 @@ class EngagementDecision:
     reason: str
 
 
-def allows_website_l1_downgrade(lead: Lead, target_level: int) -> bool:
-    """Return whether a website lead may move from its initial L1 to L2."""
-    metadata = lead.lead_metadata or {}
-    return bool(
-        target_level == 2
-        and metadata.get("leadme_source_is_website_form")
-        and metadata.get("leadme_initial_priority") == 1
-    )
-
-
 _OPT_OUT_RE = re.compile(
     r"(?:לא\s+רלוונטי|לא\s+תודה|תודה\s+אבל\s+לא|לא\s+מעוניי[נן]|"
     r"תפסיקו|תפסיק|תסירו|הסירו|להסיר\s+אותי)"
-)
-_CONTENT_POSITIVE_RE = re.compile(
-    r"(?:ראיתי|צפיתי|אהבתי|מעניין\s+אותי|נשמע\s+טוב|מעולה|"
-    r"רוצה\s+להתקדם|אשמח\s+להתקדם|רוצה\s+להירשם|אשמח\s+להירשם|"
-    r"זה\s+מתאים\s+לי)"
-)
-_HOT_WEBSITE_RE = re.compile(
-    r"(?:מעניין\s+אותי\s+מאוד|רוצה\s+להתחיל|רוצה\s+להתקדם|"
-    r"אשמח\s+להתחיל|רוצה\s+להירשם|אשמח\s+להירשם|מתי\s+מתחיל|"
-    r"מוכן\s+להתחיל)"
 )
 _L2_QUESTION_RE = re.compile(
     r"(?:מחיר|כמה\s+עולה|עלות|קורס|לימוד|הכשרה|רישיון|רישוי|רת[אא]|"
     r"תיאוריה|מעשי)"
 )
-_SHALLOW_BOOKING_RE = re.compile(
+_BOOKING_RE = re.compile(
     r"(?:רוצה\s+שיחה|אשמח\s+לשיחה|תקבע|לקבוע|דברו\s+איתי|תחזרו\s+אלי)"
 )
 _WORD_RE = re.compile(r"[\u0590-\u05FFa-zA-Z0-9]{2,}")
+
+
+def _normalize(value: object) -> str:
+    return " ".join(str(value or "").strip().casefold().split())
+
+
+def _matches_any(value: object, configured: Iterable[str]) -> bool:
+    normalized = _normalize(value)
+    if not normalized:
+        return False
+    return normalized in {_normalize(item) for item in configured}
 
 
 def _parse_iso(value: object) -> Optional[datetime]:
@@ -65,9 +74,13 @@ def _parse_iso(value: object) -> Optional[datetime]:
         parsed = datetime.fromisoformat(str(value))
     except ValueError:
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed
+    return _as_utc(parsed)
+
+
+def _as_utc(moment: Optional[datetime]) -> Optional[datetime]:
+    if moment is None:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
 def _is_explicit_opt_out(text: str) -> bool:
@@ -79,6 +92,7 @@ def _is_ctwa_prefill(lead: Lead, messages: list[Message]) -> bool:
 
 
 def _actual_user_messages(lead: Lead, messages: list[Message]) -> list[Message]:
+    """Return the lead's own messages, ignoring a paid ad's prefilled text."""
     user_messages = [message for message in messages if message.role == MessageRole.user]
     return [] if _is_ctwa_prefill(lead, user_messages) else user_messages
 
@@ -91,57 +105,100 @@ def _is_substantive(message: Message) -> bool:
     text = _message_text(message)
     if not text or _is_explicit_opt_out(text):
         return False
-    if _L2_QUESTION_RE.search(text) or _SHALLOW_BOOKING_RE.search(text):
+    if _L2_QUESTION_RE.search(text) or _BOOKING_RE.search(text):
         return True
     words = _WORD_RE.findall(text)
     return len(words) >= 3 and text not in {"כן", "סבבה", "אוקיי", "ok"}
-
-
-def has_content_reply(lead: Lead, messages: Iterable[Message]) -> bool:
-    """Return whether delivered content got a clear positive response.
-
-    A bare message after a video is not evidence that the lead watched or
-    cared about it. The recovered sales rules require positive/meaningful
-    follow-up after delivery before a video can make the lead L1.
-    """
-    md = lead.lead_metadata or {}
-    sent_times = [
-        parsed
-        for parsed in (_parse_iso(md.get("video_sent_at")),)
-        if parsed is not None
-    ]
-    if not sent_times:
-        return False
-    content_sent_at = min(sent_times)
-    for message in messages:
-        if message.role != MessageRole.user:
-            continue
-        created_at = message.created_at
-        if created_at is None:
-            continue
-        if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=timezone.utc)
-        text = _message_text(message)
-        if created_at > content_sent_at and _CONTENT_POSITIVE_RE.search(text):
-            return True
-    return False
 
 
 def _messages_in_current_session(lead: Lead, messages: list[Message]) -> list[Message]:
     reset_at = _parse_iso((lead.lead_metadata or {}).get("session_reset_at"))
     if reset_at is None:
         return messages
-    current_messages: list[Message] = []
+    return [
+        message
+        for message in messages
+        if (_as_utc(message.created_at) or reset_at) > reset_at
+    ]
+
+
+def level_1_source_reason(metadata: dict) -> Optional[str]:
+    """Return why this lead's SOURCE alone makes it Level 1, or None.
+
+    These labels come from LeadMe's ``sourceType`` and ``campaign`` fields and
+    are account-specific, so the accepted values are configuration rather than
+    code. A lead arriving through any of them has already seen Propeller's own
+    content, which is the whole point of the tier.
+    """
+    settings = get_settings()
+    source = metadata.get("leadme_source")
+    campaign = metadata.get("leadme_campaign_id") or metadata.get("leadme_campaign")
+
+    if (
+        metadata.get("leadme_source_is_website_form")
+        or _matches_any(source, settings.leadme_website_form_sources)
+        or _matches_any(campaign, settings.leadme_website_form_campaigns)
+    ):
+        return "website_form"
+    if _matches_any(source, settings.leadme_level_1_sources):
+        return "organic_or_incoming_call"
+    if _matches_any(campaign, settings.leadme_level_1_campaigns):
+        return "propeller_content_campaign"
+    return None
+
+
+def engaged_with_a_video(lead: Lead, messages: Iterable[Message]) -> bool:
+    """Return whether the lead wrote something real after a video was sent.
+
+    GreenAPI reports no play, watch or completion event for media we send, so
+    "watched the video" is not observable. The usable proxy is a substantive
+    message after the video went out -- a question about it, or a request for
+    more.
+    """
+    sent_at = _parse_iso((lead.lead_metadata or {}).get("video_sent_at"))
+    if sent_at is None:
+        return False
     for message in messages:
-        created_at = message.created_at
-        if created_at is None:
-            current_messages.append(message)
+        if message.role != MessageRole.user:
             continue
-        if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=timezone.utc)
-        if created_at > reset_at:
-            current_messages.append(message)
-    return current_messages
+        created_at = _as_utc(message.created_at)
+        if created_at is not None and created_at > sent_at and _is_substantive(message):
+            return True
+    return False
+
+
+def _is_fresh(moment: Optional[datetime]) -> bool:
+    if moment is None:
+        return False
+    window = timedelta(days=get_settings().lead_engagement_fresh_days)
+    return datetime.now(timezone.utc) - moment <= window
+
+
+def _last_activity_at(user_messages: list[Message]) -> Optional[datetime]:
+    moments = [
+        moment
+        for moment in (_as_utc(message.created_at) for message in user_messages)
+        if moment is not None
+    ]
+    return max(moments) if moments else None
+
+
+def _is_deeply_engaged(
+    lead: Lead,
+    messages: list[Message],
+    user_messages: list[Message],
+) -> bool:
+    """Return whether conversation depth alone earns Level 1.
+
+    All three conditions are required. Message count on its own was what
+    pushed shallow leads into Level 1 and is the behaviour the customer
+    rejected.
+    """
+    if len(user_messages) < get_settings().lead_deep_engagement_messages:
+        return False
+    if not engaged_with_a_video(lead, messages):
+        return False
+    return _is_fresh(_last_activity_at(user_messages))
 
 
 def classify_engagement(
@@ -149,8 +206,8 @@ def classify_engagement(
     messages: Optional[Iterable[Message]] = None,
 ) -> EngagementDecision:
     """Return the sole deterministic classification decision for a lead."""
-    md = lead.lead_metadata or {}
-    if md.get("leadme_relevance") == "not_relevant":
+    metadata = lead.lead_metadata or {}
+    if metadata.get("leadme_relevance") == "not_relevant":
         return EngagementDecision(None, "explicit_not_interested")
 
     lead_messages = _messages_in_current_session(
@@ -161,26 +218,16 @@ def classify_engagement(
     if any(_is_explicit_opt_out(_message_text(message)) for message in user_messages):
         return EngagementDecision(None, "explicit_not_interested")
 
-    if has_content_reply(lead, lead_messages):
-        return EngagementDecision(1, "positive_content_followup")
-
-    if md.get("leadme_reentry_at"):
-        return EngagementDecision(2, "reentry_activity")
-
-    website_form = bool(md.get("leadme_source_is_website_form"))
-    if website_form:
-        if not user_messages:
-            return EngagementDecision(1, "website_initial")
-        if any(_L2_QUESTION_RE.search(_message_text(message)) for message in user_messages):
-            return EngagementDecision(2, "website_question_without_l1_signal")
-        if any(_SHALLOW_BOOKING_RE.search(_message_text(message)) for message in user_messages):
-            return EngagementDecision(2, "website_shallow_booking")
-        if any(_HOT_WEBSITE_RE.search(_message_text(message)) for message in user_messages):
-            return EngagementDecision(1, "website_hot_followup")
-        return EngagementDecision(2, "website_weak_followup")
+    source_reason = level_1_source_reason(metadata)
+    if source_reason is not None:
+        return EngagementDecision(1, source_reason)
+    if metadata.get("leadme_reentry_at"):
+        return EngagementDecision(1, "returning_lead")
+    if _is_deeply_engaged(lead, lead_messages, user_messages):
+        return EngagementDecision(1, "deep_recent_engagement")
 
     if any(_is_substantive(message) for message in user_messages):
         return EngagementDecision(2, "meaningful_reply")
-    if md.get("ctwa_campaign"):
-        return EngagementDecision(3, "ctwa_no_reply")
+    if metadata.get("ctwa_campaign"):
+        return EngagementDecision(3, "paid_ad_no_reply")
     return EngagementDecision(3, "no_reply")
