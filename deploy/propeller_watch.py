@@ -118,8 +118,8 @@ MESSAGES = {
     "leadme_session": (
         "תקלה בפרופלור: החיבור ל-LeadMe לא תקין\n"
         "סטטוס {detail} מאז {since}.\n"
-        "לידים ממשיכים לקבל מענה כרגיל. עדכוני הסטטוס ל-CRM מחכים בתור עד "
-        "שהחיבור יחזור."
+        "לידים ממשיכים לקבל מענה כרגיל, ועדכוני הרמה והתגיות ל-CRM ממשיכים "
+        "לעבוד דרך ה-API. חסומות רק הפעולות שדורשות עוגיות."
     ),
 }
 
@@ -248,8 +248,13 @@ def classify(config: dict, previous_restart_count: Optional[int]) -> Tuple[Optio
         return "openai_error", "", restart_count
 
     # The bot reports this key; the LeadMe cookie work owns the value.
+    # "no_cookies" is deliberately absent: this deployment runs without a
+    # cookie session on purpose, so that value is the steady state rather
+    # than an outage, and alerting on it would page on every boot forever.
+    # A session that was configured and then broke still reports "expired"
+    # or "unreachable", so the alert arms itself if cookies are ever set up.
     leadme = payload.get("leadme_session", "unknown")
-    if leadme in ("expired", "no_cookies", "unreachable"):
+    if leadme in ("expired", "unreachable"):
         return "leadme_session", leadme, restart_count
 
     return None, "", restart_count
