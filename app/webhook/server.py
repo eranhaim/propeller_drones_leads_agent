@@ -27,10 +27,13 @@ from typing import Any, Dict, Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
+from sqlalchemy import text
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.admin.routes import admin_session_secret, router as admin_router
 from app.config import get_settings
+from app.db.session import engine
+from app.followup.scheduler import last_openai_status
 from app.webhook.opener import handle_new_lead
 from app.webhook.payload import (
     flatten_payload as _flatten_payload,
@@ -94,6 +97,20 @@ def _polling_health() -> Dict[str, Any]:
     return result
 
 
+def _database_status() -> str:
+    """``"ok"`` or ``"unreachable"``.
+
+    Bounded by the engine's ``connect_timeout``, because this runs on every
+    Docker healthcheck and must answer well inside its 10s timeout.
+    """
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+        return "ok"
+    except Exception:  # noqa: BLE001
+        return "unreachable"
+
+
 app = FastAPI(title="Propeller Drones lead webhook", docs_url=None, redoc_url=None)
 app.add_middleware(
     SessionMiddleware,
@@ -109,6 +126,12 @@ app.include_router(admin_router)
 @app.get("/health")
 def health() -> JSONResponse:
     payload = _polling_health()
+    # Per-component detail so the host-level alerter can name a cause
+    # instead of reporting "the bot is unwell". Deliberately does NOT feed
+    # the status code: this endpoint is what marks the container unhealthy,
+    # and a drained OpenAI balance is not a reason to restart the bot.
+    payload["openai"] = last_openai_status()
+    payload["database"] = _database_status()
     status_code = 200 if payload["status"] == "ok" else 503
     return JSONResponse(payload, status_code=status_code)
 

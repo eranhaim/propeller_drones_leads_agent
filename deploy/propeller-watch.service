@@ -1,0 +1,17 @@
+[Unit]
+Description=Check the Propeller bot and alert Omer on WhatsApp when it breaks
+# Needs docker to answer "is the container up" and the network to send.
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+User=root
+# Root because the check reads docker and the GreenAPI credentials, which
+# are mode 600. It never writes to the bot, its .env, or its database.
+EnvironmentFile=/etc/propeller-watch.env
+ExecStart=/usr/local/bin/propeller-watch
+# A stuck run must not pile up behind the next tick. Every outbound call in
+# the script is already bounded; this is the backstop.
+TimeoutStartSec=90
+UMask=0077

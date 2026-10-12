@@ -15,6 +15,10 @@ _settings = get_settings()
 engine = create_engine(
     _settings.database_url,
     pool_pre_ping=True,
+    # /health probes the database on every Docker healthcheck. libpq waits
+    # out the OS TCP timeout by default, so an unroutable Postgres would
+    # hang the probe instead of reporting "unreachable".
+    connect_args={"connect_timeout": 5},
     future=True,
 )
 
