@@ -71,6 +71,12 @@ def search_knowledge(query: str, topic: Optional[str] = None) -> str:
     returns the authoritative answer: theory plus a CAAI theory exam at a
     CAAI testing center, with NO mandatory practical part. Practical is only
     for the heavy (25-2000kg) track.
+
+    IMPORTANT for the FPV course question (customer flagged this bug):
+    "קורס FPV" is the standalone six-session civil FPV course, NOT the
+    two-session FPV module inside מטיס מאסטר. Use
+    ``search_knowledge(topic="course_syllabus", query="קורס FPV אזרחי")``
+    and answer about the standalone course.
     """
     logger.info("Tool search_knowledge: query='{}' topic={}", query, topic)
 
