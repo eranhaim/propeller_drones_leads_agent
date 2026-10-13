@@ -9,6 +9,11 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _split_csv(raw: str) -> List[str]:
+    """Split one comma-separated setting into its non-empty values."""
+    return [value.strip() for value in raw.split(",") if value.strip()]
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -95,36 +100,86 @@ class Settings(BaseSettings):
     # Engagement classification -- see app/crm/levels.py. Levels are
     # numerically inverted: 1 is the most engaged.
     #
-    # Landing-page campaigns. The customer lists "דפי נחיתה" as its own
-    # Level 1 route, separate from the website form. There is no source field
-    # to recognise one by (see below), so a landing page can only be
-    # identified by its campaign name, and we do not yet know what those are
-    # called. Empty until someone reads them off the LeadMe UI.
+    # Where a lead came from is carried by LeadMe TAGS, not by its source
+    # field. The webhook never delivers the source (it fires at record intake,
+    # before the field is written), and v3 has no endpoint that returns it, so
+    # app/crm/leadme_source.py pulls the tags instead. The values below were
+    # read off production tags on 2026-10-13.
+    #
+    # Every tag rule matches on CONTAINMENT after normalisation, because the
+    # interesting tags are families rather than fixed labels: a landing page
+    # is "עמוד נחיתה אקדמיה מובייל" or "דף נחיתה אוטודרון", and a paid lead
+    # carries four of "טופס facebook: ...", "קמפיין facebook: ...",
+    # "קבוצת מודעות facebook: ..." and "מודעה facebook: ...".
+    #
+    # Paid advertising. Checked FIRST and disqualifying: a Click-To-WhatsApp
+    # ad lands with the same whatsapp source as a genuine organic arrival, and
+    # these tags are the only thing that tells them apart.
+    leadme_paid_tags_raw: str = Field(
+        "facebook,tiktok,instagram",
+        alias="LEADME_PAID_TAGS",
+    )
+    leadme_paid_source_types_raw: str = Field(
+        "facebook,tiktok,instagram",
+        alias="LEADME_PAID_SOURCE_TYPES",
+    )
+    # A call to the number published on the website.
+    leadme_incoming_call_tags_raw: str = Field(
+        "שיחה נכנסת",
+        alias="LEADME_INCOMING_CALL_TAGS",
+    )
+    leadme_incoming_call_source_types_raw: str = Field(
+        "call",
+        alias="LEADME_INCOMING_CALL_SOURCE_TYPES",
+    )
+    # The website form.
+    leadme_website_form_tags_raw: str = Field(
+        "אתר הבית",
+        alias="LEADME_WEBSITE_FORM_TAGS",
+    )
+    leadme_website_form_source_types_raw: str = Field(
+        "form",
+        alias="LEADME_WEBSITE_FORM_SOURCE_TYPES",
+    )
+    # Landing pages, which the customer counts separately from the form.
+    leadme_landing_page_tags_raw: str = Field(
+        "עמוד נחיתה,דף נחיתה",
+        alias="LEADME_LANDING_PAGE_TAGS",
+    )
+    leadme_landing_page_source_types_raw: str = Field(
+        "lp",
+        alias="LEADME_LANDING_PAGE_SOURCE_TYPES",
+    )
     leadme_landing_page_campaigns_raw: str = Field(
         "",
         alias="LEADME_LANDING_PAGE_CAMPAIGNS",
     )
+    # The webinar, which is both a Level 1 source and a content signal.
+    leadme_webinar_tags_raw: str = Field(
+        "וובינר",
+        alias="LEADME_WEBINAR_TAGS",
+    )
+    leadme_webinar_campaigns_raw: str = Field(
+        "פניות וובינר",
+        alias="LEADME_WEBINAR_CAMPAIGNS",
+    )
+    # A genuine organic arrival: LeadMe's whatsapp source with none of the
+    # paid signals above. OFF by default. Turning it on puts every untagged
+    # WhatsApp lead at Level 1, and a Click-To-WhatsApp ad whose Facebook tags
+    # have not landed yet looks exactly like an organic arrival -- which is
+    # the stale-Level-1 problem the customer complained about, rebuilt. Only
+    # enable it once paid attribution is reliable.
+    leadme_organic_source_types_raw: str = Field(
+        "",
+        alias="LEADME_ORGANIC_SOURCE_TYPES",
+    )
     #
-    # LeadMe "sourceType" labels that mean the lead already knows the industry
-    # before we speak to them: an organic arrival, or a call to the number
-    # published on the website.
-    #
-    # Measured against production on 2026-10-12: **not one** of the 593 leads
-    # carries a source value at all. The webhook delivers a campaign but no
-    # source field under any of the names parse_leadme_payload accepts
-    # (sourceType, source_type, source, "arrival source", arrivalSource), so
-    # this list is inert until LeadMe starts sending one. The values below are
-    # the expected Hebrew labels and have NOT been confirmed against the CRM;
-    # confirm them before relying on this route.
+    # Legacy source labels, kept because a deployment may still set them.
+    # LeadMe has never sent a source field to this bot, so they match nothing.
     leadme_level_1_sources_raw: str = Field(
         "אורגני,organic,שיחה נכנסת,שיחת טלפון,טלפון,phone,phone call,incoming call",
         alias="LEADME_LEVEL_1_SOURCES",
     )
-    # LeadMe campaigns whose members already consumed Propeller's own content,
-    # a webinar list being the motivating example. Empty by default: the only
-    # campaign that appears on production leads is the website form one above,
-    # and inventing a name here would silently match nothing while looking
-    # configured.
     leadme_level_1_campaigns_raw: str = Field(
         "",
         alias="LEADME_LEVEL_1_CAMPAIGNS",
@@ -247,6 +302,14 @@ class Settings(BaseSettings):
     # drainer picks up where it left off.
     leadme_queue_enabled: bool = Field(True, alias="LEADME_QUEUE_ENABLED")
 
+    # How often to ask LeadMe where leads came from -- see
+    # app/crm/leadme_source.py. Slower than the push queue because a source
+    # does not change: this only has to catch up with new leads, and with
+    # leads whose LeadMe row had not been created yet last time we asked.
+    leadme_source_interval_minutes: int = Field(
+        15, alias="LEADME_SOURCE_INTERVAL_MINUTES",
+    )
+
     # EMERGENCY KILL SWITCH for the LeadMe v3 API. When LeadMe's backend
     # is down (returns HTML PHP error pages instead of JSON), leaving this
     # enabled causes hangs in the message handler and the queue drainer.
@@ -296,59 +359,75 @@ class Settings(BaseSettings):
 
     @property
     def allowed_test_phones(self) -> List[str]:
-        return [
-            p.strip()
-            for p in self.allowed_test_phones_raw.split(",")
-            if p.strip()
-        ]
+        return _split_csv(self.allowed_test_phones_raw)
 
     @property
     def leadme_website_form_sources(self) -> List[str]:
-        return [
-            source.strip()
-            for source in self.leadme_website_form_sources_raw.split(",")
-            if source.strip()
-        ]
+        return _split_csv(self.leadme_website_form_sources_raw)
 
     @property
     def leadme_website_form_campaigns(self) -> List[str]:
-        return [
-            campaign.strip()
-            for campaign in self.leadme_website_form_campaigns_raw.split(",")
-            if campaign.strip()
-        ]
+        return _split_csv(self.leadme_website_form_campaigns_raw)
+
+    @property
+    def leadme_website_form_tags(self) -> List[str]:
+        return _split_csv(self.leadme_website_form_tags_raw)
+
+    @property
+    def leadme_website_form_source_types(self) -> List[str]:
+        return _split_csv(self.leadme_website_form_source_types_raw)
+
+    @property
+    def leadme_paid_tags(self) -> List[str]:
+        return _split_csv(self.leadme_paid_tags_raw)
+
+    @property
+    def leadme_paid_source_types(self) -> List[str]:
+        return _split_csv(self.leadme_paid_source_types_raw)
+
+    @property
+    def leadme_incoming_call_tags(self) -> List[str]:
+        return _split_csv(self.leadme_incoming_call_tags_raw)
+
+    @property
+    def leadme_incoming_call_source_types(self) -> List[str]:
+        return _split_csv(self.leadme_incoming_call_source_types_raw)
+
+    @property
+    def leadme_landing_page_tags(self) -> List[str]:
+        return _split_csv(self.leadme_landing_page_tags_raw)
+
+    @property
+    def leadme_landing_page_source_types(self) -> List[str]:
+        return _split_csv(self.leadme_landing_page_source_types_raw)
 
     @property
     def leadme_landing_page_campaigns(self) -> List[str]:
-        return [
-            campaign.strip()
-            for campaign in self.leadme_landing_page_campaigns_raw.split(",")
-            if campaign.strip()
-        ]
+        return _split_csv(self.leadme_landing_page_campaigns_raw)
+
+    @property
+    def leadme_webinar_tags(self) -> List[str]:
+        return _split_csv(self.leadme_webinar_tags_raw)
+
+    @property
+    def leadme_webinar_campaigns(self) -> List[str]:
+        return _split_csv(self.leadme_webinar_campaigns_raw)
+
+    @property
+    def leadme_organic_source_types(self) -> List[str]:
+        return _split_csv(self.leadme_organic_source_types_raw)
 
     @property
     def webinar_video_ids(self) -> List[str]:
-        return [
-            video_id.strip()
-            for video_id in self.webinar_video_ids_raw.split(",")
-            if video_id.strip()
-        ]
+        return _split_csv(self.webinar_video_ids_raw)
 
     @property
     def leadme_level_1_sources(self) -> List[str]:
-        return [
-            source.strip()
-            for source in self.leadme_level_1_sources_raw.split(",")
-            if source.strip()
-        ]
+        return _split_csv(self.leadme_level_1_sources_raw)
 
     @property
     def leadme_level_1_campaigns(self) -> List[str]:
-        return [
-            campaign.strip()
-            for campaign in self.leadme_level_1_campaigns_raw.split(",")
-            if campaign.strip()
-        ]
+        return _split_csv(self.leadme_level_1_campaigns_raw)
 
     @field_validator("log_level")
     @classmethod

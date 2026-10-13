@@ -734,6 +734,29 @@ def run_in_background_thread() -> None:
     except Exception:
         logger.exception("[scheduler] FAILED to register leadme_queue_drain job")
 
+    # Source enrichment: ask LeadMe where each lead actually came from.
+    # LeadMe's push fires before it has written the source, so this is the
+    # only way the bot learns it. Off the reply path on purpose -- a level is
+    # recomputed every turn, so a tag that lands between two messages is
+    # picked up on the next one.
+    try:
+        from app.crm.leadme_source import refresh_missing_sources
+        scheduler.add_job(
+            refresh_missing_sources,
+            trigger="interval",
+            minutes=settings.leadme_source_interval_minutes,
+            id="leadme_source_refresh",
+            max_instances=1,
+            coalesce=True,
+            next_run_time=datetime.now(ISRAEL_TZ) + timedelta(minutes=1),
+        )
+        logger.info(
+            "[scheduler] leadme_source_refresh job registered (every {}min)",
+            settings.leadme_source_interval_minutes,
+        )
+    except Exception:
+        logger.exception("[scheduler] FAILED to register leadme_source_refresh job")
+
     # LeadMe leak detection is read-only monitoring, not customer outreach.
     # Keep it active even while proactive WhatsApp messaging is disabled.
     scheduler.add_job(

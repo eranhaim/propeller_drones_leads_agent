@@ -9,8 +9,10 @@ knows, not around how much they chatted:
   gets them there:
 
   - **Where they came from**: an organic arrival, a call to the number
-    published on the website, the website form, a landing page, or a lead who
-    is back in the system after leaving details before.
+    published on the website, the website form, a landing page, the webinar,
+    or a lead who is back in the system after leaving details before. This
+    comes from the lead's LeadMe tags, pulled by
+    :mod:`app.crm.leadme_source`, because LeadMe never sends it to us.
   - **What they did**: they consumed Propeller's content *and* booked a call
     for a specific window. Both halves are required, and both must be recent.
 
@@ -81,6 +83,23 @@ def _matches_any(value: object, configured: Iterable[str]) -> bool:
     return normalized in {_normalize(item) for item in configured}
 
 
+def _tagged(tags: Iterable[str], configured: Iterable[str]) -> bool:
+    """Return whether any tag contains any configured value.
+
+    Containment rather than equality, because the tags that matter are
+    families: a landing page is "עמוד נחיתה אקדמיה מובייל" or
+    "דף נחיתה אוטודרון", and one paid lead carries four separate tags that
+    each merely contain "facebook".
+    """
+    needles = [_normalize(item) for item in configured]
+    needles = [needle for needle in needles if needle]
+    if not needles:
+        return False
+    return any(
+        needle in _normalize(tag) for tag in tags for needle in needles
+    )
+
+
 def _parse_iso(value: object) -> Optional[datetime]:
     """Parse an ISO timestamp into a tz-aware datetime, or None."""
     if not value:
@@ -137,29 +156,71 @@ def _messages_in_current_session(lead: Lead, messages: list[Message]) -> list[Me
     ]
 
 
+def came_from_paid_advertising(metadata: dict) -> bool:
+    """Return whether this lead is attributable to a paid ad.
+
+    Checked before every Level 1 source route and disqualifying for all of
+    them. A Click-To-WhatsApp ad reaches LeadMe with the same ``whatsapp``
+    source as a genuine organic arrival; its Facebook tags, or the campaign
+    the bot recorded itself, are the only things that tell the two apart.
+    """
+    settings = get_settings()
+    return bool(
+        metadata.get("ctwa_campaign")
+        or _tagged(metadata.get("leadme_tags") or [], settings.leadme_paid_tags)
+        or _matches_any(
+            metadata.get("leadme_source_type") or metadata.get("leadme_source"),
+            settings.leadme_paid_source_types,
+        )
+    )
+
+
 def level_1_source_reason(metadata: dict) -> Optional[str]:
     """Return why this lead's SOURCE alone makes it Level 1, or None.
 
-    These labels come from LeadMe's ``sourceType`` and ``campaign`` fields and
-    are account-specific, so the accepted values are configuration rather than
-    code. A lead arriving through any of them has already seen Propeller's own
-    content, which is the whole point of the tier.
+    Where a lead came from lives in its LeadMe TAGS, pulled by
+    ``app/crm/leadme_source.py``. LeadMe's own source field never reaches
+    this bot: the external-interface push fires before the field is written,
+    and v3 exposes no endpoint that returns it. The sourceType and campaign
+    checks below are kept for the payloads that do carry them.
 
-    Measured on 2026-10-12: LeadMe sends no source field at all, so only the
-    campaign-based routes can fire. See ``app/config.py``.
+    Every accepted value is configuration, because they are account-specific
+    Hebrew labels that the customer edits in the LeadMe UI.
     """
     settings = get_settings()
-    source = metadata.get("leadme_source")
+    tags = metadata.get("leadme_tags") or []
+    source = metadata.get("leadme_source_type") or metadata.get("leadme_source")
     campaign = metadata.get("leadme_campaign_id") or metadata.get("leadme_campaign")
 
+    if came_from_paid_advertising(metadata):
+        return None
+
+    if (
+        _tagged(tags, settings.leadme_webinar_tags)
+        or _matches_any(campaign, settings.leadme_webinar_campaigns)
+    ):
+        return "webinar"
+    if (
+        _tagged(tags, settings.leadme_incoming_call_tags)
+        or _matches_any(source, settings.leadme_incoming_call_source_types)
+    ):
+        return "incoming_call"
     if (
         metadata.get("leadme_source_is_website_form")
+        or _tagged(tags, settings.leadme_website_form_tags)
+        or _matches_any(source, settings.leadme_website_form_source_types)
         or _matches_any(source, settings.leadme_website_form_sources)
         or _matches_any(campaign, settings.leadme_website_form_campaigns)
     ):
         return "website_form"
-    if _matches_any(campaign, settings.leadme_landing_page_campaigns):
+    if (
+        _tagged(tags, settings.leadme_landing_page_tags)
+        or _matches_any(source, settings.leadme_landing_page_source_types)
+        or _matches_any(campaign, settings.leadme_landing_page_campaigns)
+    ):
         return "landing_page"
+    if _matches_any(source, settings.leadme_organic_source_types):
+        return "organic"
     if _matches_any(source, settings.leadme_level_1_sources):
         return "organic_or_incoming_call"
     if _matches_any(campaign, settings.leadme_level_1_campaigns):
@@ -197,22 +258,31 @@ def booked_at(lead: Lead, user_messages: list[Message]) -> Optional[datetime]:
 
 
 def received_the_webinar(lead: Lead) -> bool:
-    """Return whether the bot sent this lead Propeller's webinar.
+    """Return whether this lead has had Propeller's webinar.
 
-    The customer lists "קיבל וובינר" as a content signal of its own. Nothing
-    in the catalogue or the schema represents a webinar today, so this matches
-    nobody; the hook exists so that adding the webinar to ``data/videos.json``
-    and naming its id in ``WEBINAR_VIDEO_IDS`` is all it takes to switch the
-    signal on.
+    Two ways to know. LeadMe says so, through the webinar tag or campaign --
+    which also makes the lead Level 1 on its own, so this path only matters
+    if that route is ever narrowed. Or the bot sent it, which nothing does
+    today: there is no webinar in ``data/videos.json`` and nothing else in
+    the schema records one, so ``WEBINAR_VIDEO_IDS`` is empty and matches
+    nobody. Add the webinar to the catalogue and name its id there to switch
+    that half on.
 
-    Whether the lead *attended* stays unobservable either way. The only record
-    of attendance is LeadMe's "פניות וובינר" campaign, which is a Level 1
-    source in its own right and does not need this route.
+    Whether the lead *attended* stays unobservable either way.
     """
-    configured = {_normalize(video_id) for video_id in get_settings().webinar_video_ids}
-    if not configured:
-        return False
-    return any(_normalize(sent) in configured for sent in (lead.videos_sent or []))
+    settings = get_settings()
+    metadata = lead.lead_metadata or {}
+    if _tagged(metadata.get("leadme_tags") or [], settings.leadme_webinar_tags):
+        return True
+    if _matches_any(
+        metadata.get("leadme_campaign_id") or metadata.get("leadme_campaign"),
+        settings.leadme_webinar_campaigns,
+    ):
+        return True
+    return any(
+        _matches_any(sent, settings.webinar_video_ids)
+        for sent in (lead.videos_sent or [])
+    )
 
 
 def engaged_with_a_video(lead: Lead, messages: Iterable[Message]) -> bool:
@@ -306,6 +376,6 @@ def classify_engagement(
 
     if any(_is_substantive(message) for message in user_messages):
         return EngagementDecision(2, "meaningful_reply")
-    if metadata.get("ctwa_campaign"):
+    if came_from_paid_advertising(metadata):
         return EngagementDecision(3, "paid_ad_no_meaningful_reply")
     return EngagementDecision(3, "no_meaningful_reply")
