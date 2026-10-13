@@ -384,8 +384,12 @@ setting is declared in `app/config.py` — add new ones there with an explicit
 `alias` and a default, and document them in `.env.example`.
 
 * Webhook + admin UI: container `8080`, published on the host as
-  `127.0.0.1:8082` (override with `WEBHOOK_HOST_PORT`). Loopback only — the
-  host's nginx reverse-proxies public HTTPS to it.
+  `127.0.0.1:${WEBHOOK_HOST_PORT:-8082}`. Loopback only — the host's nginx
+  reverse-proxies public HTTPS to it. **Production sets
+  `WEBHOOK_HOST_PORT=8084`, so health-check `127.0.0.1:8084` there.** Port
+  `8082` on that box belongs to ShiftPro, an unrelated project: it answers
+  200 with ShiftPro's HTML, so checking it is a false green. `docker compose
+  port bot 8080` resolves the right one without guessing.
 * Postgres (`postgres:5432`) and Chroma (`chroma:8000`) have **no** published
   ports. They are reachable only inside the compose network. The commented-out
   `ports:` blocks in `docker-compose.yml` are for debugging; leave them commented.
