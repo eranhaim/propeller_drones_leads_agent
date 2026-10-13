@@ -741,6 +741,47 @@ SCENARIOS: List[Scenario] = [
         ],
     ),
     Scenario(
+        name="fpv_course_is_standalone_not_a_master_module",
+        description=(
+            "Lead asks about 'קורס ה-FPV' after seeing the video. The bot "
+            "answered that FPV is part of מטיס מאסטר; the customer rejected "
+            "it. There are two products -- the standalone six-session FPV "
+            "course and a two-session FPV module inside מטיס מאסטר -- and "
+            "the question is about the standalone one."
+        ),
+        sender_name="Moshe",
+        turns=[
+            Turn(user_msg="היי, מתעניין"),
+            Turn(
+                user_msg="ראיתי את הסרטון על קורס ה-FPV ואשמח לפרטים",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion(
+                        "describes the standalone course (sessions / building a drone)",
+                        contains_any(
+                            "6 מפגשים", "שישה מפגשים",
+                            "הרכבת רחפן", "מרכיב",
+                        ),
+                    ),
+                    Assertion(
+                        "does NOT call FPV part of the master course",
+                        not_contains(
+                            "חלק מקורס מטיס מאסטר",
+                            "חלק מקורס מאסטר",
+                            "חלק מקורס המאסטר",
+                            "בתוך קורס מטיס מאסטר",
+                            "חלק מהקורס מטיס מאסטר",
+                        ),
+                    ),
+                    Assertion(
+                        "does NOT pivot to the master course's other specializations",
+                        lambda r, _l: not ("מיפוי" in (r or "") and "אבטחה" in (r or "")),
+                    ),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
         name="level_2_pushed_on_first_reply",
         description=(
             "Lead's first inbound message triggers engagement Level 2 "
