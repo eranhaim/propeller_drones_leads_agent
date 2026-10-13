@@ -18,12 +18,12 @@ manual `docs/leadme_integration.md`. This document does not repeat it.
 | `app/crm/leadme_v3.py` | Official v3 REST client (API key). |
 | `app/crm/leadme_delete.py` | Cookie loading, phone-format variants, row search, delete. |
 | `app/crm/leadme_queue.py` | Durable retry queue for pushes that could not resolve a phone. |
+| `app/crm/leadme_source.py` | Scheduler-driven source enrichment: pulls a lead's tags from v3, because LeadMe never sends the source. |
 | `app/crm/leadme_login.py` | Cookie auto-refresh via 2Captcha. |
 
 **Rule:** code outside `app/crm/` imports from `client.py` only. The agent
 tools, the opener, and the handler must not reach into `leadme_client` or
-`leadme_v3` directly for writes. (`leadme_v3.check_auto_level1` is a read and
-is the one deliberate exception, called from `graph.py`.)
+`leadme_v3` directly for writes.
 
 ---
 
@@ -113,6 +113,25 @@ so `push_lead_cancellation` and `leadme_delete` are cookie-only.
 | `add_lead_tag(lead_id, tag)` | POST | `/addLeadTag` | `{"leadId": …, "tag": "…"}` |
 | `get_lead_tags(lead_id)` | GET | `/getLeadTags` | `{"leadId": …}` |
 
+There is no per-lead endpoint for the source, campaign or Facebook id; every
+plausible name 404s (field manual §2.2). `get_lead_tags_by_phone` chains the
+two lookups above and is the whole of what can be read about one lead.
+
+### Rate limit — 60 calls a minute, and it lies to you
+
+`_reserve_rate_slot` gates every v3 call process-wide, because the limit is
+per API key. A call that cannot get a slot within `_RATE_MAX_WAIT_SECONDS`
+(2s) is skipped rather than made to wait, on the assumption that a lead is
+usually waiting at the other end and the retry queue will catch the work.
+
+The gate exists because `getLeadStatus` reports a throttled read
+*identically* to a lead LeadMe has never heard of. `get_lead_tags_by_phone`
+therefore returns `found`, `absent` or **`unavailable`**, and callers must
+keep those apart: `app/crm/leadme_source.py` records nothing on
+`unavailable`, so a busy minute at LeadMe never becomes a six-hour backoff
+or a wrong belief about the customer's CRM. An unpaced scan once reported 541
+of 601 leads missing from LeadMe; they were all present.
+
 The client accepts only HTTP 200 JSON objects with `result is true`. A status
 write also re-reads `/getLeadStatus` by `leadId` and succeeds only when the
 returned `status` equals the requested ID. A tag write re-reads
@@ -147,8 +166,8 @@ lower means further along.**
 | Level | v3 status id | Meaning in the CRM |
 |---|---|---|
 | 1 | `LEADME_STATUS_LEVEL_1` | already knows us, or our content plus a booking |
-| 2 | `LEADME_STATUS_LEVEL_2` | a real conversation, or half of that pair |
-| 3 | `LEADME_STATUS_LEVEL_3` | paid-ad starting point, or no meaningful reply |
+| 2 | `LEADME_STATUS_LEVEL_2` | a booked call missing part of that pair |
+| 3 | `LEADME_STATUS_LEVEL_3` | everyone else: paid-ad starting point, no meaningful reply, or a conversation that never reached a booking |
 
 `docs/leadme_integration.md` §6.5 is the authority on what qualifies.
 
@@ -298,6 +317,7 @@ Scheduler jobs:
 | Job | Interval | Registered when |
 |---|---|---|
 | `leadme_queue_drain` | `LEADME_QUEUE_INTERVAL_MINUTES` (3) | always |
+| `leadme_source_refresh` | `LEADME_SOURCE_INTERVAL_MINUTES` (15) | always |
 | `leadme_session_health` | 30 min | always |
 | `leadme_leak_canary` | `max(15, FOLLOWUP_INTERVAL_MINUTES)` | `FOLLOWUP_ENABLED=true` |
 | `leadme_proactive_refresh` | `LEADME_AUTO_REFRESH_INTERVAL_HOURS` (12) | `LEADME_AUTO_REFRESH_ENABLED=true` |

@@ -490,11 +490,24 @@ module that writes to LeadMe. The rules, in full in `docs/leadme_integration.md`
 * Engagement levels run **1 = most engaged, 3 = least**, and measure how much
   the lead already knows rather than how much they chatted. `1` = where the
   lead came from (organic, website form, landing page, incoming call to the
-  published number, a returning lead), **or** Propeller's content *and* a
-  call booked for a specific window. `2` = a real conversation, or either
-  half of that pair alone, or a stale version of either. `3` = the starting
-  point for every paid-ad lead, and where a lead who never meaningfully
-  replies stays. `docs/leadme_integration.md` §6.5 is the authority.
+  published number, the webinar, a returning lead), **or** Propeller's
+  content *and* a call booked for a specific window. `2` = a booked call that
+  misses part of that pair; a booked call is the whole of what Level 2 means.
+  `3` = everyone else: every paid-ad lead starts here, a lead who never
+  meaningfully replies stays here, and so does one who held a real
+  conversation but never booked. That last rule puts about three quarters of
+  the base at Level 3 and is deliberate.
+  `docs/leadme_integration.md` §6.5 is the authority.
+* **The source is pulled, not pushed.** LeadMe's webhook fires at record
+  intake, before the source, campaign and tags exist, so the payload is
+  usually just a phone. `app/crm/leadme_source.py` fetches the lead's tags
+  from v3 in the scheduler and the source rules match on those. The webhook
+  accepts anything and never returns a non-200 except 403 for a bad secret.
+* **v3 allows 60 requests a minute and a throttled read is reported exactly
+  like a lead LeadMe has never heard of.** `app/crm/leadme_v3.py` holds one
+  process-wide gate; never bypass it, and never conclude anything about the
+  customer's data from an unpaced scan. This has already produced a false
+  claim about the customer's CRM. `docs/leadme_integration.md` §2.2.
 * **Levels move in both directions.** `push_engagement_level` was
   upgrade-only until 2026-10-12 and refused `1→2`, `1→3` and `2→3`; it no
   longer does, because that is what left stale Level 1 leads the sales team

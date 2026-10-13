@@ -60,6 +60,15 @@ here.
    good reason.
 8. **Only `classify_engagement` decides a level**, and levels move in both
    directions. See §6.5.
+9. **v3 allows 60 requests per minute, and a throttled read lies to you.**
+   Past the limit LeadMe answers `429 {"result": false, "message": "Rate
+   limit exceeded", "retryAfter": N}`, and `getLeadStatus` reports that
+   *identically* to a lead it has never heard of — `result: false`, no lead.
+   So an unpaced scan does not fail loudly, it quietly reports that the
+   customer's leads are missing from their own CRM. **It has already made us
+   tell the customer something false.** `app/crm/leadme_v3.py` gates every
+   call process-wide; never bypass it, and never conclude anything about the
+   customer's data from a scan that did not respect it. See §2.2.
 
 ---
 
@@ -100,6 +109,33 @@ the single most important thing.
 - The vendor page currently says `POST /getLeadTags`; live verification on
   2026-09-29 returned HTTP 405 to POST and succeeded with GET plus a JSON
   body, so the client uses that working method until LeadMe corrects it.
+- There is **no per-lead endpoint for the source, campaign or Facebook id**.
+  Probed 2026-10-13: `getLead`, `getLeadById`, `getLeadData`,
+  `getLeadDetails`, `getLeadInfo`, `getLeadFields`, `getLeadSource`,
+  `getLeadCampaign`, `getLeads`, `getSources`, `getTags` and
+  `getCustomFields` all return a CodeIgniter 404 page. `getCampaigns` works
+  and is undocumented, but returns the account's global campaign list, not
+  anything per lead. Phone → `getLeadStatus` → `leadId` → `getLeadTags` is
+  the whole of what can be read about one lead.
+
+#### Rate limit — 60 requests per minute, per API key
+
+Measured 2026-10-13: throttled after exactly 60 calls in 5.2 seconds, with
+`429 {"result": false, "message": "Rate limit exceeded", "retryAfter": N}`.
+
+The danger is not the limit, it is that `getLeadStatus` cannot distinguish a
+throttled read from a lead LeadMe has never heard of — both are `result:
+false` with no lead. An unpaced scan of 601 leads reported 541 of them
+missing from the CRM; re-checking the same phones at one call per second
+found 60 of 60 present. See the retraction in §6.5.
+
+`app/crm/leadme_v3.py` therefore holds one process-wide gate (the limit is
+per key, so one gate covers every call site). A call that cannot get a slot
+within two seconds fails fast rather than making a lead wait, and the retry
+queue picks the work up later. `get_lead_tags_by_phone` returns a three-way
+outcome — `found`, `absent`, `unavailable` — so callers can tell "no such
+lead" from "LeadMe would not answer". Anything that treats `unavailable` as
+`absent` is reintroducing the bug.
 
 ### 2.3. Internal admin API — only for unsupported actions
 
@@ -383,8 +419,8 @@ is only "why now", never "what is a drone" and never "who are you".
 | Level | Status | Who is here |
 |---|---|---|
 | 1 | 7326 | **Where they came from**: organic arrivals, the website form, a landing page, a call to the number published on the website, a **returning** lead. **Or what they did**: they took in Propeller's content *and* booked a call for a specific window. |
-| 2 | 7327 | A real conversation — questions and objections. Also either half of that pair on its own: a booking with no content, content with no booking, or a stale version of either. |
-| 3 | 7328 | The starting point for **every paid-advertising lead** (Meta, TikTok, CTWA), and where a lead who never meaningfully replies stays. |
+| 2 | 7327 | **A booked call that misses part of that pair**: no content behind it, no specific window, or a stale booking. A booked call is the whole of what Level 2 means. |
+| 3 | 7328 | Everyone else. The starting point for **every paid-advertising lead** (Meta, TikTok, CTWA), where a lead who never meaningfully replies stays, and — since 2026-10-13 — where a lead who held a real conversation but never booked anything stays too. |
 
 Three further rules:
 
@@ -406,12 +442,17 @@ Three further rules:
   timestamp and fall back to their last inbound message, which can only make
   an old booking look newer than it is.
 
-Roy's own wording puts "לא תיאם שיחה" among the Level 3 traits. Read as a
-strict boolean that demotes every engaged non-booker, and measured against
-production on 2026-10-12 it moves 307 of 571 leads from Level 2 to Level 3,
-leaving 75% of the base at the bottom tier. It is read here as a description
-of a cold lead instead, so a substantive conversation without a booking stays
-at Level 2. Eran's call; revisit it if the sales team disagrees.
+- **A conversation without a booking is Level 3** (`conversation_no_booking`).
+  Roy's wording puts "לא תיאם שיחה" among the Level 3 traits, and it is read
+  here as the strict boolean it looks like. Measured against production, this
+  moves roughly 307 of 571 leads out of Level 2 and leaves about three
+  quarters of the base at the bottom tier. **That shape is intended, not a
+  bug** — Eran's decision on 2026-10-13, taken with the number in hand. The
+  reasoning: a Level 2 that meant "talked to the bot" described almost
+  everyone and so told the sales team nothing, and a level nobody trusts is
+  worse than a level that honestly says "we know nothing about this lead
+  yet". It is one branch in `classify_engagement` if the sales team wants it
+  back at Level 2.
 - **Levels move down as well as up.** `push_engagement_level` refused `1→2`,
   `1→3` and `2→3` until 2026-10-12. That guard is gone; the only remaining
   one is idempotency (pushing the level LeadMe already has is a no-op). The
@@ -440,24 +481,37 @@ Level 1 criterion again, but it is the classifier that says so, in one place.
   no lead-history or duplicate-submission field in the webhook payload or in
   v3, so a lead who left details a year before the bot existed is invisible
   to us. Measured 2026-10-12: it fires for **zero** of 593 leads.
-- **The webinar is not observable.** The customer counts "קיבל וובינר" as a
-  content signal, but there is no webinar in `data/videos.json` and nothing
-  in the schema records one, so `WEBINAR_VIDEO_IDS` is empty and matches
-  nobody. Add the webinar to the catalogue and name its id there to switch
-  the signal on. Attendance stays unobservable regardless; LeadMe's
-  "פניות וובינר" campaign is the only record of it, and that is a Level 1
-  source in its own right.
-- **There is no source field.** LeadMe's webhook sends a campaign but no
-  source, under any of the five names `parse_leadme_payload` accepts. Measured
-  2026-10-12: zero of 593 leads carry one. So the organic and incoming-call
-  routes cannot fire at all, and the website-form and landing-page routes work
-  only when a campaign name identifies them.
-- **Half the bot's leads are not in LeadMe.** Two read-only samples on
-  2026-10-12 put the share of leads whose phone resolves to no LeadMe row at
-  50% and 60%. It does not correlate with paid-ad origin or with lead age, and
-  our phones are consistently 12-digit E.164, so it is not a formatting
-  problem on this side. Cause unknown. Any level we compute for those leads is
-  unobservable to the sales team.
+- **Sending the webinar is not observable; being invited to it is.** There is
+  no webinar in `data/videos.json`, so `WEBINAR_VIDEO_IDS` is empty and
+  matches nobody — name its id there to switch that half on. What does work
+  is LeadMe's own record: a `וובינר` tag or the `פניות וובינר` campaign is
+  both a Level 1 source and the content half of the Level 1 pair. Attendance
+  itself stays unobservable.
+- **The webhook never carries the source, so the bot pulls it instead.**
+  LeadMe's external interface fires at record intake, *before* the source,
+  campaign, status and tags are written, so the normal shape of a delivery is
+  a phone and nothing else: of 100 observed payloads, 11 had a campaign and 2
+  had a source. The source is therefore fetched from v3 afterwards —
+  `app/crm/leadme_source.py`. v3 has no per-lead endpoint for the source
+  field itself (`getLead`, `getLeadDetails`, `getLeadInfo` and their obvious
+  variants all 404, probed 2026-10-13), but the human-meaningful source lives
+  in the tags anyway, and those are reachable.
+- **Paid and organic are indistinguishable without tags.** A Click-To-WhatsApp
+  ad arrives with `sourceType` `whatsapp`, exactly like a genuine organic
+  arrival. Only its Facebook tags, or the `ctwa_campaign` the bot recorded
+  itself, separate the two. This is why the organic Level 1 route ships
+  disabled: an untagged WhatsApp lead may simply be an ad whose tags have not
+  landed yet.
+
+#### Retracted: "half the bot's leads are not in LeadMe"
+
+Earlier revisions of this file reported that 50–60% of the bot's leads
+resolved to no LeadMe row. **That was wrong, and it was our own measurement
+error.** The scans that produced it ignored the v3 rate limit, and a
+throttled read is reported exactly like a lead LeadMe has never heard of.
+Re-checking the same phones at one call per second on 2026-10-13 found **60
+of 60 present**. Treat the customer's CRM as complete unless a paced scan
+says otherwise.
 
 ---
 
