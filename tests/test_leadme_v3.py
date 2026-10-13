@@ -4,6 +4,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 
+import httpx
+
 from app.crm import leadme_v3
 
 
@@ -164,6 +166,70 @@ class RateLimitTests(unittest.TestCase):
         client_cls.return_value.__enter__.return_value.post.return_value = response
 
         self.assertIsNone(leadme_v3.get_lead_status(phone="972521234567"))
+        self.assertEqual(
+            leadme_v3.get_lead_tags_by_phone("972521234567"), ("unavailable", []),
+        )
+
+
+class LookupOutcomeTests(unittest.TestCase):
+    """"Absent" must mean LeadMe said so, not that we could not ask.
+
+    Both halves have produced a false conclusion about the customer's CRM in
+    production: the rate limit, and a box that lost its route to LeadMe
+    halfway through a scan.
+    """
+
+    def setUp(self) -> None:
+        leadme_v3._recent_calls.clear()
+        self.addCleanup(leadme_v3._recent_calls.clear)
+
+    @patch("app.crm.leadme_v3.get_settings", return_value=_settings())
+    @patch("app.crm.leadme_v3.httpx.Client")
+    def test_an_unreachable_leadme_is_not_a_missing_lead(
+        self, client_cls, _settings_mock
+    ) -> None:
+        client_cls.return_value.__enter__.return_value.post.side_effect = (
+            httpx.ConnectError("No route to host")
+        )
+
+        self.assertEqual(
+            leadme_v3.get_lead_tags_by_phone("972521234567"), ("unavailable", []),
+        )
+
+    @patch("app.crm.leadme_v3.get_settings", return_value=_settings())
+    @patch("app.crm.leadme_v3.httpx.Client")
+    def test_a_server_fault_is_not_a_missing_lead(
+        self, client_cls, _settings_mock
+    ) -> None:
+        response = MagicMock(status_code=502)
+        client_cls.return_value.__enter__.return_value.post.return_value = response
+
+        self.assertEqual(
+            leadme_v3.get_lead_tags_by_phone("972521234567"), ("unavailable", []),
+        )
+
+    @patch("app.crm.leadme_v3.get_settings", return_value=_settings())
+    @patch("app.crm.leadme_v3.httpx.Client")
+    def test_a_lead_leadme_denies_having_is_absent(
+        self, client_cls, _settings_mock
+    ) -> None:
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"result": False, "message": "not found"}
+        client_cls.return_value.__enter__.return_value.post.return_value = response
+
+        self.assertEqual(
+            leadme_v3.get_lead_tags_by_phone("972521234567"), ("absent", []),
+        )
+
+    @patch("app.crm.leadme_v3.get_settings", return_value=_settings())
+    @patch("app.crm.leadme_v3.httpx.Client")
+    def test_a_404_is_absent(self, client_cls, _settings_mock) -> None:
+        response = MagicMock(status_code=404)
+        client_cls.return_value.__enter__.return_value.post.return_value = response
+
+        self.assertEqual(
+            leadme_v3.get_lead_tags_by_phone("972521234567"), ("absent", []),
+        )
 
 
 if __name__ == "__main__":

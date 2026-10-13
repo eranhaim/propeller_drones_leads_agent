@@ -91,33 +91,51 @@ def _headers() -> dict[str, str]:
     }
 
 
-def _parse_response(resp: httpx.Response, endpoint: str) -> Optional[dict[str, Any]]:
-    """Return a documented successful JSON response, or ``None``."""
+def _parse_response(
+    resp: httpx.Response, endpoint: str
+) -> tuple[str, Optional[dict[str, Any]]]:
+    """Return ``(outcome, data)`` for one v3 response.
+
+    The outcome separates the two reasons a call yields nothing:
+
+    * ``"answered"`` -- LeadMe replied and the answer is no. For a lead
+      lookup that means the lead genuinely is not there.
+    * ``"unavailable"`` -- we never got an answer we can reason about:
+      throttled, a server fault, or a body we cannot read.
+
+    Collapsing those two is how a rate limit became a false claim about the
+    customer's CRM once already. Only ``get_lead_tags_by_phone`` acts on the
+    difference; every write path retries either way.
+    """
     if resp.status_code == 429:
         logger.warning(
             "[leadme_v3] {} was rate limited despite the local gate; this "
             "answer says nothing about the lead", endpoint,
         )
-        return None
+        return ("unavailable", None)
+    if resp.status_code == 404:
+        # Documented for an unknown phone or lead: a real answer.
+        logger.info("[leadme_v3] {} returned HTTP 404", endpoint)
+        return ("answered", None)
     if resp.status_code != 200:
         logger.warning("[leadme_v3] {} returned HTTP {}", endpoint, resp.status_code)
-        return None
+        return ("unavailable", None)
     try:
         data = resp.json()
     except ValueError:
         logger.warning("[leadme_v3] {} returned non-JSON", endpoint)
-        return None
+        return ("unavailable", None)
     if not isinstance(data, dict):
         logger.warning("[leadme_v3] {} returned a non-object JSON body", endpoint)
-        return None
+        return ("unavailable", None)
     if data.get("result") is not True:
         logger.warning(
             "[leadme_v3] {} rejected request: {}",
             endpoint,
             data.get("message"),
         )
-        return None
-    return data
+        return ("answered", None)
+    return ("answered", data)
 
 
 def _positive_int(value: Any) -> Optional[int]:
@@ -130,10 +148,19 @@ def _positive_int(value: Any) -> Optional[int]:
     return value_int if value_int > 0 else None
 
 
-def _post(endpoint: str, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
-    """Call a documented v3 POST endpoint with validated JSON."""
-    if not is_v3_available() or not _reserve_rate_slot():
-        return None
+def _request(
+    endpoint: str, payload: dict[str, Any]
+) -> tuple[str, Optional[dict[str, Any]]]:
+    """Call a documented v3 POST endpoint and report why it yielded nothing.
+
+    See :func:`_parse_response` for the outcome vocabulary. No rate budget
+    and a transport failure are both ``"unavailable"``: neither tells us
+    anything about the lead we asked about.
+    """
+    if not is_v3_available():
+        return ("unavailable", None)
+    if not _reserve_rate_slot():
+        return ("unavailable", None)
     try:
         with httpx.Client(timeout=_TIMEOUT_SECONDS) as client:
             response = client.post(
@@ -143,8 +170,13 @@ def _post(endpoint: str, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
             )
     except httpx.HTTPError as exc:
         logger.warning("[leadme_v3] {} HTTP error: {}", endpoint, exc)
-        return None
+        return ("unavailable", None)
     return _parse_response(response, endpoint)
+
+
+def _post(endpoint: str, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Call a documented v3 POST endpoint with validated JSON."""
+    return _request(endpoint, payload)[1]
 
 
 def _normalize_phone(phone: str) -> str:
@@ -169,7 +201,7 @@ def get_statuses() -> Optional[dict[int, str]]:
         logger.warning("[leadme_v3] getStatuses HTTP error: {}", exc)
         return None
 
-    data = _parse_response(response, "getStatuses")
+    data = _parse_response(response, "getStatuses")[1]
     statuses = data.get("statuses") if data else None
     if not isinstance(statuses, list):
         logger.warning("[leadme_v3] getStatuses response has no status list")
@@ -192,41 +224,53 @@ def get_statuses() -> Optional[dict[int, str]]:
     return mapping
 
 
-def get_lead_status(
+def get_lead_status_with_outcome(
     *, phone: Optional[str] = None, lead_id: Optional[int] = None
-) -> Optional[dict[str, Any]]:
-    """Return a validated status record by phone or LeadMe connection ID."""
+) -> tuple[str, Optional[dict[str, Any]]]:
+    """:func:`get_lead_status`, plus whether LeadMe actually answered.
+
+    Only :func:`get_lead_tags_by_phone` needs this. Everything else retries
+    whether the lead was absent or the call never landed, so it uses the
+    plainer wrapper below.
+    """
     if bool(phone) == bool(lead_id):
         logger.warning("[leadme_v3] getLeadStatus requires exactly one identifier")
-        return None
+        return ("answered", None)
 
     if phone:
         normalized = _normalize_phone(phone)
         if not normalized:
-            return None
+            return ("answered", None)
         payload: dict[str, Any] = {"phone": normalized}
     else:
         valid_lead_id = _positive_int(lead_id)
         if valid_lead_id is None:
-            return None
+            return ("answered", None)
         payload = {"leadId": valid_lead_id}
 
-    data = _post("getLeadStatus", payload)
+    outcome, data = _request("getLeadStatus", payload)
     if data is None:
-        return None
+        return (outcome, None)
 
     result_lead_id = _positive_int(data.get("leadId"))
     status_id = _positive_int(data.get("status"))
     status_title = data.get("statusTitle")
     if result_lead_id is None or status_id is None or not isinstance(status_title, str):
         logger.warning("[leadme_v3] getLeadStatus response is incomplete")
-        return None
-    return {
+        return ("unavailable", None)
+    return ("answered", {
         "leadId": result_lead_id,
         "crmLeadId": _positive_int(data.get("crmLeadId")),
         "status": status_id,
         "statusTitle": status_title,
-    }
+    })
+
+
+def get_lead_status(
+    *, phone: Optional[str] = None, lead_id: Optional[int] = None
+) -> Optional[dict[str, Any]]:
+    """Return a validated status record by phone or LeadMe connection ID."""
+    return get_lead_status_with_outcome(phone=phone, lead_id=lead_id)[1]
 
 
 def get_lead_id(phone: str) -> Optional[int]:
@@ -287,7 +331,7 @@ def get_lead_tags(lead_id: int) -> list[str]:
         logger.warning("[leadme_v3] getLeadTags HTTP error: {}", exc)
         return []
 
-    data = _parse_response(response, "getLeadTags")
+    data = _parse_response(response, "getLeadTags")[1]
     if data is None:
         return []
     tags = data.get("tags")
@@ -334,18 +378,19 @@ def get_lead_tags_by_phone(phone: str) -> tuple[str, list[str]]:
     obvious variants all 404 (probed 2026-10-13) -- so the tags are the whole
     of what we can pull.
 
-    The third outcome is the one that matters. LeadMe answers a throttled or
-    failed read exactly like a lead it has never heard of, and treating that
-    as "this lead is not in the CRM" is how a rate limit turns into a wrong
-    conclusion about the customer's data.
+    The third outcome is the one that matters. At the HTTP level a throttled
+    read, an unreachable LeadMe and a lead it has never heard of look alike,
+    and reporting any of those as "this lead is not in the CRM" is how an
+    outage on either side turns into a wrong conclusion about the customer's
+    data. It already has, twice: once from the rate limit, and once when the
+    box briefly lost its route to LeadMe mid-scan. ``"absent"`` is returned
+    only when LeadMe itself answered.
     """
     if remaining_rate_budget() < 2:
         return ("unavailable", [])
-    status = get_lead_status(phone=phone)
+    outcome, status = get_lead_status_with_outcome(phone=phone)
     if status is None:
-        # Absent, throttled or down, and v3 gives us no way to tell apart.
-        # Reported as absent only because the caller retries either way.
-        return ("absent", [])
+        return ("absent" if outcome == "answered" else "unavailable", [])
     return ("found", get_lead_tags(status["leadId"]))
 
 
