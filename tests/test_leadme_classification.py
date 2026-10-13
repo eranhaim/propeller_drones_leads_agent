@@ -215,7 +215,7 @@ class ClassificationTests(unittest.TestCase):
             (decision.level, decision.reason), (2, "booking_without_content")
         )
 
-    # --- Level 2: either half of that pair on its own ---------------------
+    # --- Level 2: a booked call that misses part of the pair --------------
 
     def test_a_booking_without_our_content_is_level_two(self) -> None:
         decision = classify_engagement(_booked_lead(days_ago=1))
@@ -223,7 +223,29 @@ class ClassificationTests(unittest.TestCase):
             (decision.level, decision.reason), (2, "booking_without_content")
         )
 
-    def test_our_content_without_a_booking_is_level_two(self) -> None:
+    def test_a_stale_booking_is_level_two_even_with_our_content(self) -> None:
+        decision = classify_engagement(_booked_lead_with_a_video(days_ago=30))
+        self.assertEqual((decision.level, decision.reason), (2, "stale_booking"))
+
+    def test_a_booking_without_a_specific_window_is_level_two(self) -> None:
+        decision = classify_engagement(
+            _booked_lead(slot="any", videos_sent=["propeller_webinar"])
+        )
+        self.assertEqual(
+            (decision.level, decision.reason), (2, "booking_without_a_window")
+        )
+
+    def test_a_declined_call_is_not_a_booking(self) -> None:
+        decision = classify_engagement(
+            _booked_lead(slot="none", videos_sent=["propeller_webinar"])
+        )
+        self.assertEqual(
+            (decision.level, decision.reason), (3, "conversation_no_booking")
+        )
+
+    # --- Level 3: a conversation that never reached a booking -------------
+
+    def test_our_content_without_a_booking_is_level_three(self) -> None:
         sent_at = datetime.now(timezone.utc) - timedelta(hours=2)
         decision = classify_engagement(
             _lead(
@@ -231,20 +253,9 @@ class ClassificationTests(unittest.TestCase):
                 messages=_conversation(20, starting_at=sent_at + timedelta(minutes=1)),
             )
         )
-        self.assertEqual((decision.level, decision.reason), (2, "meaningful_reply"))
-
-    def test_a_stale_booking_is_level_two_even_with_our_content(self) -> None:
-        decision = classify_engagement(_booked_lead_with_a_video(days_ago=30))
-        self.assertEqual((decision.level, decision.reason), (2, "stale_booking"))
-
-    def test_booking_without_a_specific_window_is_level_two(self) -> None:
-        for slot in ("any", "none"):
-            with self.subTest(slot=slot):
-                decision = classify_engagement(
-                    _booked_lead(slot=slot, videos_sent=["propeller_webinar"])
-                )
-                self.assertEqual(decision.level, 2)
-                self.assertNotEqual(decision.reason, "content_and_booking")
+        self.assertEqual(
+            (decision.level, decision.reason), (3, "conversation_no_booking")
+        )
 
     def test_an_unbooked_lead_is_never_a_booking(self) -> None:
         decision = classify_engagement(
@@ -254,7 +265,9 @@ class ClassificationTests(unittest.TestCase):
                 messages=[_user_message(datetime.now(timezone.utc), "אולי 12-15")],
             )
         )
-        self.assertEqual((decision.level, decision.reason), (2, "meaningful_reply"))
+        self.assertEqual(
+            (decision.level, decision.reason), (3, "conversation_no_booking")
+        )
 
     def test_a_booking_never_outranks_where_the_lead_came_from(self) -> None:
         decision = classify_engagement(
@@ -280,9 +293,11 @@ class ClassificationTests(unittest.TestCase):
         )
         self.assertEqual(classify_engagement(lead).reason, "content_and_booking")
 
-    # --- Level 2 ----------------------------------------------------------
+    # --- Level 3 ----------------------------------------------------------
 
-    def test_price_course_and_license_questions_are_level_two(self) -> None:
+    def test_price_course_and_license_questions_alone_are_level_three(self) -> None:
+        """Asking real questions is a conversation, and a conversation is not
+        a booking. These used to be Level 2."""
         for text in (
             "כמה עולה הקורס?",
             "מה לומדים בהכשרה?",
@@ -292,9 +307,11 @@ class ClassificationTests(unittest.TestCase):
                 decision = classify_engagement(
                     _lead(messages=[_user_message(datetime.now(timezone.utc), text)])
                 )
-                self.assertEqual(decision.level, 2)
+                self.assertEqual(
+                    (decision.level, decision.reason),
+                    (3, "conversation_no_booking"),
+                )
 
-    # --- Level 3 ----------------------------------------------------------
 
     def test_paid_ad_prefill_without_a_reply_is_level_three(self) -> None:
         decision = classify_engagement(

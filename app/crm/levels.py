@@ -16,16 +16,19 @@ knows, not around how much they chatted:
   - **What they did**: they consumed Propeller's content *and* booked a call
     for a specific window. Both halves are required, and both must be recent.
 
-* **Level 2** -- reasonable interest, but the sales call still has to explain
-  the industry. A booking without the content, content without the booking, a
-  stale version of either, or simply a real conversation with the bot.
+* **Level 2** -- the lead booked a call but the sales call still has to
+  explain the industry: a booking without the content, without a specific
+  window, or a stale one. A booked call is the whole of what Level 2 means.
 * **Level 3** -- the starting point for everyone else, paid advertising
-  included, and where a lead who never meaningfully replies stays.
+  included. A lead who never meaningfully replies stays here, and so does one
+  who held a real conversation but never booked anything
+  (``conversation_no_booking``), because the customer's level 3 says
+  "לא תיאם שיחה" in as many words. That is the majority of the book.
 
-Engagement decays; where a lead came from does not. A conversation or a
-booking from a month ago no longer carries a lead at Level 1 -- it falls back
-to Level 2. The source signals never decay, because they describe what the
-lead already knew before we spoke to them.
+Engagement decays; where a lead came from does not. A booking from a month
+ago no longer carries a lead at Level 1 -- it falls back to Level 2. The
+source signals never decay, because they describe what the lead already knew
+before we spoke to them.
 
 Pairing content with a booking is the customer's final word on the model
 (Roy and Omer, 2026-10-12), after a day in which a booking alone was first
@@ -70,6 +73,9 @@ _WORD_RE = re.compile(r"[\u0590-\u05FFa-zA-Z0-9]{2,}")
 # A booking only reaches Level 1 with a real window. ``any`` and ``none`` are
 # what schedule_call falls back to when the lead never named one.
 _SPECIFIC_SLOTS = frozenset({"9-12", "12-15", "15-18"})
+# ``any`` is still a booked call, so it still counts as "תיאם שיחה". ``none``
+# records a lead who did not want one, so it does not.
+_BOOKED_SLOTS = _SPECIFIC_SLOTS | {"any"}
 
 
 def _normalize(value: object) -> str:
@@ -228,6 +234,20 @@ def level_1_source_reason(metadata: dict) -> Optional[str]:
     return None
 
 
+def booked_a_call(lead: Lead) -> bool:
+    """Return whether a call was actually scheduled for this lead.
+
+    "תיאם שיחה" in the customer's rule, which is Level 2 on its own. Wider
+    than :func:`booked_a_specific_window`, and deliberately narrower than the
+    funnel stage: the prompt also hands off a job applicant, and that is not
+    a booking.
+    """
+    if lead.funnel_stage != FunnelStage.handed_off:
+        return False
+    slot = (lead.lead_metadata or {}).get("preferred_call_slot")
+    return _normalize(slot) in _BOOKED_SLOTS
+
+
 def booked_a_specific_window(lead: Lead) -> bool:
     """Return whether the lead booked a call for a concrete time window.
 
@@ -366,16 +386,24 @@ def classify_engagement(
         return EngagementDecision(1, "returning_lead")
 
     # What the lead did, which does decay. Content and a booked window
-    # together are Level 1; either one alone is Level 2.
-    if booked_a_specific_window(lead):
+    # together are Level 1; a booked call that misses any part of that is
+    # Level 2, and a booked call is now the only thing Level 2 means.
+    if booked_a_call(lead):
+        if not booked_a_specific_window(lead):
+            return EngagementDecision(2, "booking_without_a_window")
         if not _is_fresh(booked_at(lead, user_messages)):
             return EngagementDecision(2, "stale_booking")
         if _received_our_content(lead, lead_messages, user_messages):
             return EngagementDecision(1, "content_and_booking")
         return EngagementDecision(2, "booking_without_content")
 
+    # A real conversation that never reached a booking. Roy's rule lists
+    # "לא תיאם שיחה" under level 3 explicitly, so chatting with the bot, on
+    # its own, no longer lifts a lead off the starting level. This is the one
+    # line to change if the sales team later wants those leads back at Level
+    # 2; it moves roughly 307 of 571 leads.
     if any(_is_substantive(message) for message in user_messages):
-        return EngagementDecision(2, "meaningful_reply")
+        return EngagementDecision(3, "conversation_no_booking")
     if came_from_paid_advertising(metadata):
         return EngagementDecision(3, "paid_ad_no_meaningful_reply")
     return EngagementDecision(3, "no_meaningful_reply")

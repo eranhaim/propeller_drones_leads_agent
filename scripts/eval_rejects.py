@@ -741,11 +741,11 @@ SCENARIOS: List[Scenario] = [
         ],
     ),
     Scenario(
-        name="level_2_pushed_on_first_reply",
+        name="level_3_held_on_first_reply",
         description=(
-            "Lead's first inbound message triggers engagement Level 2 "
-            "(replied to bot). We check the metadata not LeadMe (test "
-            "mode is on)."
+            "Replying to the bot is not a booking, so the lead stays at "
+            "Level 3. The customer's level 3 lists 'לא תיאם שיחה' in as "
+            "many words. We check the metadata not LeadMe (test mode is on)."
         ),
         sender_name="Elad",
         turns=[
@@ -754,11 +754,11 @@ SCENARIOS: List[Scenario] = [
                 assertions=[
                     Assertion("reply is Hebrew", is_hebrew(0.6)),
                     Assertion(
-                        "lead metadata records leadme_last_level=2",
+                        "lead metadata records leadme_last_level=3",
                         lambda _r, lead: (
                             (lead.lead_metadata or {}).get(
                                 "leadme_last_level"
-                            ) == 2
+                            ) == 3
                         ),
                     ),
                 ],
