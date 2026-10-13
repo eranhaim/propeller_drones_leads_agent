@@ -248,6 +248,68 @@ def _escape(s: Optional[str]) -> str:
     return html.escape(s or "")
 
 
+_EMBEDDABLE_VIDEO_EXTENSIONS = (".mp4", ".webm", ".ogg", ".ogv")
+
+
+def _safe_http_url(url: Optional[str]) -> str:
+    clean_url = (url or "").strip()
+    parsed = urlsplit(clean_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return clean_url
+
+
+def _can_embed_video_url(kind: Optional[str], url: str) -> bool:
+    if kind != "file":
+        return False
+    return urlsplit(url).path.lower().endswith(_EMBEDDABLE_VIDEO_EXTENSIONS)
+
+
+def _get_video_from_catalog(video_id: str):
+    from app.videos.catalog import get_video
+
+    return get_video(video_id)
+
+
+def _render_video_media_html(video_id: str) -> str:
+    if not video_id:
+        return ""
+
+    video = _get_video_from_catalog(video_id)
+    if video is None:
+        return (
+            '<span class="video-missing">'
+            "אין קישור זמין בקטלוג הסרטונים הנוכחי."
+            "</span>"
+        )
+
+    url = _safe_http_url(video.url)
+    if not url:
+        return (
+            '<span class="video-missing">'
+            "כתובת הסרטון בקטלוג אינה תקינה."
+            "</span>"
+        )
+
+    url_html = _escape(url)
+    title_html = _escape(video.title)
+    if _can_embed_video_url(video.kind, url):
+        return (
+            f'<video class="video-player" controls preload="metadata" '
+            f'src="{url_html}"></video>'
+            f'<a class="video-url" href="{url_html}" target="_blank" '
+            f'rel="noopener noreferrer" referrerpolicy="no-referrer">'
+            "פתח סרטון בכרטיסייה חדשה</a>"
+        )
+
+    return (
+        f'<span class="video-link-label">קישור לסרטון ({title_html}):</span>'
+        f'<a class="video-url" href="{url_html}" target="_blank" '
+        f'rel="noopener noreferrer" referrerpolicy="no-referrer">'
+        f"{url_html}</a>"
+    )
+
+
 # --- shared CSS ---------------------------------------------------------
 
 _CSS = """
@@ -448,6 +510,20 @@ table.leads {
     max-width: 78%; margin: 10px auto; padding: 8px 12px;
     background: #123a46; color: #d9f7ff; border: 1px solid #1d7188;
     border-radius: 8px; font-size: 13px;
+}
+.chat .video-event .video-player {
+    display: block; width: 100%; max-height: 320px; margin-top: 8px;
+    background: #020617; border-radius: 8px;
+}
+.chat .video-event .video-url {
+    display: block; margin-top: 6px; direction: ltr; text-align: left;
+    word-break: break-all;
+}
+.chat .video-event .video-link-label {
+    display: block; margin-top: 8px; color: #b9d9e3;
+}
+.chat .video-event .video-missing {
+    display: block; margin-top: 8px; color: #fbbf24;
 }
 .chat .video-event .caption {
     display: block; margin-top: 4px; color: #b9d9e3; white-space: pre-wrap;
@@ -876,11 +952,13 @@ def lead_conversation(
                 if m["caption"] else ""
             )
             video_title = m["video_title"] or m["content"]
+            media_html = _render_video_media_html(m["video_id"])
             bubbles.append(f"""
             <div class="video-event">
               <strong>🎬 נשלח סרטון: {_escape(video_title)}</strong>
               <span class="video-id"> · {_escape(m["video_id"])}</span>
               {caption_html}
+              {media_html}
               <span class="meta">בוט · {il.strftime("%H:%M")} · #{m['id']}</span>
             </div>
             """)
