@@ -17,11 +17,22 @@ from app.db.models import FunnelStage, Lead, Message, MessageRole
 
 
 _SETTINGS = SimpleNamespace(
+    leadme_paid_tags=["facebook", "tiktok"],
+    leadme_paid_source_types=["facebook", "tiktok"],
+    leadme_incoming_call_tags=["שיחה נכנסת"],
+    leadme_incoming_call_source_types=["call"],
+    leadme_website_form_tags=["אתר הבית"],
+    leadme_website_form_source_types=["form"],
     leadme_website_form_sources=["אתר הבית"],
     leadme_website_form_campaigns=["מתעניינים אקדמיה"],
+    leadme_landing_page_tags=["עמוד נחיתה", "דף נחיתה"],
+    leadme_landing_page_source_types=["lp"],
     leadme_landing_page_campaigns=["דף נחיתה רחפנים"],
+    leadme_webinar_tags=["וובינר"],
+    leadme_webinar_campaigns=["פניות וובינר"],
+    leadme_organic_source_types=["whatsapp"],
     leadme_level_1_sources=["אורגני", "שיחה נכנסת"],
-    leadme_level_1_campaigns=["פניות וובינר"],
+    leadme_level_1_campaigns=["קמפיין ישן"],
     lead_engagement_fresh_days=14,
     lead_deep_engagement_messages=12,
     webinar_video_ids=["propeller_webinar"],
@@ -130,15 +141,37 @@ class ClassificationTests(unittest.TestCase):
         decision = classify_engagement(
             _lead(metadata={"leadme_campaign": "פניות וובינר"})
         )
-        self.assertEqual(
-            (decision.level, decision.reason), (1, "propeller_content_campaign")
-        )
+        self.assertEqual((decision.level, decision.reason), (1, "webinar"))
 
-    def test_landing_page_campaign_is_level_one(self) -> None:
+    def test_landing_page_tag_is_level_one(self) -> None:
         decision = classify_engagement(
-            _lead(metadata={"leadme_campaign": "דף נחיתה רחפנים"})
+            _lead(metadata={"leadme_tags": ["עמוד נחיתה קורס FPV"]})
         )
         self.assertEqual((decision.level, decision.reason), (1, "landing_page"))
+
+    def test_paid_click_to_whatsapp_is_not_a_level_one_source(self) -> None:
+        decision = classify_engagement(
+            _lead(
+                metadata={
+                    "leadme_source_type": "whatsapp",
+                    "leadme_tags": ["Whatsapp", "קמפיין facebook: 6 careers"],
+                }
+            )
+        )
+        self.assertEqual(
+            (decision.level, decision.reason), (3, "paid_ad_no_meaningful_reply")
+        )
+
+    def test_organic_whatsapp_is_level_one(self) -> None:
+        decision = classify_engagement(
+            _lead(
+                metadata={
+                    "leadme_source_type": "whatsapp",
+                    "leadme_tags": ["Whatsapp"],
+                }
+            )
+        )
+        self.assertEqual((decision.level, decision.reason), (1, "organic"))
 
     def test_returning_lead_is_level_one(self) -> None:
         decision = classify_engagement(

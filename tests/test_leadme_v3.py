@@ -19,6 +19,10 @@ def _settings(**values):
 
 
 class LeadMeV3Tests(unittest.TestCase):
+    def setUp(self) -> None:
+        leadme_v3._recent_calls.clear()
+        self.addCleanup(leadme_v3._recent_calls.clear)
+
     @patch("app.crm.leadme_v3.get_settings", return_value=_settings())
     @patch("app.crm.leadme_v3.httpx.Client")
     def test_get_lead_status_uses_documented_post_body(self, client_cls, _settings_mock) -> None:
@@ -104,6 +108,62 @@ class LeadMeV3Tests(unittest.TestCase):
         self.assertEqual(leadme_v3.status_id_for_level(3), 7328)
         self.assertEqual(leadme_v3.level_for_status_id(7327), 2)
         self.assertIsNone(leadme_v3.level_for_status_id(1))
+
+
+class RateLimitTests(unittest.TestCase):
+    """LeadMe allows 60 v3 calls a minute and 429s past that.
+
+    A throttled read looks exactly like a lead LeadMe has never heard of, so
+    the gate is what keeps a rate limit from being read as missing data.
+    """
+
+    def setUp(self) -> None:
+        leadme_v3._recent_calls.clear()
+        self.addCleanup(leadme_v3._recent_calls.clear)
+
+    def test_the_budget_runs_out_at_the_documented_limit(self) -> None:
+        for _ in range(leadme_v3._RATE_LIMIT_PER_MINUTE):
+            self.assertTrue(leadme_v3._reserve_rate_slot())
+
+        self.assertEqual(leadme_v3.remaining_rate_budget(), 0)
+        with patch("app.crm.leadme_v3.time.sleep"):
+            self.assertFalse(leadme_v3._reserve_rate_slot())
+
+    @patch("app.crm.leadme_v3.get_settings", return_value=_settings())
+    @patch("app.crm.leadme_v3.httpx.Client")
+    def test_an_exhausted_budget_stops_the_call_being_made(
+        self, client_cls, _settings_mock
+    ) -> None:
+        for _ in range(leadme_v3._RATE_LIMIT_PER_MINUTE):
+            leadme_v3._reserve_rate_slot()
+
+        with patch("app.crm.leadme_v3.time.sleep"):
+            self.assertIsNone(leadme_v3.get_lead_status(phone="972521234567"))
+        client_cls.return_value.__enter__.return_value.post.assert_not_called()
+
+    @patch("app.crm.leadme_v3.get_settings", return_value=_settings())
+    def test_no_budget_reports_unavailable_rather_than_absent(
+        self, _settings_mock
+    ) -> None:
+        for _ in range(leadme_v3._RATE_LIMIT_PER_MINUTE):
+            leadme_v3._reserve_rate_slot()
+
+        self.assertEqual(
+            leadme_v3.get_lead_tags_by_phone("972521234567"), ("unavailable", []),
+        )
+
+    @patch("app.crm.leadme_v3.get_settings", return_value=_settings())
+    @patch("app.crm.leadme_v3.httpx.Client")
+    def test_a_429_is_not_read_as_an_answer_about_the_lead(
+        self, client_cls, _settings_mock
+    ) -> None:
+        response = MagicMock(status_code=429)
+        response.json.return_value = {
+            "result": False, "message": "Rate limit exceeded", "retryAfter": 49,
+        }
+        client_cls.return_value.__enter__.return_value.post.return_value = response
+
+        self.assertIsNone(leadme_v3.get_lead_status(phone="972521234567"))
 
 
 if __name__ == "__main__":

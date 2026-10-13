@@ -112,12 +112,12 @@ class LeadMeWebhookTests(unittest.TestCase):
         self.client = TestClient(webhook_app)
         self.settings = SimpleNamespace(webhook_secret="webhook-test-secret")
 
-    @patch("app.webhook.server.handle_new_lead")
+    @patch("app.webhook.server._enqueue_lead")
     @patch("app.webhook.server.get_settings")
-    def test_website_campaign_payload_is_processed_before_accepting(
+    def test_website_campaign_payload_is_queued_for_processing(
         self,
         get_settings,
-        handle_new_lead,
+        enqueue_lead,
     ) -> None:
         get_settings.return_value = self.settings
 
@@ -133,23 +133,27 @@ class LeadMeWebhookTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"status": "accepted"})
-        handle_new_lead.assert_called_once_with(
-            phone="972521234567",
-            name="Test Lead",
-            metadata={
+        queued = enqueue_lead.call_args.args[0]
+        self.assertEqual(queued.phone, "972521234567")
+        self.assertEqual(queued.name, "Test Lead")
+        self.assertEqual(queued.campaign, "מתעניינים אקדמיה")
+        self.assertEqual(
+            queued.metadata(),
+            {
                 "leadme_campaign": "מתעניינים אקדמיה",
                 "leadme_campaign_id": "מתעניינים אקדמיה",
             },
-            campaign_id="מתעניינים אקדמיה",
         )
 
-    @patch("app.webhook.server.handle_new_lead")
+    @patch("app.webhook.server._enqueue_lead")
     @patch("app.webhook.server.get_settings")
-    def test_unsupported_payload_is_not_accepted(
+    def test_a_payload_with_only_a_phone_is_still_accepted(
         self,
         get_settings,
-        handle_new_lead,
+        enqueue_lead,
     ) -> None:
+        # LeadMe fires at record intake, before the source and campaign
+        # exist, so this is the normal delivery rather than a broken one.
         get_settings.return_value = self.settings
 
         response = self.client.post(
@@ -157,8 +161,8 @@ class LeadMeWebhookTests(unittest.TestCase):
             data={"phone": "052-123-4567"},
         )
 
-        self.assertEqual(response.status_code, 422)
-        handle_new_lead.assert_not_called()
+        self.assertEqual(response.status_code, 200)
+        enqueue_lead.assert_called_once()
 
 
 class LeadMeQueueTests(unittest.TestCase):
