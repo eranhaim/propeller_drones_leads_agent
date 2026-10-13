@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import time
+from collections import deque
+from threading import Lock
 from typing import Any, Optional
 
 import httpx
@@ -13,6 +16,58 @@ from app.config import get_settings
 _BASE = "https://api.leadmecms.co.il/v3"
 _TIMEOUT_SECONDS = 8.0
 _WARNED_DISABLED: dict[str, bool] = {"value": False}
+
+# LeadMe answers HTTP 429 {"message": "Rate limit exceeded"} past 60 v3
+# requests per minute (measured 2026-10-13: throttled after exactly 60 calls
+# in 5.2s). The limit is per API key, so one process-wide gate covers every
+# call site.
+#
+# This matters more than it looks. A throttled read is indistinguishable from
+# "LeadMe has no such lead", and a scan that ignores the limit therefore
+# reports most of the customer's leads as missing when every one of them is
+# present. That false reading has already been acted on once.
+_RATE_LIMIT_PER_MINUTE = 60
+_RATE_WINDOW_SECONDS = 60.0
+# How long one call may wait for budget. Usually a lead is waiting at the
+# other end, so a call that cannot get a slot fails fast and the existing
+# retry queue picks the work up later.
+_RATE_MAX_WAIT_SECONDS = 2.0
+
+_rate_lock = Lock()
+_recent_calls: deque[float] = deque()
+
+
+def _prune_rate_window(now: float) -> None:
+    """Drop call timestamps that have left the window. Caller holds the lock."""
+    while _recent_calls and now - _recent_calls[0] >= _RATE_WINDOW_SECONDS:
+        _recent_calls.popleft()
+
+
+def remaining_rate_budget() -> int:
+    """Return how many v3 calls may be made right now without waiting."""
+    with _rate_lock:
+        _prune_rate_window(time.monotonic())
+        return max(0, _RATE_LIMIT_PER_MINUTE - len(_recent_calls))
+
+
+def _reserve_rate_slot() -> bool:
+    """Take one slot from the rate budget, waiting briefly for one if needed."""
+    deadline = time.monotonic() + _RATE_MAX_WAIT_SECONDS
+    while True:
+        with _rate_lock:
+            now = time.monotonic()
+            _prune_rate_window(now)
+            if len(_recent_calls) < _RATE_LIMIT_PER_MINUTE:
+                _recent_calls.append(now)
+                return True
+            wait_for = _RATE_WINDOW_SECONDS - (now - _recent_calls[0])
+        if time.monotonic() + wait_for > deadline:
+            logger.warning(
+                "[leadme_v3] rate budget exhausted; skipping a call rather "
+                "than waiting {:.0f}s for it", wait_for,
+            )
+            return False
+        time.sleep(min(wait_for, 0.25))
 
 
 def _is_v3_enabled() -> bool:
@@ -38,6 +93,12 @@ def _headers() -> dict[str, str]:
 
 def _parse_response(resp: httpx.Response, endpoint: str) -> Optional[dict[str, Any]]:
     """Return a documented successful JSON response, or ``None``."""
+    if resp.status_code == 429:
+        logger.warning(
+            "[leadme_v3] {} was rate limited despite the local gate; this "
+            "answer says nothing about the lead", endpoint,
+        )
+        return None
     if resp.status_code != 200:
         logger.warning("[leadme_v3] {} returned HTTP {}", endpoint, resp.status_code)
         return None
@@ -71,7 +132,7 @@ def _positive_int(value: Any) -> Optional[int]:
 
 def _post(endpoint: str, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
     """Call a documented v3 POST endpoint with validated JSON."""
-    if not is_v3_available():
+    if not is_v3_available() or not _reserve_rate_slot():
         return None
     try:
         with httpx.Client(timeout=_TIMEOUT_SECONDS) as client:
@@ -96,7 +157,7 @@ def _normalize_phone(phone: str) -> str:
 
 def get_statuses() -> Optional[dict[int, str]]:
     """Return the account's validated status-id-to-title mapping."""
-    if not is_v3_available():
+    if not is_v3_available() or not _reserve_rate_slot():
         return None
     try:
         with httpx.Client(timeout=_TIMEOUT_SECONDS) as client:
@@ -211,7 +272,7 @@ def get_lead_tags(lead_id: int) -> list[str]:
     Keep this compatibility path until LeadMe fixes the documented endpoint.
     """
     valid_lead_id = _positive_int(lead_id)
-    if valid_lead_id is None or not is_v3_available():
+    if valid_lead_id is None or not is_v3_available() or not _reserve_rate_slot():
         return []
     try:
         with httpx.Client(timeout=_TIMEOUT_SECONDS) as client:
@@ -262,17 +323,30 @@ def add_lead_tag(lead_id: int, tag: str) -> bool:
     return True
 
 
-AUTO_LEVEL1_TAGS = frozenset({"שיחה נכנסת", "אתר הבית", "עמוד נחיתה"})
+def get_lead_tags_by_phone(phone: str) -> tuple[str, list[str]]:
+    """Return ``("found", tags)``, ``("absent", [])`` or ``("unavailable", [])``.
 
+    This is how the bot learns where a lead actually came from. LeadMe's
+    external-interface push fires at record intake, before the source and the
+    tags are written, so the payload almost never carries them; v3 is the only
+    place the finished record can be read from. There is no per-lead endpoint
+    for the source field itself -- ``getLead``, ``getLeadDetails`` and their
+    obvious variants all 404 (probed 2026-10-13) -- so the tags are the whole
+    of what we can pull.
 
-def check_auto_level1(phone: str) -> bool:
-    """Return whether the lead has a tag that marks it Level 1."""
-    if not is_v3_available():
-        return False
-    lead_id = get_lead_id(phone)
-    if not lead_id:
-        return False
-    return bool(AUTO_LEVEL1_TAGS & set(get_lead_tags(lead_id)))
+    The third outcome is the one that matters. LeadMe answers a throttled or
+    failed read exactly like a lead it has never heard of, and treating that
+    as "this lead is not in the CRM" is how a rate limit turns into a wrong
+    conclusion about the customer's data.
+    """
+    if remaining_rate_budget() < 2:
+        return ("unavailable", [])
+    status = get_lead_status(phone=phone)
+    if status is None:
+        # Absent, throttled or down, and v3 gives us no way to tell apart.
+        # Reported as absent only because the caller retries either way.
+        return ("absent", [])
+    return ("found", get_lead_tags(status["leadId"]))
 
 
 def status_id_for_level(level: int) -> Optional[int]:
