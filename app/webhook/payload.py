@@ -9,7 +9,13 @@ from typing import Any, Iterable, Mapping
 
 
 def _key(value: object) -> str:
-    return re.sub(r"[^a-z0-9]", "", str(value or "").casefold())
+    """Reduce a field name to its comparable core.
+
+    Hebrew is kept. LeadMe's external interface names its fields in Hebrew
+    ("מקור הגעה", "סטטוס", "מזהה פייסבוק"); stripping non-ASCII collapsed
+    every one of them to the empty string, so they all silently missed.
+    """
+    return re.sub(r"[^a-z0-9\u0590-\u05ff]", "", str(value or "").casefold())
 
 
 def _values(value: Any) -> list[str]:
@@ -126,7 +132,9 @@ def normalize_leadme_payload(raw: Any) -> LeadMeWebhookPayload:
             _first(payload, ("phone", "phoneNumber", "phone_number", "tel", "mobile"))
         ),
         name=name,
-        campaign=_first(payload, ("campaign", "campaignId", "campaign_id")),
+        campaign=_first(
+            payload, ("campaign", "campaignId", "campaign_id", "קמפיין"),
+        ),
         source_type=_first(
             payload,
             (
@@ -135,9 +143,12 @@ def normalize_leadme_payload(raw: Any) -> LeadMeWebhookPayload:
                 "source",
                 "arrival source",
                 "arrivalSource",
+                # LeadMe's own field names, which are Hebrew.
+                "מקור הגעה",
+                "מקור",
             ),
         ),
-        tags=tuple(_all(payload, ("tags", "tags[]", "tag"))),
+        tags=tuple(_all(payload, ("tags", "tags[]", "tag", "סטטוס", "תגיות"))),
         facebook_lead_id=_first(
             payload,
             (
@@ -145,6 +156,7 @@ def normalize_leadme_payload(raw: Any) -> LeadMeWebhookPayload:
                 "Facebook Lead ID",
                 "facebookLeadId",
                 "facebook_lead_id",
+                "מזהה פייסבוק",
             ),
         ),
     )

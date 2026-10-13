@@ -8,9 +8,17 @@ opener via GreenAPI; other sources remain CRM-only.
 Endpoint:
     POST /webhook/leadme/{secret}
 
-Accepts either application/json or application/x-www-form-urlencoded. The
-configured LeadMe fields are normalized from their casing and array variants:
-phone, firstname, lastname, campaign, tags, Facebook Lead id, and sourceType.
+Accepts either application/json or application/x-www-form-urlencoded, in
+English or in LeadMe's own Hebrew field names, and normalizes casing and
+array variants: phone, firstname, lastname, campaign, tags, Facebook Lead id
+and sourceType.
+
+The endpoint never rejects a delivery it understood enough to acknowledge.
+LeadMe's interface fires at record intake, before the source, campaign,
+status and tags are written, so a payload carrying nothing but a phone is
+the normal case rather than a malformed one; the source is pulled back out
+of LeadMe afterwards (``app/crm/leadme_source.py``). The only non-200 left
+is 403 for a bad secret.
 
 Security: `{secret}` in the URL must match ``WEBHOOK_SECRET``. This is
 the same "shared secret in the path" pattern used by Stripe, GitHub, and
@@ -143,6 +151,34 @@ def health() -> JSONResponse:
     return JSONResponse(payload, status_code=status_code)
 
 
+def _enqueue_lead(normalized) -> None:
+    """Record the lead on a worker thread so the webhook can answer at once.
+
+    LeadMe gives a delivery five seconds before it calls it failed, and
+    ``handle_new_lead`` can spend longer than that sending the opener and the
+    intro video over GreenAPI. Processing used to run inline so that a
+    database failure surfaced as a failed delivery; a timeout surfaced the
+    same way while also costing us the lead, so the acknowledgement comes
+    first now and failures are loud in the log instead.
+    """
+
+    def _work() -> None:
+        try:
+            handle_new_lead(
+                phone=normalized.phone,
+                name=normalized.name or None,
+                metadata=normalized.metadata(),
+                campaign_id=normalized.campaign or None,
+            )
+        except Exception:
+            logger.exception(
+                "[LeadMe webhook] processing failed after acknowledging the "
+                "delivery; the lead may not have been recorded",
+            )
+
+    Thread(target=_work, daemon=True, name="leadme-webhook-lead").start()
+
+
 @app.post("/webhook/leadme/{secret}")
 async def leadme_webhook(secret: str, request: Request) -> JSONResponse:
     settings = get_settings()
@@ -152,7 +188,7 @@ async def leadme_webhook(secret: str, request: Request) -> JSONResponse:
         raise HTTPException(status_code=403, detail="bad secret")
 
     content_type = (request.headers.get("content-type") or "").lower()
-    raw_payload: Any
+    raw_payload: Any = {}
     try:
         if "application/json" in content_type:
             raw_payload = await request.json()
@@ -167,40 +203,29 @@ async def leadme_webhook(secret: str, request: Request) -> JSONResponse:
                     existing.append(value)
                 else:
                     raw_payload[key] = [existing, value]
-    except Exception as e:  # noqa: BLE001
-        logger.exception("Failed to parse webhook body: {}", e)
-        raise HTTPException(status_code=400, detail="invalid body")
+    except Exception:  # noqa: BLE001
+        # An unreadable body is still a delivery we must acknowledge. See
+        # the status-code note below.
+        logger.exception("[LeadMe webhook] could not parse the body")
 
     payload = _flatten_payload(raw_payload)
     normalized = normalize_leadme_payload(payload)
     logger.info("[LeadMe webhook] payload keys={}", list(payload.keys()))
 
     if not _is_valid_whatsapp_phone(normalized.phone):
-        logger.warning("[LeadMe webhook] rejected invalid phone; keys={}", list(payload.keys()))
-        raise HTTPException(status_code=422, detail="invalid phone")
-
-    if not normalized.source_type and not normalized.campaign:
-        logger.warning("[LeadMe webhook] rejected payload without source or campaign")
-        raise HTTPException(status_code=422, detail="missing source or campaign")
-
-    # Persist and process before acknowledging the event. Returning accepted
-    # from a detached thread made database failures indistinguishable from a
-    # successful LeadMe delivery.
-    try:
-        handle_new_lead(
-            phone=normalized.phone,
-            name=normalized.name or None,
-            metadata=normalized.metadata(),
-            campaign_id=normalized.campaign or None,
+        logger.warning(
+            "[LeadMe webhook] no usable phone; nothing to record. keys={}",
+            list(payload.keys()),
         )
-    except Exception:
-        logger.exception("[LeadMe webhook] processing failed")
-        raise HTTPException(status_code=503, detail="processing failed")
+        return JSONResponse({"status": "ignored"}, status_code=200)
 
-    return JSONResponse(
-        {"status": "accepted"},
-        status_code=200,
-    )
+    # A payload with no source or campaign used to be rejected. It is now the
+    # normal case: LeadMe's interface fires at record intake, before those
+    # fields are written, so demanding them rejected almost every delivery.
+    # The source is pulled from LeadMe afterwards instead -- see
+    # app/crm/leadme_source.py.
+    _enqueue_lead(normalized)
+    return JSONResponse({"status": "accepted"}, status_code=200)
 
 
 def run_in_background_thread() -> None:
