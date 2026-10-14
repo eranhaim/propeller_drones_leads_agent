@@ -175,7 +175,16 @@ _BUSINESS_INTEREST_RE = re.compile(
     r"(?:לפתוח|להקים).{0,20}(?:עסק|חברה)|"
     r"(?:עצמאי|פרילנס|עסק).{0,30}(?:רחפן|צילום|מיפוי|אבטחה|סולאר)"
 )
-_BOOKED_SLOT_RE = re.compile(r"(?<!\d)(9\s*-\s*12|12\s*-\s*15|15\s*-\s*18)(?!\d)")
+# The three canonical windows, written the way both the leads and the bot
+# actually write them: "9-12" and the prose form "בין 9 ל-12" / "9 עד 12".
+# Only the canonical pairs are listed, so "9-18" or "13-16" never read as a
+# window.
+_BOOKED_SLOT_RE = re.compile(r"(?<!\d)(9|12|15)\s*(?:-|ל-|ל\s|עד)\s*(12|15|18)(?!\d)")
+_CANONICAL_SLOTS = {
+    ("9", "12"): "9-12",
+    ("12", "15"): "12-15",
+    ("15", "18"): "15-18",
+}
 
 
 def _is_refusal(text: str) -> bool:
@@ -198,8 +207,17 @@ def _is_refusal(text: str) -> bool:
 
 
 def _booked_slot_in_message(text: str) -> Optional[str]:
-    match = _BOOKED_SLOT_RE.search(text or "")
-    return re.sub(r"\s+", "", match.group(1)) if match else None
+    """Return the canonical window named in *text*, only if it names just one.
+
+    Text listing several windows is the bot offering a choice ("9-12, 12-15,
+    או 15-18"), not a decision, so it yields nothing.
+    """
+    named = {
+        _CANONICAL_SLOTS[match.groups()]
+        for match in _BOOKED_SLOT_RE.finditer(text or "")
+        if match.groups() in _CANONICAL_SLOTS
+    }
+    return named.pop() if len(named) == 1 else None
 
 
 def _capture_booked_slot(session, lead: Lead, text: str) -> Optional[str]:
@@ -850,16 +868,24 @@ def _enforce_booking_promise(session, lead: Lead, reply: str) -> None:
         lead.id, lead.funnel_stage.value, slot or "not captured yet",
     )
 
-    # No slot captured -- book with "any" rather than bail. The reply already
+    # No slot captured -- book anyway rather than bail. The reply already
     # promised the lead a call; leaving them out of the CRM because we are
     # missing a time window is exactly how warm leads get lost.
+    #
+    # ``cancel_call`` clears the slot, so a cancel-then-rebook turn that
+    # promised the new window but never re-fired ``schedule_call`` arrives
+    # here with nothing captured. Read the window back out of our own promise
+    # before falling back to "any", so the rep gets the window the lead was
+    # actually told. Only the bot's promise is read, never the lead's message:
+    # a plain cancellation never matches _BOOKING_PROMISE_RE, so this net
+    # cannot rebook a lead who did not ask for a new time.
     if not slot:
-        slot = "any"
+        slot = _booked_slot_in_message(reply) or "any"
         repository.update_lead_metadata(session, lead, preferred_call_slot=slot)
         logger.warning(
             "[booking-safety-net] No slot captured for lead {} -- pushing "
-            "with slot='any' to keep the promise.",
-            lead.id,
+            "with slot={!r} to keep the promise.",
+            lead.id, slot,
         )
 
     decision = classify_engagement(lead)

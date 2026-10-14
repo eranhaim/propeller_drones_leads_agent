@@ -504,9 +504,10 @@ def cancel_call(reason: Optional[str] = None) -> str:
     After calling this, apologize briefly, then either:
 
     - If the lead's message ALREADY contained a valid new slot
-      (e.g. "רגע זה טעות, אני רוצה בבוקר בין 9 ל-12"), immediately
-      call ``schedule_call(preferred_call_slot="9-12")`` in the same
-      turn -- do NOT make them repeat themselves.
+      (e.g. "רגע זה טעות, אני רוצה בבוקר בין 9 ל-12"), call
+      ``schedule_call(preferred_call_slot="9-12")`` as the next step,
+      once this tool has returned -- do NOT make them repeat themselves
+      and do NOT end the turn on the cancellation alone.
     - Otherwise, ask them for the correct window (9-12 / 12-15 /
       15-18) and wait for their reply before scheduling.
     """
@@ -543,9 +544,12 @@ def cancel_call(reason: Optional[str] = None) -> str:
     repository.update_funnel_stage(ctx.session, ctx.lead, FunnelStage.warm)
 
     return (
-        "התיאום בוטל, המצב חזר לשלב 'warm'. "
-        "כעת התנצל בקצרה מול הליד ושאל אותו על החלון הנכון "
-        "(9-12 / 12-15 / 15-18). אל תקבע שיחה בהודעה הזאת - חכה לתשובתו."
+        "התיאום בוטל, המצב חזר לשלב 'warm'. כעת התנצל בקצרה מול הליד. "
+        "אם ההודעה האחרונה של הליד כבר כללה חלון שעות חוקי "
+        "(9-12 / 12-15 / 15-18 / any) - קרא עכשיו ל-schedule_call עם החלון "
+        "החדש, לפני שאתה כותב ללקוח, ואל תבקש מהליד לחזור על עצמו. "
+        "אם ההודעה לא כללה חלון חוקי - שאל אותו מה החלון הנכון "
+        "(9-12 / 12-15 / 15-18) וחכה לתשובתו."
     )
 
 
