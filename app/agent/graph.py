@@ -959,6 +959,13 @@ _sim_sessions: Dict[str, dict] = {}
 # Per-invocation mutable state dict, written to by stub tools.
 _sim_state_var: _ContextVar[Optional[dict]] = _ContextVar("_sim_state", default=None)
 
+# Videos the stub send_video tool queued during the current turn. The admin
+# simulator renders a player for each one, so it has to know what was sent on
+# this turn and not just the cumulative id list in state["videos_sent"].
+_sim_turn_videos_var: _ContextVar[Optional[list]] = _ContextVar(
+    "_sim_turn_videos", default=None
+)
+
 _INITIAL_STATE = {
     "familiarity": "unknown",
     "stage": "new",
@@ -1025,6 +1032,13 @@ def _sim_send_video(video_id: str, caption: Optional[str] = None) -> str:
         return f"[סימולטור] שגיאה: אין סרטון {video_id}"
     if video_id not in state["videos_sent"]:
         state["videos_sent"].append(video_id)
+    # Same caption precedence as queue_video, so the simulator shows the
+    # caption the lead would really have received.
+    _sim_turn_videos_var.get().append({
+        "video_id": v.id,
+        "title": v.title,
+        "caption": (caption or v.caption or v.title).strip(),
+    })
     return f"[סימולטור] הסרטון '{v.title}' היה נשלח"
 
 
@@ -1094,7 +1108,7 @@ def _sim_agent():
 def simulate_message(session_id: str, text: str) -> dict:
     """Run the agent on *text* in a sandboxed in-memory session.
 
-    Returns {"reply": str, "state": dict}.
+    Returns {"reply": str, "state": dict, "videos": list}.
     """
     import copy
     sess = _sim_session(session_id)
@@ -1123,17 +1137,23 @@ def simulate_message(session_id: str, text: str) -> dict:
     input_messages.append(HumanMessage(content=text))
 
     # Give the stub tools access to the live state dict via context var.
+    turn_videos: List[dict] = []
     token = _sim_state_var.set(state)
+    videos_token = _sim_turn_videos_var.set(turn_videos)
     ctx = AgentContext(session=None, lead=fake_lead, send_video=None)  # type: ignore[arg-type]
     try:
         with use_context(ctx):
             result = _sim_agent().invoke({"messages": input_messages})
     except Exception:
         logger.exception("[simulator] Agent invocation failed session={}", session_id)
-        _sim_state_var.reset(token)
-        return {"reply": "שגיאה פנימית בסימולטור — בדוק את הלוגים.", "state": copy.deepcopy(state)}
+        return {
+            "reply": "שגיאה פנימית בסימולטור — בדוק את הלוגים.",
+            "state": copy.deepcopy(state),
+            "videos": [],
+        }
     finally:
         _sim_state_var.reset(token)
+        _sim_turn_videos_var.reset(videos_token)
 
     reply = _extract_reply(result) or "..."
     reply = _strip_filler(reply)
@@ -1142,7 +1162,7 @@ def simulate_message(session_id: str, text: str) -> dict:
     history.append(HumanMessage(content=text))
     history.append(AIMessage(content=reply))
 
-    return {"reply": reply, "state": copy.deepcopy(state)}
+    return {"reply": reply, "state": copy.deepcopy(state), "videos": turn_videos}
 
 
 def clear_simulation(session_id: str) -> None:

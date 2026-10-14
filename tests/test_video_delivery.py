@@ -10,6 +10,9 @@ from app.agent.graph import (
     _dispatch_pending_videos,
     _limit_questions,
     _remove_video_delivery_duplicates,
+    _sim_send_video,
+    _sim_state_var,
+    _sim_turn_videos_var,
 )
 from app.agent.tools import send_video
 from app.db.models import Lead, MessageRole
@@ -155,6 +158,61 @@ class VideoDeliveryTests(unittest.TestCase):
             _limit_questions(reply),
             "המחיר תלוי במסלול. מה הכי מעניין אותך? המחיר המדויק יינתן על ידי יועץ.",
         )
+
+
+class SimulatorVideoEventTests(unittest.TestCase):
+    """The simulator has to report what it 'sent' so the admin can play it."""
+
+    def _run_stub_tool(self, video: Video, **kwargs) -> list[dict]:
+        state = {"videos_sent": []}
+        turn_videos: list[dict] = []
+        state_token = _sim_state_var.set(state)
+        videos_token = _sim_turn_videos_var.set(turn_videos)
+        try:
+            with patch("app.videos.catalog.get_video", return_value=video):
+                _sim_send_video.invoke({"video_id": video.id, **kwargs})
+        finally:
+            _sim_state_var.reset(state_token)
+            _sim_turn_videos_var.reset(videos_token)
+        return turn_videos
+
+    def test_stub_tool_reports_the_video_with_its_catalog_caption(self) -> None:
+        video = Video(
+            id="drone_license_guide",
+            title="איזה רישיון רחפן מתאים לך",
+            description="",
+            caption="סרטון על רישיונות",
+            url="https://example.test/license-guide.mp4",
+            kind="file",
+            trigger_stage="any",
+            trigger_topics=[],
+            familiarity_levels=[],
+        )
+
+        turn_videos = self._run_stub_tool(video)
+
+        self.assertEqual(turn_videos, [{
+            "video_id": "drone_license_guide",
+            "title": "איזה רישיון רחפן מתאים לך",
+            "caption": "סרטון על רישיונות",
+        }])
+
+    def test_an_explicit_caption_wins_over_the_catalog_caption(self) -> None:
+        video = Video(
+            id="drone_license_guide",
+            title="איזה רישיון רחפן מתאים לך",
+            description="",
+            caption="סרטון על רישיונות",
+            url="https://example.test/license-guide.mp4",
+            kind="file",
+            trigger_stage="any",
+            trigger_topics=[],
+            familiarity_levels=[],
+        )
+
+        turn_videos = self._run_stub_tool(video, caption="כיתוב מהבוט")
+
+        self.assertEqual(turn_videos[0]["caption"], "כיתוב מהבוט")
 
 
 if __name__ == "__main__":
