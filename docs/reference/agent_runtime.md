@@ -25,6 +25,19 @@ _model()  = ChatOpenAI(model=OPENAI_CHAT_MODEL, temperature=0.4)
 _agent()  = create_react_agent(model=_model(), tools=ALL_TOOLS)
 ```
 
+**Tool calls batched into one assistant message run on separate threads**, and
+they all share the turn's SQLAlchemy `Session` and `Lead` — neither of which is
+thread-safe. Measured on a cancel-then-rebook turn: `cancel_call` and
+`schedule_call` overlapped, `schedule_call` wrote `slot=9-12` + `handed_off`
+inside `cancel_call`'s window, and `cancel_call` then wrote its stale metadata
+back over it, leaving the lead told "booked for 9-12" with nothing in the CRM.
+Order-dependent pairs must therefore be requested as separate sequential calls,
+which is why `cancel_call`'s return value and חוק תיקון-שיחה both spell that
+out. Do not teach the model to issue two state-writing tools "together".
+Disabling `parallel_tool_calls` globally was tried and rejected: it cut the
+opener's intro-video delivery from 19/20 to 14/20, because that turn relies on
+`classify_lead` and `send_video` arriving together.
+
 Both are `@lru_cache(maxsize=1)`. LangGraph's prebuilt ReAct agent — no custom
 graph, no checkpointer, no LangGraph-managed memory. **The agent is stateless
 between turns.** Continuity comes entirely from the message list we rebuild on
@@ -255,8 +268,13 @@ Applied to the raw reply, in this order, in `handle_message`:
    `_BOOKING_PROMISE_RE` and `funnel_stage != handed_off`: set `handed_off`
    and `booked_at` first, exactly as `schedule_call` does so the classifier
    sees the same state on both paths, then attach the call-window tag and
-   push whatever level `classify_engagement` returns. Falls back to the `any`
-   slot rather than leaving a promised call out of the CRM.
+   push whatever level `classify_engagement` returns. When no slot was
+   captured, the window is read back out of the reply itself
+   (`_booked_slot_in_message`) before falling back to `any`, rather than
+   leaving a promised call out of the CRM. That also covers a
+   cancel-then-rebook turn, where `cancel_call` has already cleared the slot.
+   The trigger is the bot's own promise, never the lead's message, so a plain
+   cancellation — which matches no promise phrase — is never rebooked.
 6. **`_enforce_intro_video`** — on the first agent turn of a conversation,
    queue the company intro video if it has not been sent. The prompt asks for
    this too and the LLM forgets. Stands aside when the agent already chose a

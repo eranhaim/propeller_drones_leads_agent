@@ -248,6 +248,91 @@ def _escape(s: Optional[str]) -> str:
     return html.escape(s or "")
 
 
+_EMBEDDABLE_VIDEO_EXTENSIONS = (".mp4", ".webm", ".ogg", ".ogv")
+
+
+def _safe_http_url(url: Optional[str]) -> str:
+    clean_url = (url or "").strip()
+    parsed = urlsplit(clean_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return clean_url
+
+
+def _can_embed_video_url(kind: Optional[str], url: str) -> bool:
+    if kind != "file":
+        return False
+    return urlsplit(url).path.lower().endswith(_EMBEDDABLE_VIDEO_EXTENSIONS)
+
+
+def _get_video_from_catalog(video_id: str):
+    from app.videos.catalog import get_video
+
+    return get_video(video_id)
+
+
+def _render_video_media_html(video_id: str) -> str:
+    if not video_id:
+        return ""
+
+    video = _get_video_from_catalog(video_id)
+    if video is None:
+        return (
+            '<span class="video-missing">'
+            "אין קישור זמין בקטלוג הסרטונים הנוכחי."
+            "</span>"
+        )
+
+    url = _safe_http_url(video.url)
+    if not url:
+        return (
+            '<span class="video-missing">'
+            "כתובת הסרטון בקטלוג אינה תקינה."
+            "</span>"
+        )
+
+    url_html = _escape(url)
+    title_html = _escape(video.title)
+    if _can_embed_video_url(video.kind, url):
+        return (
+            f'<video class="video-player" controls preload="metadata" '
+            f'src="{url_html}"></video>'
+            f'<a class="video-url" href="{url_html}" target="_blank" '
+            f'rel="noopener noreferrer" referrerpolicy="no-referrer">'
+            "פתח סרטון בכרטיסייה חדשה</a>"
+        )
+
+    return (
+        f'<span class="video-link-label">קישור לסרטון ({title_html}):</span>'
+        f'<a class="video-url" href="{url_html}" target="_blank" '
+        f'rel="noopener noreferrer" referrerpolicy="no-referrer">'
+        f"{url_html}</a>"
+    )
+
+
+def _render_video_event_html(
+    *, video_id: str, video_title: str, caption: str, meta: str
+) -> str:
+    """One "video sent" block, shared by the conversation view and the simulator.
+
+    *meta* is the footer line; the two surfaces word it differently because only
+    a persisted conversation has a message id.
+    """
+    caption_html = (
+        f'<span class="caption">כיתוב שנשלח: {_escape(caption)}</span>'
+        if caption else ""
+    )
+    return (
+        '<div class="video-event">'
+        f"<strong>🎬 נשלח סרטון: {_escape(video_title)}</strong>"
+        f'<span class="video-id"> · {_escape(video_id)}</span>'
+        f"{caption_html}"
+        f"{_render_video_media_html(video_id)}"
+        f'<span class="video-meta">{_escape(meta)}</span>'
+        "</div>"
+    )
+
+
 # --- shared CSS ---------------------------------------------------------
 
 _CSS = """
@@ -444,16 +529,36 @@ table.leads {
     margin-right: auto;
     border-bottom-left-radius: 2px;
 }
-.chat .video-event {
+/* The video-event block is shared by the conversation view and the simulator,
+   so these rules are deliberately not scoped to .chat. */
+.video-event {
     max-width: 78%; margin: 10px auto; padding: 8px 12px;
     background: #123a46; color: #d9f7ff; border: 1px solid #1d7188;
-    border-radius: 8px; font-size: 13px;
+    border-radius: 8px; font-size: 13px; direction: rtl;
 }
-.chat .video-event .caption {
+.video-event .video-player {
+    display: block; width: 100%; max-height: 320px; margin-top: 8px;
+    background: #020617; border-radius: 8px;
+}
+.video-event .video-url {
+    display: block; margin-top: 6px; direction: ltr; text-align: left;
+    word-break: break-all;
+}
+.video-event .video-link-label {
+    display: block; margin-top: 8px; color: #b9d9e3;
+}
+.video-event .video-missing {
+    display: block; margin-top: 8px; color: #fbbf24;
+}
+.video-event .caption {
     display: block; margin-top: 4px; color: #b9d9e3; white-space: pre-wrap;
 }
-.chat .video-event .video-id {
+.video-event .video-id {
     color: #7cb4c4; font-size: 11px; direction: ltr;
+}
+.video-event .video-meta {
+    display: block; font-size: 10px; color: var(--text-dim);
+    margin-top: 4px; direction: ltr; text-align: left;
 }
 .chat .bubble.nudge { border-left: 3px solid #f59e0b; }
 .chat .meta {
@@ -871,19 +976,12 @@ def lead_conversation(
 
         role_class = m["role"]
         if role_class == "video":
-            caption_html = (
-                f'<span class="caption">כיתוב שנשלח: {_escape(m["caption"])}</span>'
-                if m["caption"] else ""
-            )
-            video_title = m["video_title"] or m["content"]
-            bubbles.append(f"""
-            <div class="video-event">
-              <strong>🎬 נשלח סרטון: {_escape(video_title)}</strong>
-              <span class="video-id"> · {_escape(m["video_id"])}</span>
-              {caption_html}
-              <span class="meta">בוט · {il.strftime("%H:%M")} · #{m['id']}</span>
-            </div>
-            """)
+            bubbles.append(_render_video_event_html(
+                video_id=m["video_id"],
+                video_title=m["video_title"] or m["content"],
+                caption=m["caption"],
+                meta=f"בוט · {il.strftime('%H:%M')} · #{m['id']}",
+            ))
             continue
 
         nudge = m["nudge"]
@@ -1802,6 +1900,16 @@ function addBubble(role, text) {
   wrap.scrollTop = wrap.scrollHeight;
 }
 
+// Server-rendered block (see _render_video_event_html) so the player markup
+// matches the conversation view exactly.
+function addVideoEvent(html) {
+  const wrap = document.getElementById('messages');
+  const holder = document.createElement('div');
+  holder.innerHTML = html;
+  while (holder.firstChild) { wrap.appendChild(holder.firstChild); }
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
 const STAGE_HE = {new:'חדש', engaged:'מעורב', warm:'חם', ready_for_call:'בשל לשיחה', handed_off:'הועבר'};
 const FAM_HE   = {unknown:'לא ידוע', beginner:'מתחיל', aware:'מודע', experienced:'מנוסה'};
 const INTENT_HE = {course:'קורס', shop:'חנות', service:'שירות', hobby:'תחביב', job:'עבודה', unknown:'לא ידוע'};
@@ -1869,6 +1977,8 @@ async function sendMsg() {
     const data = await res.json();
     typing.classList.remove('visible');
     addBubble('bot', data.reply || '(אין תשובה)');
+    // The real WhatsApp handler dispatches queued media after the answer.
+    (data.videos || []).forEach(addVideoEvent);
     if (data.state) renderState(data.state);
   } catch(e) {
     typing.classList.remove('visible');
@@ -1987,7 +2097,22 @@ async def simulator_chat(
         return {"reply": ""}
 
     result = simulate_message(session_id, message)
-    return {"reply": result["reply"], "state": result["state"]}
+    now_il = datetime.now(IL).strftime("%H:%M")
+    return {
+        "reply": result["reply"],
+        "state": result["state"],
+        # Pre-rendered so the player markup has exactly one implementation,
+        # shared with the conversation view.
+        "videos": [
+            _render_video_event_html(
+                video_id=v["video_id"],
+                video_title=v["title"],
+                caption=v["caption"],
+                meta=f"בוט · {now_il}",
+            )
+            for v in result["videos"]
+        ],
+    }
 
 
 @router.post("/simulator/reset")
