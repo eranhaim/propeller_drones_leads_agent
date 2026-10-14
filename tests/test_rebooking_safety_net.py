@@ -50,14 +50,13 @@ class BookingPromiseNetTests(unittest.TestCase):
     def setUp(self) -> None:
         for target in (
             "app.agent.graph.repository",
-            "app.agent.graph.mark_ready_for_call",
-            "app.agent.graph.mark_engaged_no_book",
+            "app.agent.graph.mark_engagement",
             "app.agent.graph.mark_call_window",
         ):
             patcher = patch(target)
             setattr(self, target.rsplit(".", 1)[1], patcher.start())
             self.addCleanup(patcher.stop)
-        self.mark_engaged_no_book.return_value = True
+        self.mark_engagement.return_value = True
         classify = patch(
             "app.agent.graph.classify_engagement",
             return_value=SimpleNamespace(level=2, reason="test"),
@@ -78,6 +77,7 @@ class BookingPromiseNetTests(unittest.TestCase):
         self.mark_call_window.assert_called_once()
         self.assertEqual(self.mark_call_window.call_args.args[1], "9-12")
         self.repository.update_funnel_stage.assert_called_once()
+        self.mark_engagement.assert_called_once()
 
     def test_promise_without_a_window_still_books_with_any(self) -> None:
         lead = _cancelled_lead()
@@ -95,8 +95,7 @@ class BookingPromiseNetTests(unittest.TestCase):
         _enforce_booking_promise(None, lead, "סליחה על הבלבול, ביטלתי את התיאום הקודם.")
 
         self.mark_call_window.assert_not_called()
-        self.mark_ready_for_call.assert_not_called()
-        self.mark_engaged_no_book.assert_not_called()
+        self.mark_engagement.assert_not_called()
         self.repository.update_funnel_stage.assert_not_called()
         self.assertEqual(lead.funnel_stage, FunnelStage.warm)
 
