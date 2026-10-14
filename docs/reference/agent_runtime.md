@@ -25,6 +25,19 @@ _model()  = ChatOpenAI(model=OPENAI_CHAT_MODEL, temperature=0.4)
 _agent()  = create_react_agent(model=_model(), tools=ALL_TOOLS)
 ```
 
+**Tool calls batched into one assistant message run on separate threads**, and
+they all share the turn's SQLAlchemy `Session` and `Lead` — neither of which is
+thread-safe. Measured on a cancel-then-rebook turn: `cancel_call` and
+`schedule_call` overlapped, `schedule_call` wrote `slot=9-12` + `handed_off`
+inside `cancel_call`'s window, and `cancel_call` then wrote its stale metadata
+back over it, leaving the lead told "booked for 9-12" with nothing in the CRM.
+Order-dependent pairs must therefore be requested as separate sequential calls,
+which is why `cancel_call`'s return value and חוק תיקון-שיחה both spell that
+out. Do not teach the model to issue two state-writing tools "together".
+Disabling `parallel_tool_calls` globally was tried and rejected: it cut the
+opener's intro-video delivery from 19/20 to 14/20, because that turn relies on
+`classify_lead` and `send_video` arriving together.
+
 Both are `@lru_cache(maxsize=1)`. LangGraph's prebuilt ReAct agent — no custom
 graph, no checkpointer, no LangGraph-managed memory. **The agent is stateless
 between turns.** Continuity comes entirely from the message list we rebuild on
@@ -252,9 +265,12 @@ Applied to the raw reply, in this order, in `handle_message`:
    duplicates a caption sent directly by `send_video`, while preserving new
    follow-up content.
 5. **`_enforce_booking_promise`** — if the reply matches
-   `_BOOKING_PROMISE_RE` and `funnel_stage != handed_off`: when a slot exists,
-   push CRM level 1 and set `handed_off`; when no slot exists, log and do
-   nothing (never push a fabricated slot).
+   `_BOOKING_PROMISE_RE` and `funnel_stage != handed_off`, push the CRM level
+   and set `handed_off`. When no slot was captured, the window is read back out
+   of the reply itself (`_booked_slot_in_message`), falling back to `any`. That
+   covers a cancel-then-rebook turn, where `cancel_call` has already cleared
+   the slot. The trigger is the bot's own promise, never the lead's message, so
+   a plain cancellation — which matches no promise phrase — is never rebooked.
 
 Order matters: the Hebrew retry runs inside the `use_context` block because the
 retry may itself call tools. Steps 2–5 run after it, outside.
