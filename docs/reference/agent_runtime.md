@@ -236,6 +236,11 @@ value.
 The DB layer alone is insufficient: `videos_sent` is only committed at the end
 of the transaction, so a second call in the same turn still reads the old list.
 
+`record_video_delivery` also pushes a `סרטון · <title>` tag to LeadMe through
+`crm.client.mark_video_delivered`, wrapped in `try/except` — the media has
+already been delivered by then, so a CRM failure must not surface to the lead.
+See `docs/leadme_integration.md` §7.1.
+
 ### 6.3 Video delivery reply guard
 
 `send_video` is the only outbound delivery for media: it sends the video or
@@ -279,6 +284,17 @@ Applied to the raw reply, in this order, in `handle_message`:
    queue the company intro video if it has not been sent. The prompt asks for
    this too and the LLM forgets. Stands aside when the agent already chose a
    video itself.
+7. **`_drop_stray_token`** — runs first, before the sanitizers. Replaces the
+   whole reply with `""` when it is only a control token (`done`, `[done]`,
+   `ok`…). The model emits one of these as its final text after a tool-heavy
+   turn; one reached a real lead on 2026-10-06. The empty result falls
+   through to the `non_redundant_continuation` branch like any other
+   emptied turn.
+8. **`_ensure_opening_question`** — on the first agent turn only, appends the
+   triage question of חוק הניתוב when the reply contains no `?`. Roy,
+   2026-10-14: a campaign-entry reply explained the course and stopped, so
+   the lead had nothing to answer. Later turns are left to the prompt rule,
+   because only the first turn has a safe, known question.
 
 Order matters: the Hebrew retry runs inside the `use_context` block because the
 retry may itself call tools. Steps 2–6 run after it, outside.

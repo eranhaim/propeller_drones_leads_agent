@@ -102,6 +102,26 @@ class ConversationMemoryTests(unittest.TestCase):
         self.assertFalse(removed)
         self.assertIn("איזה שימוש", reply)
 
+    def test_canned_webhook_opener_blocks_a_second_introduction(self) -> None:
+        """The 2026-10-06 duplicate: Elad introduced himself twice in a row.
+
+        The canned opener carries no discovery question, so it used not to
+        count as an opener and the agent's own greeting went out after it.
+        """
+        canned_opener = (
+            "היי ערן, אני אלעד מהאקדמיה של פרופלור דרונס. ראיתי שהשארת פרטים "
+            "באתר ורציתי לבדוק מה עניין אותך."
+        )
+        prior = [_message(MessageRole.assistant, canned_opener)]
+
+        reply, removed = remove_repeated_outbound_content(
+            "היי ערן! זה אלעד מפרופלור דרונס, נעים להכיר.",
+            prior,
+        )
+
+        self.assertTrue(removed)
+        self.assertEqual(reply, "")
+
     def test_repeated_factual_answer_is_not_mistaken_for_an_opener(self) -> None:
         answer = "בקורס מטיס מאסטר לומדים מיפוי, צילום אווירי, אבטחה ו-FPV."
         reply, removed = remove_repeated_outbound_content(
