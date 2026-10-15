@@ -848,6 +848,11 @@ Chronological, so you can recognize the symptoms:
 7. **`[leak-canary] ERROR: campaign 12277 grew from N to M`.**
    Something outside our bot leaked a lead. Check LeadMe automations
    and any other integration on that supplier slug.
+   **`[leak-canary] BLIND (status=no_cookies)`** is the opposite problem:
+   the canary cannot read the campaign at all, so no growth would ever be
+   reported. It needs a cookie session; the v3 API cannot count a campaign.
+   `/health` carries the same state as `leadme_leak_canary`, because the
+   log line above fires only when the state changes.
 8. **CAPTCHA re-appearing every session.** LeadMe's CAPTCHA is
    pinned to session freshness; solving it once is enough for that
    session's cookies, but next re-login will hit it again. Plan for a
