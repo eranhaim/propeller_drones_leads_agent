@@ -523,15 +523,27 @@ Tags are free-form Hebrew strings attached to a lead. They show up in
 LeadMe's UI as pills below the lead's name. The sales team filters and
 groups by tag heavily, so pick short, consistent labels.
 
-**Current bot policy (as of 2026-07-23): only ONE tag is pushed.**
+**Current bot policy (as of 2026-10-15): three tags are pushed.**
 
 - `חלון · <slot>` (e.g. `חלון · 9-12`, `חלון · 12-15`, `חלון · 15-18`,
   `חלון · any`) – added the moment `preferred_call_slot` is set on the
-  lead.
-- Separator is the middle-dot **U+00B7 (`·`)**, NOT a colon `:`. This
-  matches how LeadMe's UI renders its own tag separators. If you push
-  `חלון: 9-12` (colon), the sales team sees an inconsistent style and
-  filters may miss it.
+  lead. Owner: `push_call_window_tag`.
+- `סרטון · <video title>` (e.g. `סרטון · קריירה בעולם הרחפנים`) – added
+  once a video has actually been delivered to the lead. Roy asked for this
+  on 2026-10-14: the sales team hears "I got a video" and could not tell
+  which one, so a follow-up call started blind. Owner: `push_video_tag`,
+  called from `app/agent/tools.py::record_video_delivery` after GreenAPI
+  accepted the media. **Tags are the only per-lead field v3 lets us write**
+  – there is no note, comment or attachment endpoint – so the video's name
+  is what lands in LeadMe, which is the fallback Roy named himself.
+- `מקור: <campaign>` – CTWA campaign attribution, pushed on the lead's
+  first inbound message. Owner: `app/whatsapp/handler.py::_push_ctwa_tag`.
+  Note the colon: this one predates the middle-dot convention and the sales
+  team's saved filters match it as-is. Do not "fix" it.
+- Separator for the two newer tags is the middle-dot **U+00B7 (`·`)**, NOT
+  a colon `:`. This matches how LeadMe's UI renders its own tag separators.
+  If you push `חלון: 9-12` (colon), the sales team sees an inconsistent
+  style and filters may miss it.
 
 **What used to be here and is gone (do NOT re-introduce):**
 
@@ -543,10 +555,13 @@ groups by tag heavily, so pick short, consistent labels.
   `push_lead_cancellation` now only flips the status back to `חדש`
   (rel=1).
 
-If you're asked to add a new tag category, extend `push_lead` (or
-`push_lead_cancellation`) rather than sprinkling `_admin_add_tag` calls
-elsewhere – that way the two-IDs resolution goes through the same code
-path.
+If you're asked to add a new tag category, give it ONE owner function in
+`leadme_client.py` next to `push_call_window_tag` and `push_video_tag`
+rather than sprinkling `_admin_add_tag` calls elsewhere – that way the
+two-IDs resolution goes through the same code path. A tag that is pushed
+during first contact must also enqueue itself in `leadme_queue` (a new
+`kind`, drained in **both** `_try_drain_via_v3` and `_process_lead`),
+because a CTWA lead is not yet visible in LeadMe at that moment.
 
 ### 7.2. How to add a tag from Python – the RIGHT way
 

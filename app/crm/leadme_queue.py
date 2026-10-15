@@ -27,6 +27,7 @@ State schema (on ``lead.lead_metadata``)
             {"kind": "engagement", "level": 1, "slot": "9-12",
              "note": "intent=course|slot=9-12"},
             {"kind": "ctwa_tag", "campaign": "עודד"},
+            {"kind": "video_tag", "video_title": "קריירה בעולם הרחפנים"},
         ],
         "leadme_push_next_attempt_at": "2026-07-26T10:25:00+00:00",
         "leadme_push_attempts": 3,
@@ -52,6 +53,9 @@ Idempotency and level changes
 - Two ``ctwa_tag`` pushes with the same campaign collapse into one.
   Different campaigns keep both entries -- unlikely in practice but
   cheap to preserve.
+- ``video_tag`` collapses on the video title only. A lead receives several
+  different videos over a conversation and the sales team needs to see all
+  of them, so entries for different titles all survive.
 - Once a pending item is successfully executed, it's removed. When the
   list is empty, all queue metadata is cleared so the lead looks clean
   again.
@@ -198,14 +202,45 @@ def enqueue_ctwa_tag(
     _enqueue(lead, item, merge_fn=_merge_ctwa_tag, session=session)
 
 
+def _merge_video_tag(existing: list[dict], new_item: dict) -> list[dict]:
+    """Fold a new video_tag item; dedupe on (kind, video_title)."""
+    new_title = (new_item.get("video_title") or "").strip()
+    already_queued = any(
+        item.get("kind") == "video_tag"
+        and (item.get("video_title") or "").strip() == new_title
+        for item in existing
+    )
+    if already_queued:
+        return list(existing)
+    return list(existing) + [new_item]
+
+
+def enqueue_video_tag(
+    lead: Lead,
+    video_title: str,
+    *,
+    session: Optional[Session] = None,
+) -> None:
+    """Queue a ``סרטון · <title>`` tag push for later retry."""
+    video_title = (video_title or "").strip()
+    if not video_title:
+        return
+    item = {"kind": "video_tag", "video_title": video_title}
+    _enqueue(lead, item, merge_fn=_merge_video_tag, session=session)
+
+
 def _merge_status(existing: list[dict], new_item: dict) -> list[dict]:
     """Replace queued engagement with one terminal CRM status.
 
     A lead who explicitly opted out must not later be moved back to an
-    engagement level by a stale retry. CTWA attribution is independent and
-    remains queued because it describes source, not relevance.
+    engagement level by a stale retry. The tag kinds are independent and
+    remain queued: they record where the lead came from and what we already
+    sent them, neither of which an opt-out makes untrue.
     """
-    kept = [item for item in existing if item.get("kind") == "ctwa_tag"]
+    kept = [
+        item for item in existing
+        if item.get("kind") in ("ctwa_tag", "video_tag")
+    ]
     kept.append(new_item)
     return kept
 
@@ -427,6 +462,18 @@ def _try_drain_via_v3(
                 )
             else:
                 remaining.append(item)
+        elif kind == "video_tag":
+            video_title = (item.get("video_title") or "").strip()
+            if not video_title:
+                continue
+            if add_lead_tag(lead_id, f"סרטון · {video_title}"):
+                logger.info(
+                    "[leadme-queue v3] DRAINED video_tag lead {} phone={} "
+                    "leadId={} video={!r}",
+                    lead.id, phone, lead_id, video_title,
+                )
+            else:
+                remaining.append(item)
         else:
             logger.warning(
                 "[leadme-queue v3] unknown pending kind={!r} on lead {} "
@@ -597,7 +644,7 @@ def _process_lead(sess: Session, lead: Lead, now: datetime) -> None:
             it.get("kind") == "engagement"
             and it.get("slot") not in (None, "", "any", "none")
         )
-        or it.get("kind") == "ctwa_tag"
+        or it.get("kind") in ("ctwa_tag", "video_tag")
         for it in pending
     )
     tag_lead_id: Optional[str] = None
@@ -676,6 +723,23 @@ def _process_lead(sess: Session, lead: Lead, now: datetime) -> None:
                     logger.info(
                         "[leadme-queue] DRAINED ctwa_tag lead {} phone={} "
                         "campaign={!r}", lead.id, lead.phone, campaign_tag,
+                    )
+                else:
+                    remaining.append(item)
+            elif kind == "video_tag":
+                video_title = (item.get("video_title") or "").strip()
+                if not video_title:
+                    continue
+                if tag_lead_id is None:
+                    remaining.append(item)
+                    continue
+                ok = _admin_add_tag(
+                    client, tag_lead_id, f"סרטון · {video_title}",
+                )
+                if ok:
+                    logger.info(
+                        "[leadme-queue] DRAINED video_tag lead {} phone={} "
+                        "video={!r}", lead.id, lead.phone, video_title,
                     )
                 else:
                     remaining.append(item)

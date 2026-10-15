@@ -705,6 +705,60 @@ def push_call_window_tag(
     return ok
 
 
+def push_video_tag(
+    lead: Lead,
+    video_title: str,
+    *,
+    session: Optional[Session] = None,
+) -> bool:
+    """Attach a ``סרטון · <title>`` tag so the rep sees which video went out.
+
+    Asked for by the customer on 2026-10-14: the sales team hears from leads
+    that they got "a video" and has no way to know which one, so a follow-up
+    call starts blind. Tags are the only per-lead field v3 lets us write --
+    there is no notes or attachment endpoint (``getLead``/``getLeadDetails``
+    both 404, see ``docs/leadme_integration.md`` §2.2) -- so the video's NAME
+    is what lands in LeadMe, which is the fallback the customer named himself.
+
+    Unlike :func:`push_call_window_tag`, this one enqueues its own retry. The
+    intro video goes out on first contact, which is exactly the window where a
+    CTWA lead is not in LeadMe yet, so a fire-and-forget tag would miss the
+    most frequently sent video of all.
+    """
+    from app.crm import leadme_queue
+    from app.crm.leadme_v3 import add_lead_tag, get_lead_id, is_v3_available
+
+    video_title = (video_title or "").strip()
+    if not video_title:
+        return False
+    if not (lead.phone or "").strip():
+        return False
+
+    settings = get_settings()
+    if settings.leadme_test_mode or _is_test_phone(lead.phone):
+        logger.info(
+            "[LeadMe TEST_MODE] skipping video tag for {} (video={!r})",
+            lead.phone, video_title,
+        )
+        return True
+    if (settings.leadme_insert_mode or "").strip().lower() == "never":
+        logger.info("[LeadMe] insert_mode=never, skipping video tag for {}",
+                    lead.phone)
+        return True
+
+    if is_v3_available():
+        lead_id = get_lead_id(lead.phone)
+        if lead_id is not None and add_lead_tag(lead_id, f"סרטון · {video_title}"):
+            return True
+
+    logger.info(
+        "[LeadMe] video tag for {} not written yet (video={!r}) -- queueing",
+        lead.phone, video_title,
+    )
+    leadme_queue.enqueue_video_tag(lead, video_title, session=session)
+    return False
+
+
 def push_not_relevant(
     lead: Lead,
     note: Optional[str] = None,
