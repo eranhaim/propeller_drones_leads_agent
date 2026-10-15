@@ -17,6 +17,7 @@ from app.crm.leadme_queue import (
     _merge_status,
 )
 from app.agent.graph import _is_refusal
+from app.followup import scheduler
 from app.webhook.opener import _should_send_website_form_opener
 from app.webhook.server import _normalize_phone, app as webhook_app
 
@@ -241,6 +242,73 @@ class RelevanceGuardTests(unittest.TestCase):
 
     def test_redirect_is_not_treated_as_opt_out(self) -> None:
         self.assertFalse(_is_refusal("לא מעוניין בקורס אלא בשירותי מיפוי לחברה"))
+
+
+def _fake_cookie_client(status_code: int, body: str) -> SimpleNamespace:
+    """Stand in for the cookie-backed httpx client the canary builds."""
+    return SimpleNamespace(
+        get=lambda url: None,
+        post=lambda url, data: SimpleNamespace(status_code=status_code, text=body),
+        cookies=SimpleNamespace(get=lambda name: "csrf-token"),
+        close=lambda: None,
+    )
+
+
+class LeakCanaryTests(unittest.TestCase):
+    """A canary that cannot read must say so rather than return quietly.
+
+    Both blind paths used to ``return`` without logging, which made a tick
+    that read nothing look exactly like a tick that found the trash campaign
+    empty. Production ran blind for days on the strength of that.
+    """
+
+    def setUp(self) -> None:
+        scheduler._LAST_LEAK_COUNT = None
+        scheduler._LAST_CANARY_STATUS = None
+        self.addCleanup(setattr, scheduler, "_LAST_LEAK_COUNT", None)
+        self.addCleanup(setattr, scheduler, "_LAST_CANARY_STATUS", None)
+
+    @patch("app.crm.leadme_delete._build_client", return_value=None)
+    def test_a_missing_cookie_session_is_reported(self, _build_client) -> None:
+        scheduler._campaign_leak_canary()
+
+        self.assertEqual(scheduler.last_leak_canary_status(), "no_cookies")
+        self.assertIsNone(scheduler._LAST_LEAK_COUNT)
+
+    @patch("app.crm.leadme_delete._build_client")
+    def test_an_expired_session_is_reported(self, build_client) -> None:
+        # Once the cookies die, getPieData redirects to the login page.
+        build_client.return_value = _fake_cookie_client(302, "")
+
+        scheduler._campaign_leak_canary()
+
+        self.assertEqual(scheduler.last_leak_canary_status(), "unreadable")
+        self.assertIsNone(scheduler._LAST_LEAK_COUNT)
+
+    @patch("app.crm.leadme_delete._build_client")
+    def test_a_readable_campaign_records_its_real_count(self, build_client) -> None:
+        build_client.return_value = _fake_cookie_client(
+            200, '{"result":true,"pieData":{"dataD":[4,3]}}',
+        )
+
+        scheduler._campaign_leak_canary()
+
+        self.assertEqual(scheduler.last_leak_canary_status(), "reading")
+        self.assertEqual(scheduler._LAST_LEAK_COUNT, 7)
+
+    @patch("app.crm.leadme_delete._build_client")
+    def test_an_empty_campaign_is_a_real_zero_not_a_blind_tick(
+        self,
+        build_client,
+    ) -> None:
+        build_client.return_value = _fake_cookie_client(
+            200, '{"result":true,"pieData":{"dataD":[]}}',
+        )
+
+        scheduler._campaign_leak_canary()
+
+        self.assertEqual(scheduler.last_leak_canary_status(), "reading")
+        self.assertEqual(scheduler._LAST_LEAK_COUNT, 0)
 
 
 if __name__ == "__main__":

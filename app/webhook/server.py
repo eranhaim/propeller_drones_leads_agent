@@ -42,7 +42,7 @@ from app.admin.routes import admin_session_secret, router as admin_router
 from app.config import get_settings
 from app.crm.leadme_client import last_known_session_status
 from app.db.session import engine
-from app.followup.scheduler import last_openai_status
+from app.followup.scheduler import last_leak_canary_status, last_openai_status
 from app.webhook.opener import handle_new_lead
 from app.webhook.payload import (
     flatten_payload as _flatten_payload,
@@ -147,6 +147,11 @@ def health() -> JSONResponse:
     payload["openai"] = last_openai_status()
     payload["database"] = _database_status()
     payload["leadme_session"] = last_known_session_status() or "unknown"
+    # Reported separately from the session because the canary has its own way
+    # of going blind: a healthy session whose getPieData call starts failing
+    # leaves the trash campaign unwatched while leadme_session still says
+    # "healthy".
+    payload["leadme_leak_canary"] = last_leak_canary_status()
     status_code = 200 if payload["status"] == "ok" else 503
     return JSONResponse(payload, status_code=status_code)
 

@@ -422,6 +422,41 @@ def run_once() -> None:
 # --- LeadMe leak canary -------------------------------------------------
 
 _LAST_LEAK_COUNT: Optional[int] = None
+_LAST_CANARY_STATUS: Optional[str] = None
+
+
+def _set_canary_status(status: str, detail: str = "") -> None:
+    """Record the canary's own verdict and announce a change of state.
+
+    A tick that cannot read the campaign used to return without logging, so
+    it looked exactly like a tick that read it and found nothing wrong. That
+    is the one failure a monitor must not hide. Transitions only, matching
+    the other two canaries; the steady state is on ``/health`` instead.
+    """
+    global _LAST_CANARY_STATUS
+    if status == _LAST_CANARY_STATUS:
+        return
+    if status == "reading":
+        logger.info("[leak-canary] reading the trash campaign again")
+    else:
+        logger.error(
+            "[leak-canary] BLIND (status={}): {}. Nothing is watching the "
+            "trash campaign, so leads leaking into it would go unreported. "
+            "Restore the cookie session via /admin/leadme-cookies.",
+            status, detail,
+        )
+    _LAST_CANARY_STATUS = status
+
+
+def last_leak_canary_status() -> str:
+    """The canary's last verdict, for ``/health`` to report.
+
+    Anything other than ``"reading"`` means the count below is not being
+    checked at all. ``/health`` carries it because the alarm above fires on
+    transitions only, which leaves a permanently blind canary silent after
+    the first boot.
+    """
+    return _LAST_CANARY_STATUS or "unknown"
 
 
 def _campaign_leak_canary() -> None:
@@ -443,6 +478,10 @@ def _campaign_leak_canary() -> None:
         from app.crm.leadme_delete import _build_client
         client = _build_client()
         if client is None:
+            _set_canary_status(
+                "no_cookies",
+                "there is no LeadMe cookie session to read it with",
+            )
             return
         try:
             base = get_settings().leadme_admin_base
@@ -460,6 +499,12 @@ def _campaign_leak_canary() -> None:
                 },
             )
             if resp.status_code != 200:
+                # An expired session redirects getPieData to the login page,
+                # so this is the path a session that dies mid-life takes.
+                _set_canary_status(
+                    "unreadable",
+                    f"getPieData returned HTTP {resp.status_code}",
+                )
                 return
             body = json.loads(resp.text)
             data = body.get("pieData", {}).get("dataD") or []
@@ -470,6 +515,7 @@ def _campaign_leak_canary() -> None:
             except Exception:  # noqa: BLE001
                 pass
 
+        _set_canary_status("reading")
         if _LAST_LEAK_COUNT is None:
             logger.info(
                 "[leak-canary] baseline for campaign {} = {} leads",
@@ -491,6 +537,7 @@ def _campaign_leak_canary() -> None:
         _LAST_LEAK_COUNT = current
     except Exception:
         logger.exception("[leak-canary] tick failed")
+        _set_canary_status("unreadable", "the tick raised (traceback above)")
 
 
 # --- LeadMe session-health tripwire -------------------------------------
