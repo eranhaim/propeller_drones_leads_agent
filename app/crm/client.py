@@ -16,6 +16,7 @@ from app.crm.leadme_client import (
     push_lead,
     push_lead_cancellation,
     push_not_relevant,
+    push_video_tag,
 )
 from app.db.models import Lead
 
@@ -60,6 +61,20 @@ def mark_call_window(
     ``mark_*`` helpers; v3 tagging itself is sessionless.
     """
     return push_call_window_tag(lead, slot, session=session)
+
+
+def mark_video_delivered(
+    lead: Lead,
+    video_title: str,
+    *,
+    session: Optional[Session] = None,
+) -> bool:
+    """Record in the CRM which video the lead received.
+
+    Sole owner of the ``סרטון · <title>`` tag. The sales team needs to know
+    what the lead has already watched before they call.
+    """
+    return push_video_tag(lead, video_title, session=session)
 
 
 def cancel_ready_for_call(lead: Lead, reason: Optional[str] = None) -> bool:

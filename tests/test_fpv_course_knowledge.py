@@ -51,7 +51,10 @@ class FpvCourseKnowledgeTests(unittest.TestCase):
         )
 
         self.assertTrue(marker, "the rules-summary block moved")
-        self.assertIn('12. **"קורס FPV" הוא הקורס העצמאי.**', summary)
+        # Rule 13 since 2026-10-15: the summary block carried two rules
+        # numbered 12, and the duplicate was resolved by letting the
+        # conversation-memory rule keep 12.
+        self.assertIn('13. **"קורס FPV" הוא הקורס העצמאי.**', summary)
         self.assertIn("### חוק קורס ה-FPV", detail)
 
 

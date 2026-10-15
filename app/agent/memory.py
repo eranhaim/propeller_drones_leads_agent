@@ -15,9 +15,24 @@ _MEMORY_KEY = "conversation_memory"
 _MAX_QUESTIONS = 12
 _MAX_TEXT_LENGTH = 240
 _WORD_RE = re.compile(r"[\u0590-\u05FFa-zA-Z0-9]{2,}")
-_SENTENCE_RE = re.compile(r"(?<=[.!?])\s+|\n+")
+# Sentence boundaries, including the "פעילים.זה" shape that reaches here
+# after the reply's filler sentences were stripped. Without the second
+# branch a whole reply counts as one sentence, so a repeated question at its
+# end takes the real answer down with it -- that wiped a correct answer
+# about equipment during the 2026-10-15 eval run.
+_SENTENCE_RE = re.compile(
+    r"(?<=[.!?])\s+|(?<=[.!?])(?=[\u0590-\u05FF])|\n+"
+)
 _QUESTION_START_RE = re.compile(
     r"^(?:האם|איזה|איזו|מה|מי|כמה|מתי|איפה|לאן|יש\s+לך|תרצה|תרצי|רוצה|רוצים)\b"
+)
+# Every way the bot introduces itself: the canned webhook opener, the agent's
+# own greeting, and the variants the prompt suggests.
+_SELF_INTRO_RE = re.compile(r"(?:אני|זה|כאן)\s+אלעד|אלעד\s+מ(?:פרופלור|האקדמיה)")
+# A greeting and at most the lead's name -- no content of its own.
+_GREETING_ONLY_RE = re.compile(
+    r"^(?:היי|הי|שלום|אהלן|בוקר טוב|ערב טוב|צהריים טובים)"
+    r"[\s,!.]*(?:[\u0590-\u05FF]+)?[\s,!.]*$"
 )
 _STOP_WORDS = {
     "את",
@@ -127,12 +142,17 @@ def _is_similar(left: str, right: str) -> bool:
 
 
 def _looks_like_opener(text: str) -> bool:
+    """Return True for a first-contact self-introduction.
+
+    The discovery question used to be required here too, which left the
+    canned webhook opener ("אני אלעד מהאקדמיה של פרופלור דרונס...") and the
+    agent's own shorter greeting ("זה אלעד מפרופלור דרונס") both unrecognised,
+    so a lead could be introduced to Elad twice in consecutive messages. A
+    self-introduction plus the company name is the whole signal; a factual
+    answer about Propeller never introduces the sender by name.
+    """
     normalized = _compact(text).casefold()
-    return (
-        "אני אלעד" in normalized
-        and "פרופלור" in normalized
-        and ("ניסיון" in normalized or "חדש לגמרי" in normalized)
-    )
+    return bool(_SELF_INTRO_RE.search(normalized)) and "פרופלור" in normalized
 
 
 def _infer_topic(text: str) -> str | None:
@@ -236,6 +256,13 @@ def remove_repeated_outbound_content(
             removed = True
             continue
         kept.append(part)
+
+    # A turn whose only survivor is the greeting is still a second "hello"
+    # to a lead who was greeted a moment ago -- that is the duplicate the
+    # customer saw at 17:01 and 17:02 on 2026-10-06. Treat it as empty and
+    # let the caller produce a real continuation instead.
+    if removed and kept and all(_GREETING_ONLY_RE.match(part) for part in kept):
+        return "", True
     return " ".join(kept), removed
 
 

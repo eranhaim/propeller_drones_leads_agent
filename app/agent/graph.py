@@ -102,6 +102,23 @@ _FILLER_SENTENCE_RE = re.compile("|".join(_FILLER_SENTENCE_PATTERNS))
 _SENTENCE_SPLIT_RE = re.compile(r"((?<=[.!?])\s+)")
 
 
+# Control tokens the model emits as a final message when it considers the
+# turn finished. Matched only when one is the ENTIRE reply, optionally
+# wrapped in brackets or quotes, so a Hebrew sentence containing "ok" is
+# untouched.
+_STRAY_TOKEN_RE = re.compile(
+    r"^[\s\[\(\{\"'*`]*"
+    r"(?:done|finished|complete|completed|success|ok|okay|null|none|end|stop)"
+    r"[\s\]\)\}\"'*`.!]*$",
+    re.IGNORECASE,
+)
+
+# The triage question of חוק הניתוב, used by the opening-question net below.
+# Kept identical in wording to the prompt's own phrasing of that rule.
+_TRIAGE_QUESTION = (
+    "מה מעניין אותך יותר - הוצאת רישיון, לימוד הטסה, או הכשרה מקצועית?"
+)
+
 _HEBREW_CHAR_RE = re.compile(r"[\u0590-\u05FF]")
 _VIDEO_WORD_RE = re.compile(r"[\u0590-\u05FF]{2,}")
 _VIDEO_DELIVERY_RE = re.compile(
@@ -376,6 +393,46 @@ def _limit_questions(reply: str) -> str:
     cleaned = f"{prefix}{tail}".strip()
     logger.info("[question-safety-net] removed extra questions from reply")
     return cleaned
+
+
+def _drop_stray_token(reply: str) -> str:
+    """Return "" when the whole reply is a control token instead of an answer.
+
+    The model sometimes closes a tool-heavy turn by emitting a bare "done"
+    as its final text. One of those reached a real lead on 2026-10-06.
+    Nothing in this codebase produces the token, so the only place it can be
+    caught is here; the empty result then falls through to the normal
+    "duplicate filtering emptied the turn" continuation below.
+    """
+    if reply and _STRAY_TOKEN_RE.match(reply.strip()):
+        logger.warning(
+            "[stray-token] dropped control-token reply {!r}", reply.strip(),
+        )
+        return ""
+    return reply
+
+
+def _ensure_opening_question(reply: str, session_messages) -> str:
+    """Make the first reply of a conversation end in a question.
+
+    Customer flagged (2026-10-14 17:36): a lead arriving from a campaign
+    with "אשמח לשמוע עוד פרטים על קורס FPV" got an explanation that simply
+    stopped, leaving them nothing to answer. The prompt asks for a closing
+    question on every turn; only the first turn has one safe, known
+    question -- the triage question of חוק הניתוב -- so that is the only
+    turn this net touches.
+
+    It only ever appends. WHICH question the first turn asks is the prompt's
+    job (חוק הניתוב and חוק הודעת פתיחה); a net that replaced the model's
+    question would have to cut text, and by this point the reply's sentence
+    boundaries are no longer reliable enough to tell an answer from an ask.
+    """
+    if not reply or "?" in reply:
+        return reply
+    if any(message.role == MessageRole.assistant for message in session_messages):
+        return reply
+    logger.info("[opening-question] first reply had no question; adding triage")
+    return f"{reply.rstrip()} {_TRIAGE_QUESTION}".strip()
 
 
 def _video_words(text: str) -> set[str]:
@@ -789,6 +846,7 @@ def handle_message(
                         lead.id,
                     )
 
+        reply = _drop_stray_token(reply)
         reply = _strip_filler(reply)
         reply = _strip_markdown(reply)
         reply = _limit_questions(reply)
@@ -806,6 +864,7 @@ def handle_message(
                 "[conversation-memory] removed repeated outbound content for lead {}",
                 lead.id,
             )
+        reply = _ensure_opening_question(reply, session_messages)
 
         _enforce_booking_promise(session, lead, reply)
 

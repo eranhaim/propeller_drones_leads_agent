@@ -15,8 +15,14 @@ from app.crm.leadme_queue import (
     _merge_ctwa_tag,
     _merge_engagement,
     _merge_status,
+    _merge_video_tag,
 )
-from app.agent.graph import _is_refusal
+from app.agent.graph import (
+    _drop_stray_token,
+    _ensure_opening_question,
+    _is_refusal,
+)
+from app.db.models import Message, MessageRole
 from app.followup import scheduler
 from app.webhook.opener import _should_send_website_form_opener
 from app.webhook.server import _normalize_phone, app as webhook_app
@@ -193,11 +199,19 @@ class LeadMeQueueTests(unittest.TestCase):
         item = {"kind": "ctwa_tag", "campaign": "עודד"}
         self.assertEqual(_merge_ctwa_tag([item], item), [item])
 
+    def test_video_tags_deduplicate_by_title_and_keep_other_videos(self) -> None:
+        first = {"kind": "video_tag", "video_title": "סרטון היכרות"}
+        second = {"kind": "video_tag", "video_title": "קריירה בעולם הרחפנים"}
+
+        self.assertEqual(_merge_video_tag([first], first), [first])
+        self.assertEqual(_merge_video_tag([first], second), [first, second])
+
     def test_not_relevant_status_supersedes_pending_engagement(self) -> None:
         merged = _merge_status(
             [
                 {"kind": "engagement", "level": 2},
                 {"kind": "ctwa_tag", "campaign": "מאסטר"},
+                {"kind": "video_tag", "video_title": "סרטון היכרות"},
             ],
             {"kind": "status", "status_id": "2392"},
         )
@@ -205,6 +219,7 @@ class LeadMeQueueTests(unittest.TestCase):
             merged,
             [
                 {"kind": "ctwa_tag", "campaign": "מאסטר"},
+                {"kind": "video_tag", "video_title": "סרטון היכרות"},
                 {"kind": "status", "status_id": "2392"},
             ],
         )
@@ -282,6 +297,55 @@ class GreenApiRequestBudgetTests(unittest.TestCase):
         self.assertEqual(retries.read, 0)
         self.assertEqual(retries.total, 2)
         self.assertEqual(retries.connect, 2)
+
+
+def _message(role: MessageRole, content: str = "") -> Message:
+    message = Message()
+    message.role = role
+    message.content = content
+    return message
+
+
+class StrayTokenTests(unittest.TestCase):
+    """A bare "done" reached a real lead on 2026-10-06."""
+
+    def test_a_reply_that_is_only_a_control_token_is_dropped(self) -> None:
+        for token in ("done", "DONE", "[done]", " done. ", "ok", "finished"):
+            self.assertEqual(_drop_stray_token(token), "")
+
+    def test_a_real_hebrew_reply_is_untouched(self) -> None:
+        reply = "הקורס נפתח בכל חודש. מתי נוח לך שנחזור אליך?"
+        self.assertEqual(_drop_stray_token(reply), reply)
+
+    def test_a_reply_that_merely_contains_the_word_is_untouched(self) -> None:
+        reply = "סיימנו עם זה, ok? נמשיך לשלב הבא."
+        self.assertEqual(_drop_stray_token(reply), reply)
+
+
+class OpeningQuestionTests(unittest.TestCase):
+    """Roy, 2026-10-14: the first reply must leave the lead something to answer."""
+
+    def test_first_reply_without_a_question_gets_the_triage_question(self) -> None:
+        reply = _ensure_opening_question(
+            "קורס FPV מלמד הטסה בטיסה גופנית ובניית רחפן.",
+            [],
+        )
+
+        self.assertTrue(reply.endswith("?"))
+        self.assertIn("הוצאת רישיון", reply)
+
+    def test_a_first_reply_that_already_asks_is_untouched(self) -> None:
+        reply = "קורס FPV הוא קורס עצמאי בן 6 מפגשים. יש לך ניסיון בהטסה?"
+        self.assertEqual(_ensure_opening_question(reply, []), reply)
+
+    def test_later_turns_are_left_to_the_prompt(self) -> None:
+        reply = "הקורס נמשך שלושה שבועות."
+        history = [
+            _message(MessageRole.assistant, "היי! אני אלעד מפרופלור דרונס."),
+            _message(MessageRole.user, "כמה זמן הקורס?"),
+        ]
+
+        self.assertEqual(_ensure_opening_question(reply, history), reply)
 
 
 def _fake_cookie_client(status_code: int, body: str) -> SimpleNamespace:

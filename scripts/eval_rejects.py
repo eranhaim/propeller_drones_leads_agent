@@ -176,6 +176,33 @@ def answers_in_words(min_chars: int = 25) -> Callable[[str, Lead], bool]:
     return _check
 
 
+def ends_with_a_question() -> Callable[[str, Lead], bool]:
+    """The reply must hand the conversation back to the lead.
+
+    Customer complaint, 2026-10-14: a reply to a campaign-entry message
+    explained the course and then simply stopped.
+    """
+    def _check(reply: str, _lead: Lead) -> bool:
+        return (reply or "").strip().endswith("?")
+    return _check
+
+
+def does_not_affirm(subject: str) -> Callable[[str, Lead], bool]:
+    """Assert the reply holds no "yes we accept <subject>" phrasing.
+
+    Used for the military deposit, which Propeller does NOT accept and the
+    bot has already told a lead it does.
+    """
+    pattern = re.compile(
+        r"(?:כן|אפשר|ניתן|מקבלים|אפשרי)[^.?!\n]{0,40}" + re.escape(subject)
+        + r"|" + re.escape(subject) + r"[^.?!\n]{0,40}(?:אפשרי|מתקבל|מקבלים)"
+    )
+
+    def _check(reply: str, _lead: Lead) -> bool:
+        return not pattern.search(reply or "")
+    return _check
+
+
 INTRO_VIDEO_ID = "propeller_company_overview"
 
 
@@ -966,6 +993,288 @@ SCENARIOS: List[Scenario] = [
                     Assertion("reply is Hebrew", is_hebrew(0.6)),
                     Assertion("still answers in words", answers_in_words()),
                     Assertion("no video sent twice", no_duplicate_videos()),
+                ],
+            ),
+        ],
+    ),
+    # --- the customer's corrections of 2026-10-14 ----------------------
+    Scenario(
+        name="job_placement_is_offered",
+        description=(
+            "Roy #2: the bot told leads Propeller does not help with job "
+            "placement. It does, and it connects graduates to the largest "
+            "companies in the economy."
+        ),
+        sender_name="Avishai",
+        turns=[
+            Turn(user_msg="היי, מתעניין בקורס רחפנים"),
+            Turn(
+                user_msg="ואתם עוזרים לבוגרים למצוא עבודה בסוף הקורס?",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion(
+                        "says we do help",
+                        contains_any(
+                            "מחברים", "עוזרים", "חברות הגדולות",
+                            "קבוצת בוגרים", "הצעות עבודה",
+                        ),
+                    ),
+                    Assertion(
+                        "never denies placement help",
+                        not_contains(
+                            "לא עוזרים למצוא עבודה",
+                            "אין לנו שירות השמה",
+                            "לא מספקת השמה",
+                            "לא מספקים השמה",
+                            "לא עוסקים בהשמה",
+                        ),
+                    ),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
+        name="no_equipment_purchase_obligation",
+        description=(
+            "Roy #3: the bot claimed equipment must be bought at the end of "
+            "the course. There is no purchase obligation at all."
+        ),
+        sender_name="Meital",
+        turns=[
+            Turn(user_msg="היי, אשמח לשמוע על ההכשרה"),
+            Turn(
+                user_msg="ובסוף ההכשרה חייבים לקנות את הציוד?",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion(
+                        "says there is no obligation",
+                        contains_any(
+                            "אין חובה", "אין שום חובה", "אין חובת",
+                            "לא חייב", "אין צורך לקנות",
+                        ),
+                    ),
+                    Assertion(
+                        "never states a purchase requirement",
+                        not_contains(
+                            "חייבים לקנות את הציוד",
+                            "צריך לרכוש ציוד",
+                            "חובה לקנות רחפן",
+                        ),
+                    ),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
+        name="pilot_count_is_eighty",
+        description=(
+            "Roy #5: the bot said 'over 70 active pilots' on 2026-10-06. "
+            "The real figure is over 80."
+        ),
+        sender_name="Gilad",
+        turns=[
+            Turn(
+                user_msg="כמה מטיסים פעילים יש לפרופלור?",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion("quotes the 80 figure", contains_any("80")),
+                    Assertion(
+                        "never quotes the stale 70 figure",
+                        not_contains("70 מטיסים", "מעל 70", "מעל ל-70"),
+                    ),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
+        name="course_question_gets_triage_first",
+        description=(
+            "Roy #6: a general course question must be triaged -- licence, "
+            "flight training or professional qualification -- instead of "
+            "volunteering an arbitrary course."
+        ),
+        sender_name="Noa",
+        turns=[
+            Turn(
+                user_msg="היי, אשמח לשמוע פרטים על הקורסים שלכם",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion("hands the turn back", ends_with_a_question()),
+                    Assertion(
+                        "names at least two of the three product families",
+                        lambda reply, _lead: sum(
+                            family in (reply or "")
+                            for family in ("רישיון", "הטסה", "הכשרה")
+                        ) >= 2,
+                    ),
+                    Assertion(
+                        "does not volunteer a specific course",
+                        not_contains(
+                            "מומלץ להתחיל", "כדאי לך המסלול", "הקורס שמתאים לך",
+                        ),
+                    ),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
+        name="campaign_entry_reply_ends_with_a_question",
+        description=(
+            "Roy, 2026-10-14 17:36: the reply to a campaign-entry message "
+            "explained FPV and then trailed off. A stated intent needs no "
+            "triage, but the reply still has to move the conversation on."
+        ),
+        sender_name="Shachar",
+        turns=[
+            Turn(
+                user_msg="אשמח לשמוע עוד פרטים על קורס FPV",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion("answers about FPV", answers_in_words(30)),
+                    Assertion("ends with a question", ends_with_a_question()),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
+        name="military_deposit_is_refused",
+        description=(
+            "Roy, 2026-09-02: the bot claimed Propeller accepts a military "
+            "deposit. It does not. The funding bodies it does work with are "
+            "vouchers, Dovrim and the Employment Bureau."
+        ),
+        sender_name="Itay",
+        turns=[
+            Turn(user_msg="היי, מתעניין בקורס"),
+            Turn(
+                user_msg="אפשר לשלם על הקורס עם הפיקדון הצבאי שלי?",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion(
+                        "never affirms the military deposit",
+                        does_not_affirm("פיקדון"),
+                    ),
+                    Assertion(
+                        "points at the funding that does exist",
+                        contains_any(
+                            "שובר", "לשכת התעסוקה", "משרד העבודה", "יועץ",
+                        ),
+                    ),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
+        name="vouchers_and_employment_bureau_are_recognized",
+        description=(
+            "Roy, 2026-08-17 and 2026-10-07 (marked 'very important'): "
+            "vouchers, Dovrim and the Employment Bureau are all supported."
+        ),
+        sender_name="Rotem",
+        turns=[
+            Turn(user_msg="היי, אשמח לשמוע על הקורס"),
+            Turn(
+                user_msg="אני זכאית לשובר מלשכת התעסוקה - אתם עובדים עם זה?",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion(
+                        "confirms the funding route",
+                        contains_any("שובר", "לשכת התעסוקה", "משרד העבודה"),
+                    ),
+                    Assertion(
+                        "does not deny it",
+                        not_contains(
+                            "לא עובדים עם שוברים",
+                            "לא מקבלים שוברים",
+                            "לא עובדים עם לשכת התעסוקה",
+                        ),
+                    ),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
+        name="agriculture_needs_the_heavy_track",
+        description=(
+            "Roy, 2026-09-27: agricultural work is done with drones over "
+            "25 kg, so the Sub-25 licence is not the answer for a lead who "
+            "wants to spray fields."
+        ),
+        sender_name="Barak",
+        turns=[
+            Turn(user_msg="היי, אני חקלאי ורוצה להיכנס לתחום"),
+            Turn(
+                user_msg="מספיק לי הרישיון עד 25 קג בשביל ריסוס חקלאי?",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion(
+                        "mentions the heavy track",
+                        contains_any("מעל 25", "מעל ל-25", "רחפנים כבדים", "כבד"),
+                    ),
+                    Assertion(
+                        "does not say Sub-25 is enough for agriculture",
+                        not_contains(
+                            "מספיק הרישיון עד 25",
+                            "הרישיון עד 25 קג מספיק",
+                            "הרישיון עד 25 ק״ג מספיק",
+                        ),
+                    ),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
+        name="late_question_never_announces_an_empty_catalog",
+        description=(
+            "Found in testing on 2026-10-06: after several videos the bot "
+            "declared it had sent everything relevant, then sent another one "
+            "on the next nudge. Never repeat a video, never say the catalog "
+            "is finished."
+        ),
+        sender_name="Liron",
+        turns=[
+            Turn(user_msg="היי, מתעניין בעולם הרחפנים"),
+            Turn(user_msg="ספר לי על התעסוקה בתחום"),
+            Turn(user_msg="באילו תעשיות רחפנים עובדים היום?"),
+            Turn(user_msg="ומה העתיד של התחום?"),
+            Turn(
+                user_msg="מעניין. יש עוד משהו שכדאי שאדע?",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion("answers in words", answers_in_words(30)),
+                    Assertion("no video sent twice", no_duplicate_videos()),
+                    Assertion(
+                        "never announces an empty catalog",
+                        not_contains(
+                            "כל הסרטונים",
+                            "הסרטונים הרלוונטיים",
+                            "אין לי סרטון",
+                            "נגמרו לי הסרטונים",
+                            "אין לי עוד סרטונים",
+                        ),
+                    ),
+                ],
+            ),
+        ],
+    ),
+    Scenario(
+        name="opener_is_not_repeated_on_the_next_turn",
+        description=(
+            "Found in testing on 2026-10-06 (17:01 and 17:02): Elad "
+            "introduced himself in two consecutive messages."
+        ),
+        sender_name="Eran",
+        turns=[
+            Turn(user_msg="היי, אשמח לפרטים"),
+            Turn(
+                user_msg="כן, זה חדש לגמרי בשבילי",
+                assertions=[
+                    Assertion("reply is Hebrew", is_hebrew(0.6)),
+                    Assertion("the turn says something", answers_in_words()),
+                    Assertion(
+                        "does not introduce Elad a second time",
+                        not_contains("אני אלעד", "זה אלעד", "אלעד מפרופלור"),
+                    ),
                 ],
             ),
         ],

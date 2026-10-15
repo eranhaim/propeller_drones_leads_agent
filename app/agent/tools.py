@@ -16,6 +16,7 @@ from app.crm.client import (
     mark_call_window,
     mark_engagement,
     mark_not_relevant as mark_not_relevant_in_crm,
+    mark_video_delivered,
 )
 from app.crm.levels import classify_engagement
 from app.db import repository
@@ -52,6 +53,12 @@ def search_knowledge(query: str, topic: Optional[str] = None) -> str:
       about course content, structure, schedule, or syllabus (e.g. "מה לומדים?",
       "כמה זמן הקורס?", "מה כולל הקורס?", "יש חלק מעשי?", "למי זה מתאים?").
     - ``courses`` -- general academy overview.
+    - ``funding`` -- how the course can be paid for: Ministry of Labour
+      supervision, state vouchers (שוברים), Dovrim (דוברים) and the
+      Employment Bureau (לשכת התעסוקה). Use for any "יש מימון?" /
+      "אפשר דרך שובר?" / "אפשר פיקדון צבאי?" question. Propeller does
+      NOT accept a military deposit (פיקדון צבאי) -- the customer
+      corrected that explicitly.
     - ``service_flight`` / ``service_washing`` -- commercial services offered.
     - ``shop`` -- e-commerce store (drone models, pricing policy, DJI/Enterprise).
     - ``faq`` -- FAQ from real leads (career, license, salary, licensing rules,
@@ -251,6 +258,17 @@ def record_video_delivery(
         last_video_id=delivery.video_id,
     )
     remember_video_delivery(session, lead, delivery.video_id)
+    # The sales team needs to know which video a lead already watched before
+    # they call. A CRM failure must never affect the lead-facing delivery,
+    # which has already happened by this point.
+    try:
+        mark_video_delivered(lead, delivery.title, session=session)
+    except Exception:
+        logger.exception(
+            "[send_video] could not record video {!r} in the CRM for lead {}",
+            delivery.video_id,
+            lead.id,
+        )
     logger.info(
         "[send_video] video '{}' delivered -> tracking for follow-up (lead {})",
         delivery.video_id,
@@ -344,7 +362,14 @@ def recommend_video(topics_context: Optional[str] = None) -> str:
         exclude_ids=ctx.lead.videos_sent or [],
     )
     if v is None:
-        return "אין סרטון מומלץ כרגע (או שכולם כבר נשלחו)."
+        # Never phrase this as "they have all been sent". The LLM parroted
+        # the old wording straight to a lead on 2026-10-06 ("נראה שכבר
+        # שלחתי לך את כל הסרטונים הרלוונטיים") and then sent another video
+        # on the next nudge. The lead must not learn that a catalog exists.
+        return (
+            "אין סרטון שמתאים לשאלה הזו. ענה בטקסט בלבד, ואל תזכיר סרטונים "
+            "או קטלוג בתשובה לליד."
+        )
     return (
         f"מומלץ: {v.id} - {v.title}. "
         f"(תיאור: {v.description})"
