@@ -20,6 +20,7 @@ from app.agent.graph import _is_refusal
 from app.followup import scheduler
 from app.webhook.opener import _should_send_website_form_opener
 from app.webhook.server import _normalize_phone, app as webhook_app
+from app.whatsapp.client import build_greenapi_client
 
 
 class PhoneNormalizationTests(unittest.TestCase):
@@ -242,6 +243,45 @@ class RelevanceGuardTests(unittest.TestCase):
 
     def test_redirect_is_not_treated_as_opt_out(self) -> None:
         self.assertFalse(_is_refusal("לא מעוניין בקורס אלא בשירותי מיפוי לחברה"))
+
+
+class GreenApiRequestBudgetTests(unittest.TestCase):
+    """A GreenAPI call must fail in a minute, and must never replay a send.
+
+    The SDK ships ``host_timeout=180`` per attempt and retries every method
+    three times, which made one ``sendMessage`` take twelve minutes to fail.
+    Two of those in the first-contact opener is what took ``/health`` down for
+    18-24 minutes at a time in October 2026.
+    """
+
+    def setUp(self) -> None:
+        self.settings = SimpleNamespace(
+            green_api_instance_id="1101",
+            green_api_token="token",
+            green_api_host="https://api.green-api.com",
+            green_api_media_host="https://media.green-api.com",
+            green_api_request_timeout_seconds=60.0,
+        )
+
+    @patch("app.whatsapp.client.get_settings")
+    def test_a_call_is_capped_at_the_configured_timeout(self, get_settings) -> None:
+        get_settings.return_value = self.settings
+
+        api = build_greenapi_client()
+
+        self.assertEqual(api.host_timeout, 60.0)
+        self.assertEqual(api.media_timeout, 60.0)
+
+    @patch("app.whatsapp.client.get_settings")
+    def test_a_timed_out_send_is_not_replayed(self, get_settings) -> None:
+        get_settings.return_value = self.settings
+
+        api = build_greenapi_client()
+        retries = api.session.get_adapter("https://api.green-api.com").max_retries
+
+        self.assertEqual(retries.read, 0)
+        self.assertEqual(retries.total, 2)
+        self.assertEqual(retries.connect, 2)
 
 
 def _fake_cookie_client(status_code: int, body: str) -> SimpleNamespace:

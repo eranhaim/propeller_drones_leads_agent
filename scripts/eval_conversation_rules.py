@@ -192,7 +192,7 @@ def _single_video_per_turn() -> None:
 
 
 def _run_opener(phone: str, api: Mock) -> None:
-    with patch("app.webhook.opener._greenapi_client", return_value=api):
+    with patch("app.webhook.opener.build_greenapi_client", return_value=api):
         handle_new_lead(
             phone=phone,
             name="TEST-CONVERSATION ערן",

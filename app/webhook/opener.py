@@ -32,6 +32,7 @@ from app.db.models import Lead, MessageRole
 from app.db.session import session_scope
 from app.names import first_name
 from app.videos.catalog import INTRO_VIDEO_ID, get_video
+from app.whatsapp.client import build_greenapi_client
 from app.whatsapp.sender import ChatSender
 
 
@@ -117,14 +118,6 @@ def _should_send_website_form_opener(
         and is_new_lead
         and not metadata.get("opener_sent_at")
         and not history
-    )
-
-
-def _greenapi_client() -> GreenAPI:
-    settings = get_settings()
-    return GreenAPI(
-        settings.green_api_instance_id,
-        settings.green_api_token,
     )
 
 
@@ -288,7 +281,7 @@ def handle_new_lead(
                 topic = _pick_topic(campaign_id, {**existing_meta, **metadata})
                 text = _render_opener(name, topic)
                 try:
-                    api = _greenapi_client()
+                    api = build_greenapi_client()
                     api.sending.sendMessage(_chat_id(phone), text)
                 except Exception:
                     logger.exception("[opener] failed to send WhatsApp for lead_id={}", lead.id)

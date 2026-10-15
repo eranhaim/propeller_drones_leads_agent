@@ -34,13 +34,13 @@ from zoneinfo import ZoneInfo
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.orm import aliased
-from whatsapp_api_client_python.API import GreenAPI
 
 from app.config import get_settings
 from app.db import repository
 from app.db.models import FunnelStage, Lead, Message, MessageRole
 from app.db.session import session_scope
 from app.names import first_name
+from app.whatsapp.client import build_greenapi_client
 
 ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 
@@ -190,7 +190,7 @@ def _pick_video_followups(session, now: datetime) -> list[Lead]:
 
 def _send_video_followup(lead: Lead) -> bool:
     text = _render_video_followup(lead.name)
-    api = _greenapi_client()
+    api = build_greenapi_client()
     chat_id = f"{lead.phone}@c.us"
     try:
         api.sending.sendMessage(chat_id, text)
@@ -260,11 +260,6 @@ def _pick_leads_to_nudge(session, now: datetime) -> list[Lead]:
 # --- send ---------------------------------------------------------------
 
 
-def _greenapi_client() -> GreenAPI:
-    settings = get_settings()
-    return GreenAPI(settings.green_api_instance_id, settings.green_api_token)
-
-
 def _send_and_record(lead: Lead, nudge_number: int) -> bool:
     text = _render_nudge(lead.name, nudge_number)
     if not text:
@@ -274,7 +269,7 @@ def _send_and_record(lead: Lead, nudge_number: int) -> bool:
         )
         return False
 
-    api = _greenapi_client()
+    api = build_greenapi_client()
     chat_id = f"{lead.phone}@c.us"
     try:
         api.sending.sendMessage(chat_id, text)

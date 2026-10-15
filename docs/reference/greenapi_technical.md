@@ -71,6 +71,7 @@ bot = GreenAPIBot(
     settings.green_api_token,
     delete_notifications_at_startup=False,   # see below
 )
+bound_request_time(bot.api)                  # see below
 register_handlers(bot)
 bot.run_forever()
 
@@ -79,7 +80,7 @@ bot.run_forever()
 sender = ChatSender(api=notification.api, chat_id=chat_id)
 
 # 3. Background outbound -- opener.py / scheduler.py
-api = GreenAPI(settings.green_api_instance_id, settings.green_api_token)
+api = build_greenapi_client()
 api.sending.sendMessage(f"{phone}@c.us", text)
 ```
 
@@ -87,8 +88,21 @@ api.sending.sendMessage(f"{phone}@c.us", text)
 (`True`) drains the notification queue on boot, so any message that arrived
 while the container was restarting is discarded. Do not change it.
 
-Background threads must build their own `GreenAPI` client. `notification.api`
-only exists inside an inbound handler.
+Background threads must build their own client, through
+`app/whatsapp/client.py::build_greenapi_client`. `notification.api` only
+exists inside an inbound handler, and is bounded by `bound_request_time` when
+the bot is built.
+
+**Never construct `GreenAPI` directly.** The SDK waits 180 seconds per attempt
+and replays every method three times, so one `sendMessage` against a GreenAPI
+that accepts the connection and stays silent takes twelve minutes to fail —
+and a replayed POST sends the lead the same message twice. Two unbounded
+clients (the opener's and the scheduler's) are what took the webhook and the
+admin UI down for 18–24 minutes at a time, several times a day, on 11–15 Oct
+2026: the opener makes two calls, and `/health` did not answer until the
+second one returned. `build_greenapi_client` and `bound_request_time` are the
+only ways to get a client, and both cap a call at
+`GREEN_API_REQUEST_TIMEOUT_SECONDS` and retry only a failure to connect.
 
 ---
 
@@ -246,9 +260,9 @@ anything sent from the admin UI bypass the agent and therefore bypass (2).
 
 | Source | Trigger | Client | Recorded as |
 |---|---|---|---|
-| `opener.py::handle_new_lead` | CRM webhook, first contact | own `GreenAPI` | `MessageRole.assistant` + `opener_sent_at` |
-| `graph.py::handle_message` (session reset) | lead idle ≥ 7 days | `opener._greenapi_client()` | `MessageRole.assistant` + `opener_sent_at` |
-| `scheduler.py` nudges | APScheduler tick | `_greenapi_client()` | `MessageRole.assistant` |
+| `opener.py::handle_new_lead` | CRM webhook, first contact | `build_greenapi_client()` | `MessageRole.assistant` + `opener_sent_at` |
+| `graph.py::handle_message` (session reset) | lead idle ≥ 7 days | the handler's `notification.api` | `MessageRole.assistant` + `opener_sent_at` |
+| `scheduler.py` nudges | APScheduler tick | `build_greenapi_client()` | `MessageRole.assistant` |
 
 All three write the sent text to the `messages` table themselves. The handler
 path is the only one where persistence happens inside `handle_message`.
