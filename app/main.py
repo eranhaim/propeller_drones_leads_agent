@@ -23,6 +23,7 @@ from app.webhook.server import (
     polling_seconds_since_success,
     run_in_background_thread as run_webhook,
 )
+from app.whatsapp.client import bound_request_time
 from app.whatsapp.handler import register_handlers
 
 
@@ -76,10 +77,9 @@ def _build_bot() -> GreenAPIBot:
         # process it. Missing a lead's message = lost lead.
         delete_notifications_at_startup=False,
     )
-    # The upstream client otherwise allows a GreenAPI HTTP request to block
-    # for three minutes. Keep the request bounded; the process watchdog below
-    # is the final safeguard for a socket that fails to honour this timeout.
-    bot.api.host_timeout = settings.green_api_request_timeout_seconds
+    # Keep every GreenAPI request bounded; the process watchdog below is the
+    # final safeguard for a socket that fails to honour the timeout.
+    bound_request_time(bot.api)
     register_handlers(bot)
     return bot
 
